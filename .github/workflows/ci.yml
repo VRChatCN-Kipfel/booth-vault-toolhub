@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Windows 主目标：全 workspace 编译 + 测试 + lint（含 gui/shell_win）
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - name: Install frontend deps
+        working-directory: gui
+        run: npm ci
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Clippy (workspace)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test (workspace)
+        run: cargo test --workspace
+      - name: Build frontend
+        working-directory: gui
+        run: npm run build
+
+  # Linux / macOS 门控：engine 层三平台跑测试
+  portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Clippy (engine)
+        run: cargo clippy -p engine --all-targets --all-features -- -D warnings
+      - name: Test (engine)
+        run: cargo test -p engine

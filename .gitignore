@@ -1,0 +1,35 @@
+# 旧仓库（独立 git 仓库，只读参考，不纳入统一项目版本控制）
+/booth-free-collector/
+/booth-keeper/
+
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Node / 前端
+/node_modules/
+/dist/
+/dist-ssr/
+/src-tauri/target/
+*.local
+
+# 隐私与敏感数据（见 AGENTS.md 安全要求）
+cookie*
+*.part
+desktop.ini
+manifest_*.json
+*.token
+*.secret
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.suo
+*.user
+
+# 日志 / 临时
+*.log
+.tmp/

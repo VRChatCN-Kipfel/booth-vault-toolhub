@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "engine",
+    "shell_win",
+    "gui/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"

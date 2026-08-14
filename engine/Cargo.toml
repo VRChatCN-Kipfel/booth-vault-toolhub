@@ -1,0 +1,11 @@
+[package]
+name = "engine"
+description = "BOOTH 工具核心引擎：纯函数层（分类/清洗/评分/解析），三端共享"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+fancy-regex = "0.16"
+unicode-normalization = "0.1"
