@@ -1,6 +1,6 @@
 //! 文件名/查询清洗：sanitize_filename / sanitize / extract_version_tag / sanitize_query。
 //!
-//! 行为逐条复刻 Python 实现（血泪坑 §8.1.1、§8.2.10-12）。
+//! 注：清洗规则为线上行为契约，改动会影响整理结果，须与分类/评分规则同步评审。
 
 use fancy_regex::Regex;
 use unicode_general_category::GeneralCategory;
@@ -8,7 +8,7 @@ use unicode_general_category::GeneralCategory;
 /// Windows 文件名非法字符。
 const INVALID: &str = r#"<>:"/\|?*"#;
 
-/// 装饰 Unicode → 过滤（血泪坑：装饰 Unicode 目录名会被 Explorer 永久拒绝应用 desktop.ini）。
+/// 装饰 Unicode → 过滤（含装饰字符的目录名会被 Explorer 永久拒绝应用 desktop.ini）。
 ///
 /// 过滤 emoji/装饰区段 + Mn/Me 组合字符 + Cn 未分配。
 fn is_decorative(c: char) -> bool {
@@ -81,25 +81,28 @@ const BARE_VERSION_RE: &str = r"[_\-\s](\d+\.\d+(?:\.\d+)*)\s*$";
 
 /// 从文件名提取版本标记（如 `Ver_2.00` / `v1.01` / `_v100` / `2.0`）。
 ///
-/// 血泪坑 §8.2.12：整理名不得丢版本，`extract_version_tag` 输出 `Ver_x.y`。
+/// 整理名必须保留版本号（如 `メカ弾エフェクトVer_2.00` → 带 `Ver_2.00`），
+/// 否则同一商品的不同版本会被合并覆盖。
 pub fn extract_version_tag(filename: &str) -> String {
     let stem = basename_stem(filename);
     if let Ok(Some(caps)) = Regex::new(&format!("(?i){VERSION_RE}"))
         .expect("valid regex")
         .captures(stem)
-        && let Some(g) = caps.get(1) {
-            return format!("Ver_{}", g.as_str());
-        }
+        && let Some(g) = caps.get(1)
+    {
+        return format!("Ver_{}", g.as_str());
+    }
     if let Ok(Some(caps)) = Regex::new(BARE_VERSION_RE)
         .expect("valid regex")
         .captures(stem)
-        && let Some(g) = caps.get(1) {
-            return format!("Ver_{}", g.as_str());
-        }
+        && let Some(g) = caps.get(1)
+    {
+        return format!("Ver_{}", g.as_str());
+    }
     String::new()
 }
 
-/// 取文件名末段并去掉最后一个扩展名（等价 Python `Path(filename).stem`）。
+/// 取文件名末段并去掉最后一个扩展名（等价 `Path::file_stem` 语义）。
 fn basename_stem(filename: &str) -> &str {
     let base = filename.rsplit(['/', '\\']).next().unwrap_or(filename);
     match base.rfind('.') {
@@ -108,7 +111,7 @@ fn basename_stem(filename: &str) -> &str {
     }
 }
 
-/// 驼峰拆词：`LunariaPaperFan` → `Lunaria Paper Fan`（血泪坑 #8.2.10 环视）。
+/// 驼峰拆词：`LunariaPaperFan` → `Lunaria Paper Fan`（环视正则，见 `fancy_regex` 依赖说明）。
 fn split_camel(name: &str) -> String {
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let s = RE
@@ -154,7 +157,7 @@ const VRC_STOPPERS: &[&str] = &[
 
 /// 从文件名生成 BOOTH 搜索候选关键词（按优先级排序，首个最可能命中）。
 ///
-/// 策略（血泪坑 #8.2.11，逐数字复刻，不得"优化"）：
+/// 策略（搜索命中率已调优固化，改动会影响结果准确性）：
 ///   0 下划线→空格  1 去扩展名/去括号  1.5 驼峰拆词  1.6 纯日文主体
 ///   2 去版本号  3 去尾部中文  4 最长 ASCII 段  5 去 VRChat 停用词 → 去重保序。
 pub fn sanitize_query(filename: &str) -> Vec<String> {
@@ -230,7 +233,7 @@ pub fn sanitize_query(filename: &str) -> Vec<String> {
     // 策略 5：去 VRChat 停用词。
     let mut c5 = c2;
     for stop in VRC_STOPPERS {
-        // 血泪坑：停用词为字面量，须转义后嵌入正则（等价 Python `re.escape`）。
+        // 停用词为字面量，须转义后再嵌入正则，避免特殊字符误解析。
         let pat = format!(r"(?i)[_\-\s]?{}[_\-\s]?", escape_re(stop));
         c5 = Regex::new(&pat)
             .expect("valid regex")
@@ -258,7 +261,7 @@ pub fn sanitize_query(filename: &str) -> Vec<String> {
     }
 }
 
-/// 正则字面量转义（等价 Python `re.escape`）。
+/// 正则字面量转义（转义 `\` 与正则元字符，使普通文本可作为字面量匹配）。
 fn escape_re(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {

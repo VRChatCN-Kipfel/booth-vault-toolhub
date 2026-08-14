@@ -66,12 +66,15 @@ cargo run --bin booth -- <download|organize|search|audit> --help
 
 ## 移植铁律（不得违反）
 
+> 判断原则：**行为契约一致，实现缺陷必修**。行为契约（评分权重、清洗策略、歧义阈值、目录结构）以线上验证结果为准，逐项实现并测试；实现缺陷（死参数、死循环、个人环境硬编码、不可达逻辑）必须主动修复，不得照抄。修复清单见 SOLUTION.md §7.1「已修复的原实现缺陷」。
+
 1. 装饰 Unicode 过滤、正方形画布 ICO、H+S 同设、写前清 0x80、完整性契约、PIDL 生命周期、desktop.ini 编码契约——见 SOLUTION.md §8.1，逐条实现并测试，缺一不可。
 2. 3 处环视正则用 `fancy-regex`，不得改用标准 `regex` 后改变行为。
-3. 评分权重、歧义阈值、sanitize_query 7 层策略逐数字复刻，不得"优化"。
+3. 评分权重、歧义阈值、sanitize_query 7 层策略按行为契约实现，不得"优化"（数字是线上调优结果，改动需重新验证）。
 4. 限速策略（0.5~0.8s）GUI/CLI/MCP 三端统一，不得绕过。
 5. 统一 CLI 必须提供结构化输出（JSON）与语义化退出码，MCP 依赖它判断成败。
 6. CATEGORY_MAP 已去重固化，任何修改必须同步三端。
+7. 移植中发现原实现缺陷时，修复后必须记录到 SOLUTION.md §7.1，并在代码中不标注"抄自某处"（注释只描述行为本身）。
 
 ## 依赖管理
 
@@ -89,7 +92,7 @@ cargo run --bin booth -- <download|organize|search|audit> --help
 ## 网络与资料
 
 - 国内环境：网页检索默认用 **Bing**（`dokobot read --local 'https://www.bing.com/search?q=...'`），避免百度。
-- 网络请求走 `HTTPS_PROXY` 环境变量（缺省回退 `http://127.0.0.1:20122/`）。
+- 网络代理为**配置项**，不得硬编码个人代理地址。优先级：配置文件 `proxy` > 环境变量 `HTTPS_PROXY`（仅标准通道，无缺省回退值）> reqwest 系统默认（Windows 读系统代理注册表）。配置文件在用户目录与应用目录两处均支持。
 - 对不确定的技术点，先用 doko 打开官方文档页细读，不得凭记忆下结论。
 
 ## 安全

@@ -163,7 +163,7 @@ crates.io 检索 `folder icon`（449 条）/`desktop.ini`（10 条）均无成�
 | rmcp API churn | 确认但可控 | 3.0 已发布且 conformance 40/40 全过；宏用户无签名改动；锁定 `rmcp = "3"` |
 | image ICO PNG 压缩 | 确认可行 | `IcoFrame::as_png()` 多帧；256px PNG 压缩即 Windows Vista+ 大图标预览硬性要求 |
 | fancy-regex 性能/安全 | 确认可用 | 输入域受限（文件名/链接），无 ReDoS 实际风险 |
-| reqwest 系统代理 | 确认默认行为 | 默认读 env 代理；Windows 下也读系统代理注册表——需按原逻辑复刻"HTTPS_PROXY 缺省回退 127.0.0.1:20122"，必要时 `.no_proxy()` |
+| reqwest 系统代理 | 确认默认行为 | 默认读 env 代理；Windows 下也读系统代理注册表。**代理为配置项，禁止硬编码个人地址**：优先级 配置文件 `proxy` > `HTTPS_PROXY`（无缺省回退）> reqwest 系统默认；必要时 `.no_proxy()` |
 | Linux 打包 | 确认复杂度 | Debian 依赖 `libwebkit2gtk-4.1-0`/`libgtk-3-0`；必须用 Ubuntu 22.04/Debian 12 基线构建，建议 Docker/GH Actions；AppImage 有 WebKit 注入包缺失已知问题 |
 | macOS/Linux PATH | 新增发现 | GUI 不继承 shell 点文件 `$PATH`，需要时用 `fix-path-env-rs` |
 
@@ -194,6 +194,18 @@ crates.io 检索 `folder icon`（449 条）/`desktop.ini`（10 条）均无成�
 | CATEGORY_MAP 重复 key | 显式去重后按最后值固化 | `アバター`(头像→虚拟形象)、`アクセサリー`(饰品→配饰) 依赖 Python 后写覆盖；Rust 编译期会报 duplicate key |
 | CLI 入口/子命令结构 | 统一版 | download/organize/search/audit 四子命令为纲 |
 
+### 7.1 已修复的原实现缺陷（移植时发现，主动修复）
+
+> 判断原则（AGENTS.md 移植铁律）：行为契约一致，实现缺陷必修。以下为旧实现中确认的缺陷，Rust 版已修复。修复**不在代码中标注来源**，注释只描述行为本身。
+
+| # | 缺陷 | 位置 | 修复方式 |
+|---|---|---|---|
+| 1 | `prefer_free` 死参数：签名声明但函数体从未使用，付费/免费偏好从未生效 | `score_and_pick`（统一版 + legacy 相同） | 实现语义：`prefer_free=true` 时同分候选免费项 +5 加成；配单测 `score_prefer_free_tiebreak` |
+| 2 | `_ranged_download` 空 `.part`（size=0）死循环 | 统一版 `booth.py` | 用 legacy 健壮版：Range 探针拿 total、total==0 直接建空文件返回、每块独立重试 |
+| 3 | `_ranged_download` 的 `max_retry` 参数声明但从未使用 | 统一版 `booth.py` | 每块按 `RANGE_MAX_RETRY` 真实重试 |
+| 4 | `_ranged_download` 无 Range 探针，服务端不支持时反复重下 | 统一版 `booth.py` | 先发 `Range: bytes=0-0` 验证 `Content-Range`，无则报错不再死磕 |
+| 5 | 代理个人硬编码 `http://127.0.0.1:20122/` 缺省回退 | `make_session`（统一版 + legacy 相同） | 改为配置三态：配置文件 `proxy` > `HTTPS_PROXY`（无缺省回退）> 系统默认；配置文件用户目录与应用于录两处支持 |
+
 **统一版对统一引擎必须补强（MCP 基础设施）：**
 1. **结构化输出**：当前 CLI 恒零退出码 + 纯中文 stdout，MCP 无法判断成败 → 加 JSON 输出 + 语义化退出码。
 2. **路径参数化**：硬编码默认路径 `G:\Lin_File\BOOTH`（4 处）改为配置注入。
@@ -202,7 +214,9 @@ crates.io 检索 `folder icon`（449 条）/`desktop.ini`（10 条）均无成�
 
 ---
 
-## 8. 血泪坑移植清单（必须逐条复刻，不得自作主张简化）
+## 8. 血泪坑移植清单（行为契约，必须逐条复刻）
+
+> 本清单全部是**线上验证过的行为契约**（Explorer/BOOTH 交互行为、编码、评分阈值），逐条实现并测试，缺一不可；若某条本身是实现缺陷而非行为，按 §7.1 判断原则修。
 
 > 来源：`booth-keeper/booth_core.py` 注释 + `SCORE_TABLE_R7.md` + `booth-free-collector` 各 SKILL.md
 
@@ -246,7 +260,7 @@ crates.io 检索 `folder icon`（449 条）/`desktop.ini`（10 条）均无成�
 - 交付物：`engine` crate + 全量单测，与 Python 输出 diff 对拍。
 
 ### M2 引擎网络层
-- reqwest 会话（env 代理 + 默认 127.0.0.1:20122）、cookie 三态加载、fetch_item JSON、搜索/店铺翻页 HTML 解析、封面下载（Referer 头）、流式下载 + `.part` + Range 续传（**用 legacy 健壮版**）、假文件校验、限速。
+- reqwest 会话（代理三态：配置文件 `proxy` > 环境变量 `HTTPS_PROXY` > 系统默认，**禁硬编码个人地址**）、cookie 三态加载、fetch_item JSON、搜索/店铺翻页 HTML 解析、封面下载（Referer 头）、流式下载 + `.part` + Range 续传（**用 legacy 健壮版**）、假文件校验、限速。
 - 交付物：download 全流程 CLI 可用。
 
 ### M3 Windows Shell 模块（最高风险，单独里程碑）
@@ -331,7 +345,7 @@ crates.io 检索 `folder icon`（449 条）/`desktop.ini`（10 条）均无成�
 ### 11.5 环境与工具备忘
 
 - **国内网络**：网页检索默认用 Bing（`dokobot read --local 'https://www.bing.com/search?q=...'`），**避免百度**。
-- **代理**：网络请求走 `HTTPS_PROXY`（缺省回退 `http://127.0.0.1:20122/`）；reqwest 默认还会读 Windows 系统代理注册表，必要时 `.no_proxy()`。实测本机 20122 **无监听**，装 VS 这类大下载需用户自行开代理。
+- **代理**：**配置项，禁止硬编码个人地址**。优先级：配置文件 `proxy`（用户目录 > 应用目录）> 环境变量 `HTTPS_PROXY`（无缺省回退）> reqwest 系统默认（Windows 读系统代理注册表）。必要时 `.no_proxy()`。
 - **依赖锁定**：`rmcp = "3"`（MSRV 1.88）、`reqwest = "0.13"`、`tauri = "2"`、`image = "0.25"`、`windows = "0.62"`。
 - **当前本机状态（2026-08-15 实测）**：
   - Rust **已装**：cargo 1.97.1 / rustup（`RUSTUP_HOME=D:\rustup`、`CARGO_HOME=D:\cargo`，PATH 含 `D:\cargo\bin`）。

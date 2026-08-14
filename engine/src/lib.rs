@@ -1,5 +1,12 @@
 pub mod classify;
 pub mod clean;
+pub mod config;
+pub mod cover;
+pub mod download;
+pub mod fetch;
+pub mod http;
 pub mod id;
 pub mod norm;
 pub mod score;
+pub mod search;
+pub mod session;

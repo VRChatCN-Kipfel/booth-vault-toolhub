@@ -1,6 +1,6 @@
 //! ID 与链接解析：parse_discrete / extract_id / shop_subdomain / extract_shop_id_from_url。
 //!
-//! 环视正则统一用 fancy-regex（血泪坑 #8.2.10）。
+//! 注：含环视断言的正则须用 `fancy_regex`（标准 `regex` 不支持环视）。
 
 use fancy_regex::Regex;
 
@@ -52,9 +52,10 @@ pub fn shop_subdomain(url_or_sub: &str) -> String {
     if let Ok(Some(caps)) = Regex::new(r"https?://([^./]+)\.booth\.pm")
         .expect("valid regex")
         .captures(url_or_sub)
-        && let Some(g) = caps.get(1) {
-            return g.as_str().to_string();
-        }
+        && let Some(g) = caps.get(1)
+    {
+        return g.as_str().to_string();
+    }
     url_or_sub.trim().trim_matches('/').to_string()
 }
 

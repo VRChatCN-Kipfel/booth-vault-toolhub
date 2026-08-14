@@ -1,8 +1,8 @@
 //! 评分选优：score_and_pick。
 //!
-//! 行为逐数字复刻 Python（血泪坑 #8.2.11：评分权重 +100/+20/-10、歧义分差 <30、
-//! 同名不同价必报歧义、单结果也须名称命中）。`canonical_name` 与资源名提取以
-//! 依赖注入传入，保持本层无 IO 可测。
+//! 评分权重与歧义判定为**线上行为契约**（+100/+20/-10、歧义分差 <30、
+//! 同名不同价必报歧义、单结果也须名称命中），改动会影响选优结果。
+//! `canonical_name` 与资源名提取以依赖注入传入，保持本层无 IO 可测。
 
 use crate::norm::norm;
 
@@ -16,6 +16,7 @@ pub struct Item {
 
 /// 评分选最佳。
 ///
+/// `prefer_free`：同分候选时优先免费项（付费/免费同款场景；付费项不因此被排除）。
 /// `canonical_name`：商品规范名解析器（JSON 名，含英文别名；调用方负责缓存/网络）。
 /// `resource_names`：已从 zip 内 .unitypackage 提取的资源名集合（可选，仅单结果兜底用）。
 ///
@@ -23,7 +24,7 @@ pub struct Item {
 pub fn score_and_pick<'a, F>(
     query: &str,
     items: &'a [Item],
-    _prefer_free: bool,
+    prefer_free: bool,
     canonical_name: F,
     resource_names: Option<&[String]>,
 ) -> (Option<&'a Item>, bool)
@@ -35,7 +36,7 @@ where
     }
     let qn = norm(query);
 
-    // 评分（Python 权重逐字复刻）。
+    // 评分权重契约（+100 名称命中 / +100 规范名命中 / +20 词级 / +10-次序 / -10 过长）。
     let mut scored: Vec<(i32, usize)> = Vec::new();
     for (idx, it) in items.iter().enumerate() {
         let name_l = it.name.to_lowercase();
@@ -53,6 +54,9 @@ where
             }
         }
         s += (10 - (idx as i32) * 2).max(0);
+        if prefer_free && it.price == 0 {
+            s += 5;
+        }
         if name_l.chars().count() as i64 > query.chars().count() as i64 * 5
             && cn.chars().count() as i64 > query.chars().count() as i64 * 5
         {
@@ -60,7 +64,7 @@ where
         }
         scored.push((s, idx));
     }
-    // 按分数降序；分数相同时保持原序（Python sorted 稳定）。
+    // 按分数降序；同分保持输入顺序（稳定排序，`sort_by_key` 稳定）。
     scored.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
 
     if scored.is_empty() || scored[0].0 <= 0 {
@@ -72,19 +76,20 @@ where
                 return (Some(it), false);
             } // 标题/规范名都不命中 → 资源名二次校验。
             if let Some(res_names) = resource_names
-                && !res_names.is_empty() {
-                    for r in res_names {
-                        let rn = norm(r);
-                        if !qn.is_empty() && (rn.contains(&qn) || qn.contains(&rn)) {
+                && !res_names.is_empty()
+            {
+                for r in res_names {
+                    let rn = norm(r);
+                    if !qn.is_empty() && (rn.contains(&qn) || qn.contains(&rn)) {
+                        return (Some(it), false);
+                    }
+                    for w in split_query_words(query) {
+                        if w.chars().count() >= 3 && r.to_lowercase().contains(&w) {
                             return (Some(it), false);
-                        }
-                        for w in split_query_words(query) {
-                            if w.chars().count() >= 3 && r.to_lowercase().contains(&w) {
-                                return (Some(it), false);
-                            }
                         }
                     }
                 }
+            }
             return (None, false);
         }
         return (None, false);
@@ -170,7 +175,7 @@ mod tests {
 
     #[test]
     fn score_no_match_single() {
-        // 血泪坑 #8.2.13：单结果也须名称命中。短名不命中时 idx+10 仍 >0 直接返回；
+        // 单结果也须名称命中。短名不命中时 idx+10 仍 >0 直接返回；
         // 超长名触发 -10 惩罚使 s<=0 → 进入兜底，名称不命中 → None。
         let long_name = "A".repeat(60);
         let items = [item("9999999", &long_name, 0)];
@@ -219,5 +224,21 @@ mod tests {
         let names = [("1111111", "anything")];
         let (best, _) = score_and_pick("", &items, false, cn(&names), None);
         assert!(best.is_none());
+    }
+
+    #[test]
+    fn score_prefer_free_tiebreak() {
+        // 付费项在纯次序权重上更靠前，prefer_free 给免费项 +5 使其反超。
+        let items = [
+            item("2222222", "Star Tiara", 500),
+            item("1111111", "Star Tiara", 0),
+        ];
+        let names = [("1111111", "Star Tiara"), ("2222222", "Star Tiara")];
+        // 不偏好免费：idx 次序权重大，付费项（idx0 +10）胜出。
+        let (best, _) = score_and_pick("StarTiara", &items, false, cn(&names), None);
+        assert_eq!(best.map(|i| i.id.as_str()), Some("2222222"));
+        // 偏好免费：免费项 +5 → 免费（idx1 +8+5=13）> 付费（idx0 +10）。
+        let (best, _) = score_and_pick("StarTiara", &items, true, cn(&names), None);
+        assert_eq!(best.map(|i| i.id.as_str()), Some("1111111"));
     }
 }
