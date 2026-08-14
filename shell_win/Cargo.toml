@@ -12,7 +12,12 @@ default = ["windows-shell"]
 # 平台门控：macOS/Linux 关闭该 feature 即退化为无文件夹图标功能
 windows-shell = []
 
+[[bin]]
+name = "booth-shell"
+path = "src/bin/booth_shell.rs"
+
 [dependencies]
+image = "0.25"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_UI_Shell",
