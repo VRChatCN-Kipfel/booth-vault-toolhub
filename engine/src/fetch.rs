@@ -1,4 +1,4 @@
-//! BOOTH 商品元数据：fetch_item JSON / refine_from_json / 价格解析 / 缩略图。
+﻿//! BOOTH 商品元数据：fetch_item JSON / refine_from_json / 价格解析 / 缩略图。
 
 use reqwest::blocking::Client;
 use serde::Deserialize;
@@ -12,14 +12,41 @@ pub const ITEM_JSON_URL: &str = "https://booth.pm/ja/items/{id}.json";
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ItemJson {
+    /// 商品 ID（JSON API 为数字，搜索卡片为字符串，兼容两种）。
+    #[serde(deserialize_with = "de_id")]
     pub id: String,
     pub name: String,
     pub price: serde_json::Value,
     pub category: CategoryJson,
-    pub shop: String,
+    pub shop: ShopJson,
     pub images: Vec<ImageJson>,
     #[serde(rename = "variations")]
     pub variations: Vec<VariationJson>,
+}
+
+/// 店铺对象。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ShopJson {
+    pub uuid: String,
+    pub name: String,
+    pub subdomain: String,
+    pub thumbnail_url: String,
+    pub url: String,
+    pub verified: bool,
+}
+
+/// ID 反序列化：数字或字符串均可。
+fn de_id<'de, D>(d: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(d)?;
+    match v {
+        serde_json::Value::Number(n) => Ok(n.to_string()),
+        serde_json::Value::String(s) => Ok(s),
+        _ => Ok(String::new()),
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -62,6 +89,10 @@ pub struct DownloadableJson {
 pub struct DownloadFileJson {
     pub url: String,
     pub name: String,
+    pub file_name: String,
+    pub file_extension: String,
+    /// 人类可读大小（如 "247 KB"），JSON API 为字符串。
+    pub file_size: String,
 }
 
 /// 解析价格：数字直用 / 字符串剥非数字 / 其他 -1。
@@ -109,10 +140,13 @@ pub fn free_downloads(item: &ItemJson) -> Vec<(String, String)> {
             for group in [&dl.no_musics, &dl.musics] {
                 for f in group {
                     if !f.url.is_empty() {
-                        let name = if f.name.is_empty() {
-                            format!("file_{}", out.len())
-                        } else {
+                        // 文件名优先 name；退回 file_name；再退回占位。
+                        let name = if !f.name.is_empty() {
                             f.name.clone()
+                        } else if !f.file_name.is_empty() {
+                            f.file_name.clone()
+                        } else {
+                            format!("file_{}", out.len())
                         };
                         out.push((f.url.clone(), name));
                     }
@@ -168,6 +202,7 @@ mod tests {
                         no_musics: vec![DownloadFileJson {
                             url: "https://paid".to_string(),
                             name: "paid.zip".to_string(),
+                            ..DownloadFileJson::default()
                         }],
                         musics: vec![],
                     }),
@@ -178,10 +213,12 @@ mod tests {
                         no_musics: vec![DownloadFileJson {
                             url: "https://free1".to_string(),
                             name: "free1.zip".to_string(),
+                            ..DownloadFileJson::default()
                         }],
                         musics: vec![DownloadFileJson {
                             url: "https://free2".to_string(),
                             name: "".to_string(),
+                            ..DownloadFileJson::default()
                         }],
                     }),
                 },
