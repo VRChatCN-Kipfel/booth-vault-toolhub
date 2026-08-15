@@ -62,11 +62,15 @@ jobs:
           echo "prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
 
       # 下载 ci 构建的 booth 三二进制
+      # workflow_run 触发时，须显式指定上游 run id + token 才能跨 workflow 下载
+      # （download-artifact 默认 run-id=当前 run，workflow_run 当前 run 无工件）
       - name: Download booth binaries
         uses: actions/download-artifact@v4
         with:
           name: booth-binaries
           path: binaries
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
