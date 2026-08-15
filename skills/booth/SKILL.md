@@ -1,5 +1,5 @@
 ---
-name: booth-toolkit
+name: booth
 description: |-
   Unified BOOTH toolkit for VRChat / XR creators — Rust rewrite (CLI + MCP).
   Bundles download / organize / search / audit for the full BOOTH asset lifecycle:
@@ -13,7 +13,6 @@ description: |-
   朋友发的booth、booth整理、整理booth压缩包、归档booth文件、整理这个booth包、
   booth文件归类、给这个压缩包重命名、按名字搜booth、搜booth商品名、整理vrc插件道具、
   找booth商品、按文件名搜索、booth按名搜索、整理vrc素材、整理着色器、booth巡检.
-agent_created: true
 ---
 
 # BOOTH Toolkit — BOOTH 素材全家桶（Rust 版）

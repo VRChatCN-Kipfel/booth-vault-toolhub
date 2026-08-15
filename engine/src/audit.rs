@@ -243,12 +243,11 @@ pub fn scan_library(root: &Path) -> Vec<ScannedDir> {
 
 /// 递归遍历目录树：匹配 ID 目录名则记录，并继续深入所有非隐藏子目录。
 fn walk_dirs(dir: &Path, out: &mut Vec<ScannedDir>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = sorted_dirs(dir) else {
         return;
     };
-    for entry in entries.filter_map(Result::ok) {
-        let path = entry.path();
-        if !path.is_dir() || is_hidden(&path) {
+    for path in entries {
+        if is_hidden(&path) {
             continue;
         }
         if let Some(name) = path.file_name().and_then(|n| n.to_str())
@@ -739,7 +738,7 @@ mod tests {
         make_id_dir(&base, "12345678_长id");
         make_id_dir(&base, "abcdefg_非数字");
         let out = scan_library(&base);
-        assert!(out.is_empty(), "out: {:?}", out);
+        assert!(out.is_empty(), "out: {out:?}");
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -747,12 +746,12 @@ mod tests {
     fn scan_library_separators() {
         let base = tmpdir("scan_sep");
         let seps = ["_", "-", " ", "　", "－", "ー"];
-        for (i, s) in seps.iter().enumerate() {
+        for (i, s) in seps.iter().enumerate().rev() {
             let id = format!("{i:07}");
             make_id_dir(&base, &format!("{id}{s}名称"));
         }
         let out = scan_library(&base);
-        assert_eq!(out.len(), seps.len(), "out: {:?}", out);
+        assert_eq!(out.len(), seps.len(), "out: {out:?}");
         for (i, d) in out.iter().enumerate() {
             assert_eq!(d.id, format!("{i:07}"), "{d:?}");
             assert_eq!(d.name, "名称", "{d:?}");
@@ -782,7 +781,7 @@ mod tests {
         let hidden = make_id_dir(&base, ".1234567_隐藏");
         std::fs::write(hidden.join("cover.jpg"), vec![0u8; 100]).unwrap();
         let out = scan_library(&base);
-        assert!(out.is_empty(), "out: {:?}", out);
+        assert!(out.is_empty(), "out: {out:?}");
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -818,7 +817,7 @@ mod tests {
                 _ => 0,
             }
         });
-        assert_eq!(results.len(), 1, "results: {:?}", results);
+        assert_eq!(results.len(), 1, "results: {results:?}");
         assert_eq!(results[0].dir, bad);
         assert!(results[0].issues.iter().any(|i| i == "ini 缺失"));
         let _ = std::fs::remove_dir_all(&base);
@@ -877,7 +876,7 @@ mod tests {
             "2222222" => Some(json_item("メカv2")),
             _ => None,
         });
-        assert_eq!(out.len(), 1, "out: {:?}", out);
+        assert_eq!(out.len(), 1, "out: {out:?}");
         assert_eq!(out[0].id, "1111111");
         assert_eq!(out[0].local_tag, "Ver_1");
         assert_eq!(out[0].official_tag, "Ver_2");
@@ -890,7 +889,7 @@ mod tests {
         make_id_dir(&base, "3333333_无版本");
         make_id_dir(&base, "4444444_plain");
         let out = version_audit(&base, |_| Some(json_item("无版本商品")));
-        assert!(out.is_empty(), "out: {:?}", out);
+        assert!(out.is_empty(), "out: {out:?}");
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -932,7 +931,7 @@ mod tests {
             "1111111" => Some(json_item_cat("髪")),
             _ => None,
         });
-        assert_eq!(out.len(), 1, "out: {:?}", out);
+        assert_eq!(out.len(), 1, "out: {out:?}");
         assert_eq!(out[0].id, "1111111");
         assert_eq!(out[0].wrong_cat, "3D模型");
         assert_eq!(out[0].dest_cat, "3D发型");
@@ -950,7 +949,7 @@ mod tests {
             "2222222" => Some(json_item_cat("髪")),
             _ => None,
         });
-        assert!(out.is_empty(), "out: {:?}", out);
+        assert!(out.is_empty(), "out: {out:?}");
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -964,7 +963,7 @@ mod tests {
             "3333333" => Some(json_item_cat("")),
             _ => None,
         });
-        assert!(out.is_empty(), "out: {:?}", out);
+        assert!(out.is_empty(), "out: {out:?}");
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -991,7 +990,7 @@ mod tests {
                 None
             }
         });
-        assert_eq!(out.len(), 1, "out: {:?}", out);
+        assert_eq!(out.len(), 1, "out: {out:?}");
         assert_eq!(out[0].wrong_cat, "3D模型");
         assert_eq!(out[0].dest_cat, "3D服饰");
         let _ = std::fs::remove_dir_all(&base);

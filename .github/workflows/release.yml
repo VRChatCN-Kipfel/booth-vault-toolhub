@@ -28,49 +28,86 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
+  actions: read
 
 jobs:
-  package:
-    runs-on: windows-latest
+  resolve:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.ver.outputs.publish }}
+      tag: ${{ steps.ver.outputs.tag }}
+      prerelease: ${{ steps.ver.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
 
       # 解析版本号与预发布标志
-      # workflow_run：ci 由 tag 触发时 head_branch 即 tag 名（如 v0.1.0）
+      # workflow_run：按 ci 提交 SHA 查找 v* tag，避免依赖不稳定的 head_branch 字段。
       # 手动触发：用输入 tag
       - name: Resolve version
         id: ver
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          INPUT_PRERELEASE: ${{ github.event.inputs.prerelease }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            REF="${{ github.event.workflow_run.head_branch }}"
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            REF="$(git tag --points-at "$HEAD_SHA" --list 'v*' | sort -V | tail -n 1)"
           else
-            REF="${{ github.event.inputs.tag }}"
+            REF="$INPUT_TAG"
           fi
-          if [ -z "$REF" ]; then REF="v0.1.0"; fi
+          if [ -z "$REF" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # 预发布：tag 含 '-'（semver 预发布段）
           IS_PRERELEASE="false"
           case "$REF" in
             *-*) IS_PRERELEASE="true" ;;
           esac
           # 手动触发勾选 prerelease 时强制预发布
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.prerelease }}" = "true" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$INPUT_PRERELEASE" = "true" ]; then
             IS_PRERELEASE="true"
           fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
           echo "tag=$REF" >> "$GITHUB_OUTPUT"
           echo "prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
 
+  package:
+    needs: resolve
+    if: needs.resolve.outputs.publish == 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
       # 下载 ci 构建的 booth 三二进制
       - name: Download booth binaries
+        if: github.event_name == 'workflow_run'
         uses: actions/download-artifact@v4
         with:
           name: booth-binaries
           path: binaries
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          cache: true
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -80,8 +117,14 @@ jobs:
         working-directory: gui
         run: npm ci
 
+      # 手动发布没有对应的 CI 产物，直接在当前提交构建 workspace 二进制。
+      - name: Build booth binaries for manual release
+        if: github.event_name == 'workflow_dispatch'
+        run: cargo build --release --workspace
+
       # 把 ci 产物放回 release target，交给 tauri 打包（NSIS 安装包）
       - name: Stage binaries into workspace
+        if: github.event_name == 'workflow_run'
         shell: bash
         run: |
           mkdir -p target/release
@@ -103,7 +146,10 @@ jobs:
         with:
           name: booth-packages
           path: |
-            gui/src-tauri/target/release/bundle/**
+            target/release/booth.exe
+            target/release/booth-mcp.exe
+            target/release/booth-shell.exe
+            target/release/bundle/**
           if-no-files-found: warn
           retention-days: 30
 
@@ -112,10 +158,13 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.ver.outputs.tag }}
-          name: ${{ steps.ver.outputs.tag }}
-          prerelease: ${{ steps.ver.outputs.prerelease }}
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          name: ${{ needs.resolve.outputs.tag }}
+          prerelease: ${{ needs.resolve.outputs.prerelease }}
           generate_release_notes: true
           files: |
-            gui/src-tauri/target/release/bundle/**/*.exe
-            gui/src-tauri/target/release/bundle/**/*.msi
+            target/release/booth.exe
+            target/release/booth-mcp.exe
+            target/release/booth-shell.exe
+            target/release/bundle/**/*.exe
+            target/release/bundle/**/*.msi

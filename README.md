@@ -1,7 +1,7 @@
 # booth-vault-toolhub
 
 [![CI](https://img.shields.io/github/actions/workflow/status/VRChatCN-Kipfel/booth-vault-toolhub/ci.yml?branch=master&label=CI)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/actions)
-[![Build](https://img.shields.io/github/actions/workflow/status/VRChatCN-Kipfel/booth-vault-toolhub/build.yml?branch=master&label=Build)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/actions)
+[![Release](https://img.shields.io/github/actions/workflow/status/VRChatCN-Kipfel/booth-vault-toolhub/release.yml?label=Release)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/actions/workflows/release.yml)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 

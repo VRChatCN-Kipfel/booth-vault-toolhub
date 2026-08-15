@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 export type SystemTheme = 'light' | 'dark';
 
@@ -18,20 +19,15 @@ export function useSystemTheme(): SystemTheme {
     if (isTauri) {
       let unlisten: (() => void) | undefined;
       let cancelled = false;
-      // 动态导入避免浏览器预览时加载 Tauri API 报错
-      import('@tauri-apps/api/window')
-        .then(({ getCurrentWindow }) => {
-          const w = getCurrentWindow();
-          w.theme().then((t) => {
-            if (!cancelled && t) setTheme(t);
-          });
-          return w.onThemeChanged(({ payload }) => {
-            setTheme(payload);
-          });
-        })
-        .then((fn) => {
-          unlisten = fn;
-        });
+      const currentWindow = getCurrentWindow();
+      void currentWindow.theme().then((value) => {
+        if (!cancelled && value) setTheme(value);
+      });
+      void currentWindow.onThemeChanged(({ payload }) => {
+        setTheme(payload);
+      }).then((fn) => {
+        unlisten = fn;
+      });
       return () => {
         cancelled = true;
         unlisten?.();
