@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 on:
   push:
@@ -33,7 +33,7 @@ jobs:
 
       # 安装目标架构 MSVC 工具链（x64 原生；x86/arm64 交叉编译）
       - name: Setup MSVC Build Tools
-        uses: loonghao/msvc-kit@v1
+        uses: loonghao/msvc-kit@v0.2.15
         with:
           arch: ${{ matrix.arch }}
           host-arch: x64

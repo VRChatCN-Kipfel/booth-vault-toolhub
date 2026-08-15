@@ -1,4 +1,4 @@
-# Release 发布：消费 CI 的三架构 booth 二进制，做最终打包（安装器 + 便携版）并发布。
+﻿# Release 发布：消费 CI 的三架构 booth 二进制，做最终打包（安装器 + 便携版）并发布。
 #
 # 职责划分：
 #   CI   = 测试门控 + 构建三架构 booth 二进制（副产品，供 release 用）
@@ -70,6 +70,13 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
         continue-on-error: true
+
+      # 目标架构 MSVC 编译器（tauri build 多架构需要；x86/arm64 交叉编译）
+      - name: Setup MSVC Build Tools
+        uses: loonghao/msvc-kit@v0.2.15
+        with:
+          arch: ${{ matrix.arch }}
+          host-arch: x64
 
       - uses: dtolnay/rust-toolchain@stable
         with:
