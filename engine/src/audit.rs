@@ -238,6 +238,9 @@ pub struct ScannedDir {
 pub fn scan_library(root: &Path) -> Vec<ScannedDir> {
     let mut out = Vec::new();
     walk_dirs(root, &mut out);
+    // 按 id 稳定排序：跨平台目录枚举顺序不一致（Windows vs Linux/macOS），
+    // 巡检结果必须有确定顺序，否则测试与后续处理依赖枚举顺序。
+    out.sort_by(|a, b| a.id.cmp(&b.id));
     out
 }
 
