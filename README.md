@@ -1,11 +1,11 @@
 # booth-vault-toolhub
 
 [![CI](https://img.shields.io/github/actions/workflow/status/VRChatCN-Kipfel/booth-vault-toolhub/ci.yml?branch=master&label=CI)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/actions)
-[![Build](https://img.shields.io/github/actions/workflow/status/VRChatCN-Kipfel/booth-vault-toolhub/build.yml?branch=master&label=Build)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/actions)
+[![Release](https://img.shields.io/github/actions/workflow/status/VRChatCN-Kipfel/booth-vault-toolhub/release.yml?branch=master&label=Release%20Workflow)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/actions)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-[![Release](https://img.shields.io/github/v/release/VRChatCN-Kipfel/booth-vault-toolhub?label=Release)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/releases)
+[![Version](https://img.shields.io/github/v/release/VRChatCN-Kipfel/booth-vault-toolhub?label=Release)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/releases)
 [![Release Date](https://img.shields.io/github/release-date/VRChatCN-Kipfel/booth-vault-toolhub?label=更新日期)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/releases)
 [![Downloads](https://img.shields.io/github/downloads/VRChatCN-Kipfel/booth-vault-toolhub/total?label=Downloads)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/releases)
 
