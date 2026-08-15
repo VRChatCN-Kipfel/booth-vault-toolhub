@@ -144,8 +144,18 @@ jobs:
           cd dist && zip -r booth-keeper-lite.zip lite/
 
       # Full 版：内置 WebView2 fixed runtime，完全不依赖外部环境。
-      # 注：WebView2 固定版集成需下载 Evergreen Bootstrapper 并解包到 WebView2Loader，
-      # 由 Tauri 的 wry 在构建时引用；此处先复制 GUI+CLI，WebView2 目录由后续专用步骤补充。
+      # 下载官方 Fixed Version runtime cab（社区存档 URL 可预测），解包到 exe 旁；
+      # GUI main() 启动时探测该文件夹并设 WEBVIEW2_BROWSER_EXECUTABLE_FOLDER。
+      - name: Download WebView2 fixed runtime
+        shell: pwsh
+        run: |
+          $arch = "x64"
+          $ver  = "133.0.3065.92"
+          $cab  = "Microsoft.WebView2.FixedVersionRuntime.$ver.$arch.cab"
+          Invoke-WebRequest -Uri "https://github.com/westinyang/WebView2RuntimeArchive/releases/download/$ver/$cab" -OutFile "$env:RUNNER_TEMP/$cab"
+          New-Item -ItemType Directory -Path "dist/full/runtime" -Force | Out-Null
+          Expand $env:RUNNER_TEMP/$cab -F:* "dist/full/runtime"
+
       - name: Assemble full portable
         shell: bash
         run: |
@@ -154,7 +164,11 @@ jobs:
           cp target/release/booth.exe dist/full/ 2>/dev/null || true
           cp target/release/booth-mcp.exe dist/full/ 2>/dev/null || true
           cp target/release/booth-shell.exe dist/full/ 2>/dev/null || true
-          cd dist && zip -r booth-keeper-full.zip full/
+          # runtime 解包产物移到 exe 同级（探测逻辑扫描 exe 目录）
+          mv dist/full/runtime/* dist/full/ 2>/dev/null || true
+          rm -rf dist/full/runtime
+          # 重命名为可预测的固定名（探测逻辑匹配 Microsoft.WebView2.FixedVersionRuntime.*）
+          cd dist/full && zip -r booth-keeper-full.zip .
 
       # 上传四份产物（无条件）——即使不发布也保留供即时测试
       - name: Upload MSI installer
