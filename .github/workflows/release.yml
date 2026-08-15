@@ -126,7 +126,7 @@ jobs:
 
       # ---- 组装四份发布产物 ----
 
-      # Lite 便携版：GUI exe + 三 CLI 二进制，打进一个目录（Artifacts 自动 zip）
+      # Lite 便携版：GUI exe + 三 CLI 二进制 + portable.txt 标记
       # 依赖目标环境的 WebView2（Windows 10 1803+ 已内置）
       - name: Assemble lite portable
         shell: bash
@@ -136,25 +136,25 @@ jobs:
           cp target/release/booth.exe dist/lite/ 2>/dev/null || true
           cp target/release/booth-mcp.exe dist/lite/ 2>/dev/null || true
           cp target/release/booth-shell.exe dist/lite/ 2>/dev/null || true
-          # 附带 GUI 前端资源（Tauri 独立运行所需，若有则复制）
-          if [ -d "target/release/bundle/resources" ]; then
-            cp -r target/release/bundle/resources dist/lite/
-          fi
+          # 便携标记（GUI 检测此文件启用便携数据目录）
+          touch dist/lite/portable.txt
           # 打成便携 zip（release assets 需文件）
           cd dist && zip -r booth-keeper-lite.zip lite/
 
       # Full 版：内置 WebView2 fixed runtime，完全不依赖外部环境。
-      # 下载官方 Fixed Version runtime cab（社区存档 URL 可预测），解包到 exe 旁；
+      # 从 westinyang/WebView2RuntimeArchive 的 latest release 下载对应架构 cab
+      # （不锁版本，自动跟随最新），解包到 exe 旁；
       # GUI main() 启动时探测该文件夹并设 WEBVIEW2_BROWSER_EXECUTABLE_FOLDER。
-      - name: Download WebView2 fixed runtime
+      - name: Download WebView2 fixed runtime (latest)
         shell: pwsh
         run: |
-          $arch = "x64"
-          $ver  = "133.0.3065.92"
-          $cab  = "Microsoft.WebView2.FixedVersionRuntime.$ver.$arch.cab"
-          Invoke-WebRequest -Uri "https://github.com/westinyang/WebView2RuntimeArchive/releases/download/$ver/$cab" -OutFile "$env:RUNNER_TEMP/$cab"
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/wv2" -Force | Out-Null
+          gh release download --repo westinyang/WebView2RuntimeArchive `
+            --pattern "Microsoft.WebView2.FixedVersionRuntime.*.x64.cab" `
+            --dir "$env:RUNNER_TEMP/wv2"
           New-Item -ItemType Directory -Path "dist/full/runtime" -Force | Out-Null
-          Expand $env:RUNNER_TEMP/$cab -F:* "dist/full/runtime"
+          $cab = (Get-ChildItem "$env:RUNNER_TEMP/wv2" -Filter '*.x64.cab' | Select-Object -First 1).FullName
+          Expand $cab -F:* "dist/full/runtime"
 
       - name: Assemble full portable
         shell: bash
@@ -164,6 +164,8 @@ jobs:
           cp target/release/booth.exe dist/full/ 2>/dev/null || true
           cp target/release/booth-mcp.exe dist/full/ 2>/dev/null || true
           cp target/release/booth-shell.exe dist/full/ 2>/dev/null || true
+          # 便携标记（GUI 检测此文件启用便携数据目录）
+          touch dist/full/portable.txt
           # runtime 解包产物移到 exe 同级（探测逻辑扫描 exe 目录）
           mv dist/full/runtime/* dist/full/ 2>/dev/null || true
           rm -rf dist/full/runtime

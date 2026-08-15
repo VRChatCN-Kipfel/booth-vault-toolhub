@@ -1,6 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
 mod commands;
+pub mod portable;
 
 use commands::TaskRegistry;
 
@@ -22,6 +23,21 @@ pub fn run() {
             commands::fix_mismatch,
             commands::cancel_task,
         ])
+        .setup(|app| {
+            // 主窗口手建（config create:false）。
+            // 便携模式：数据目录锚定 exe 目录内（data/webview），
+            // 避免污染 %LOCALAPPDATA% 且跨机器可携带。
+            let mut builder = tauri::WebviewWindowBuilder::from_config(
+                app.handle(),
+                &app.config().app.windows[0],
+            )?;
+            if let Some(data_dir) = portable::portable_webview_dir() {
+                std::fs::create_dir_all(&data_dir).ok();
+                builder = builder.data_directory(data_dir);
+            }
+            builder.build()?;
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -1,33 +1,32 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-#[cfg(windows)]
 use std::path::PathBuf;
 
-#[cfg(windows)]
-fn setup_fixed_webview2_runtime() {
+/// 便携模式 WebView2 初始化：
+/// 1. 探测 exe 旁的 fixed runtime 文件夹（含 msedgewebview2.exe 取最高版），设 env var
+/// 2. 若为 Win10 + runtime ≥120，幂等授权（icacls）
+fn setup_webview2() {
     if std::env::var_os("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER").is_some() {
-        return;
+        return; // Tauri fixedRuntime 模式会自己设置，避免覆盖
     }
-    // 便携模式：探测 exe 旁的 WebView2 fixed version runtime 文件夹
-    // （如 Microsoft.WebView2.FixedVersionRuntime.*.x64/），
-    // 含 msedgewebview2.exe 才使用，否则回退系统 WebView2。
+    // 便携模式：探测 exe 旁的 WebView2 fixed runtime。
     let Some(exe_dir) = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|p| p.to_path_buf()))
     else {
         return;
     };
-    let runtime = find_fixed_runtime(&exe_dir);
-    if let Some(runtime) = runtime {
+    if let Some(runtime) = find_fixed_runtime(&exe_dir) {
         unsafe {
-            std::env::set_var("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", runtime);
+            std::env::set_var("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", &runtime);
         }
+        // 授权（仅 Win10 + 新 runtime 需要；幂等）
+        gui_lib::portable::ensure_webview2_acl(&runtime);
     }
 }
 
 /// 扫描目录下的 WebView2 fixed runtime 文件夹，返回含 msedgewebview2.exe 的最高版本路径。
-#[cfg(windows)]
 fn find_fixed_runtime(dir: &PathBuf) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     let mut best: Option<(String, PathBuf)> = None;
@@ -45,7 +44,6 @@ fn find_fixed_runtime(dir: &PathBuf) -> Option<PathBuf> {
         if !path.join("msedgewebview2.exe").is_file() {
             continue;
         }
-        // 取版本号段比较，多版本时用最高
         let Some(ver) = name.strip_prefix("Microsoft.WebView2.FixedVersionRuntime.") else {
             continue;
         };
@@ -58,6 +56,6 @@ fn find_fixed_runtime(dir: &PathBuf) -> Option<PathBuf> {
 
 fn main() {
     #[cfg(windows)]
-    setup_fixed_webview2_runtime();
+    setup_webview2();
     gui_lib::run()
 }

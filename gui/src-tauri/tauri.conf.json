@@ -12,13 +12,15 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Booth Keeper",
         "width": 1080,
         "height": 720,
         "minWidth": 860,
         "minHeight": 560,
         "decorations": false,
-        "dragDropEnabled": true
+        "dragDropEnabled": true,
+        "create": false
       }
     ],
     "security": {
