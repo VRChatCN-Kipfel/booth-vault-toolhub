@@ -10,11 +10,11 @@ BOOTH 技能包：`SKILL.md`（父技能）+ `booth` CLI + `booth-mcp`。
 # 从本仓库安装（本地路径）
 npx skills add /path/to/booth-vault-toolhub/skills/booth
 
-# 或从 GitHub 仓库安装（发布后）
-npx skills add <owner>/booth-vault-toolhub --skill booth
+# 或从 GitHub 仓库安装
+npx skills add VRChatCN-Kipfel/booth-vault-toolhub --skill booth
 
 # 指定目标 agent（opencode / claude-code 等）
-npx skills add <owner>/booth-vault-toolhub --skill booth -a opencode -a claude-code
+npx skills add VRChatCN-Kipfel/booth-vault-toolhub --skill booth -a opencode -a claude-code
 
 # 非交互批量
 npx skills add -y --all --skill '*' -a opencode -a claude-code /path/to/booth-vault-toolhub/skills

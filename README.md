@@ -1,8 +1,15 @@
 # booth-vault-toolhub
 
+[![Rust](https://img.shields.io/badge/Rust-1.88+-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![GitHub](https://img.shields.io/badge/GitHub-VRChatCN--Kipfel%2Fbooth--vault--toolhub-181717?logo=github)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub)
+
 BOOTH 素材统一管理工具 —— VRChat / XR 创作者的 BOOTH 资产全流程工具链。
-用 Rust 统一重写原 Python 双仓库（booth-keeper + booth-free-collector），
+用 Rust 统一重写原 Python 双仓库（[booth-keeper](https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-keeper) + [booth-free-collector](https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-free-collector)），
 一份引擎同时支撑 **CLI / MCP / GUI** 三种接口。
+### 鸣谢
+- GUI设计提供：[linnnnnnnnnnnnnnnnnnnnn/booth-keeper](https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-keeper)
+- CLI灵感提供：[linnnnnnnnnnnnnnnnnnnnn/booth-free-collector](https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-free-collector)
 
 ## 功能
 
@@ -77,13 +84,23 @@ booth-mcp                # stdio server，暴露 download/organize/search/audit
 
 ### Agent 技能（SKILL.md）
 
-技能包在 `skills/booth/`，可用成熟安装器安装：
+技能包在 `skills/booth/`，可用成熟安装器 [skills.sh](https://github.com/vercel-labs/skills) 安装：
 
 ```bash
-npx skills add <repo> --skill booth -a opencode -a claude-code
+# 从 GitHub 安装
+npx skills add VRChatCN-Kipfel/booth-vault-toolhub --skill booth -a opencode -a claude-code
+
+# 或本地仓库直接装
+npx skills add ./skills/booth -a opencode -a claude-code
 ```
 
 详见 `skills/booth/README.md`。
+
+### 克隆仓库
+
+```bash
+git clone https://github.com/VRChatCN-Kipfel/booth-vault-toolhub.git
+```
 
 ## 配置
 
