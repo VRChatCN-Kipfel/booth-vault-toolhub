@@ -1,13 +1,17 @@
-# Release 发布：消费 ci.yml 的构建产物，做 NSIS 打包并发布。
+# Release 发布：无条件构建并上传可用成品，仅 tag v* 或手动触发时创建 GitHub Release。
 #
 # 触发方式：
-#   1. workflow_run：ci.yml（tag 触发）成功后自动 → 发布正式版
-#   2. workflow_dispatch：手动 → 发布预发布
+#   1. workflow_run：每次 CI 完成后自动运行（无条件构建 + 上传 booth-packages 成品）
+#   2. workflow_dispatch：手动触发（输入 tag + 勾选 prerelease）
 #
-# 正式版：git tag v* 推送 → ci 构建 → release 打包 → 发正式版
-# 预发布：手动触发勾选 prerelease，或 tag 含连字符（v1.0.0-rc.1）
+# 发布条件：
+#   - CI 由 tag v* 触发时，version.txt 含 tag 名 → 创建 Release（tag 含 - 为预发布）
+#   - 手动触发 → 创建 Release（用输入 tag；勾选 prerelease 则预发布）
+#   - 普通 push 的 CI（version.txt 空）→ 只上传成品，不创建 Release
 #
-# 打包产物始终上传为工件（即使不发布，也便于他人取得即时测试产物）。
+# 说明：
+# - workspace 统一 target 到根目录，bundle 产物在 target/release/bundle/。
+# - 成品工件 booth-packages 无条件上传，便于随时取用。
 
 name: release
 
@@ -30,23 +34,47 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   package:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      # 解析版本号与预发布标志
-      # workflow_run：ci 由 tag 触发时 head_branch 即 tag 名（如 v0.1.0）
-      # 手动触发：用输入 tag
+      # 解析版本号与是否应发布
+      # workflow_run：读 CI 上传的 version.txt（tag 触发时含 tag 名，否则空）
+      # 手动触发：用输入 tag，必发布
       - name: Resolve version
         id: ver
         shell: bash
         run: |
+          SHOULD_RELEASE="false"
           if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            REF="${{ github.event.workflow_run.head_branch }}"
+            # workflow_run：读上游 CI run 的 booth-binaries 工件里的 version.txt
+            # （tag 触发时 CI 写入 tag 名，否则空 → 不发布）
+            RUN_ID="${{ github.event.workflow_run.id }}"
+            ART_ID=$(gh api \
+              "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" \
+              --jq '.artifacts[] | select(.name=="booth-binaries") | .id' 2>/dev/null | head -1)
+            if [ -n "$ART_ID" ]; then
+              mkdir -p /tmp/art
+              gh api -H "Accept: application/vnd.github+json" \
+                "repos/${{ github.repository }}/actions/artifacts/$ART_ID/zip" \
+                > /tmp/art.zip 2>/dev/null || true
+              if unzip -o -q /tmp/art.zip version.txt -d /tmp/art 2>/dev/null; then
+                REF=$(cat /tmp/art/version.txt)
+              fi
+            fi
+            # 仅合法 v* tag 才发布
+            case "$REF" in
+              v*) SHOULD_RELEASE="true" ;;
+              *) SHOULD_RELEASE="false" ;;
+            esac
           else
             REF="${{ github.event.inputs.tag }}"
+            SHOULD_RELEASE="true"
           fi
           if [ -z "$REF" ]; then REF="v0.1.0"; fi
           # 预发布：tag 含 '-'（semver 预发布段）
@@ -60,17 +88,8 @@ jobs:
           fi
           echo "tag=$REF" >> "$GITHUB_OUTPUT"
           echo "prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
-
-      # 下载 ci 构建的 booth 三二进制
-      # workflow_run 触发时，须显式指定上游 run id + token 才能跨 workflow 下载
-      # （download-artifact 默认 run-id=当前 run，workflow_run 当前 run 无工件）
-      - name: Download booth binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: booth-binaries
-          path: binaries
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ github.event.workflow_run.id }}
+          echo "should_release=$SHOULD_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "解析结果: tag=$REF should_release=$SHOULD_RELEASE prerelease=$IS_PRERELEASE"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -85,36 +104,40 @@ jobs:
         working-directory: gui
         run: npm ci
 
-      # 把 ci 产物放回 release target，交给 tauri 打包（NSIS 安装包）
-      - name: Stage binaries into workspace
-        shell: bash
-        run: |
-          mkdir -p target/release
-          cp binaries/booth.exe target/release/booth.exe
-          cp binaries/booth-mcp.exe target/release/booth-mcp.exe
-          cp binaries/booth-shell.exe target/release/booth-shell.exe
+      # 构建 booth 三二进制（根 workspace target）
+      - name: Build booth binaries
+        run: cargo build --release --workspace
 
-      # 构建前端 + tauri bundle（NSIS 等安装包）
-      - name: Build frontend
-        working-directory: gui
-        run: npm run build
+      # 构建前端 + tauri bundle（NSIS 安装包；产物在根 target/release/bundle/）
       - name: Build GUI bundle
         working-directory: gui
         run: npm run tauri build
 
-      # 上传打包产物（NSIS 安装包等）——即使不发布也保留供即时测试
+      # 校验 bundle 产物存在（workspace 统一 target 到根目录）
+      - name: Verify bundle output
+        shell: bash
+        run: |
+          if [ ! -d "target/release/bundle" ]; then
+            echo "::error::bundle 产物缺失: target/release/bundle 不存在（tauri target 路径不符）"
+            find . -maxdepth 5 -type d -name bundle 2>/dev/null || true
+            exit 1
+          fi
+          echo "bundle 产物:"
+          find target/release/bundle -type f
+
+      # 上传打包产物（无条件）——即使不发布也保留供即时测试
       - name: Upload packaged artifacts
         uses: actions/upload-artifact@v4
         with:
           name: booth-packages
           path: |
-            gui/src-tauri/target/release/bundle/**
+            target/release/bundle/**
           if-no-files-found: warn
           retention-days: 30
 
-      # 发布：tag 触发（workflow_run，head_branch 为 tag）或手动触发都发布；
-      # 正式/预发布由版本号决定。
+      # 创建 GitHub Release（仅 tag v* 或手动触发）
       - name: Create GitHub Release
+        if: steps.ver.outputs.should_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
@@ -122,5 +145,5 @@ jobs:
           prerelease: ${{ steps.ver.outputs.prerelease }}
           generate_release_notes: true
           files: |
-            gui/src-tauri/target/release/bundle/**/*.exe
-            gui/src-tauri/target/release/bundle/**/*.msi
+            target/release/bundle/**/*.exe
+            target/release/bundle/**/*.msi

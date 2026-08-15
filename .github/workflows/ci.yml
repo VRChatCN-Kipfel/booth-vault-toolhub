@@ -43,11 +43,23 @@ jobs:
       - name: Build booth binaries
         run: cargo build --release --workspace
 
+      # 记录版本元数据：仅 tag 触发时写入 tag 名（如 v1.0.0）。
+      # release 工作流据此判断是否创建 GitHub Release（无条件构建，有条件发布）。
+      - name: Write version marker
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "${{ github.ref_name }}" > version.txt
+          else
+            echo "" > version.txt
+          fi
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: booth-binaries
           path: |
+            version.txt
             target/release/booth.exe
             target/release/booth-mcp.exe
             target/release/booth-shell.exe
