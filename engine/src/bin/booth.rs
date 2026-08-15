@@ -39,6 +39,7 @@ enum Command {
         /// 输出根目录（默认读配置 download_root）。
         #[arg(long)]
         out: Option<PathBuf>,
+        /// 只检查不实际下载。
         #[arg(long)]
         dry_run: bool,
         /// 最多处理 N 个商品（0 = 不限）。
@@ -65,6 +66,7 @@ enum Command {
         /// 强制指定商品 ID（文件名无 ID 时用）。
         #[arg(long)]
         id: Option<String>,
+        /// 只检查不实际移动/下载。
         #[arg(long)]
         dry_run: bool,
         /// BOOTH 登录 Cookie（补全商品页其他免费版本）。
@@ -79,6 +81,7 @@ enum Command {
         /// 归档根目录。
         #[arg(long)]
         base_dir: Option<PathBuf>,
+        /// 只搜索不实际整理。
         #[arg(long)]
         dry_run: bool,
         /// 复制而非移动。
@@ -99,8 +102,10 @@ enum Command {
         /// 巡检根目录。
         #[arg(long)]
         base: Option<PathBuf>,
+        /// 只扫描不修复。
         #[arg(long)]
         dry_run: bool,
+        /// 不自动修复。
         #[arg(long)]
         no_fix: bool,
     },
