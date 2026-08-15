@@ -1,17 +1,19 @@
-# Release 发布：无条件构建并上传可用成品，仅 tag v* 或手动触发时创建 GitHub Release。
+# Release 发布：消费 CI 的三架构 booth 二进制，做最终打包（安装器 + 便携版）并发布。
 #
-# 触发方式：
-#   1. workflow_run：每次 CI 完成后自动运行（无条件构建 + 上传 booth-packages 成品）
-#   2. workflow_dispatch：手动触发（输入 tag + 勾选 prerelease）
+# 职责划分：
+#   CI   = 测试门控 + 构建三架构 booth 二进制（副产品，供 release 用）
+#   release = 最终产物生产：tauri bundle（MSI/NSIS）+ 便携版组装 + 创建 Release
 #
+# CI 每架构上传 booth-binaries-{arch}（三二进制 + version.txt）。
+# release 下载对应架构工件 → 本地构建 GUI → 打包安装器 + 便携版 → 聚合发布。
+#
+# 触发：
+#   1. workflow_run：CI 完成后自动
+#   2. workflow_dispatch：手动（输入 tag + 勾选 prerelease）
 # 发布条件：
-#   - CI 由 tag v* 触发时，version.txt 含 tag 名 → 创建 Release（tag 含 - 为预发布）
-#   - 手动触发 → 创建 Release（用输入 tag；勾选 prerelease 则预发布）
-#   - 普通 push 的 CI（version.txt 空）→ 只上传成品，不创建 Release
-#
-# 说明：
-# - workspace 统一 target 到根目录，bundle 产物在 target/release/bundle/。
-# - 成品工件 booth-packages 无条件上传，便于随时取用。
+#   - version.txt 含 v* tag → 创建 Release（tag 含 - 为预发布）
+#   - 手动触发 → 创建 Release
+#   - 普通 push（version.txt 空）→ 不创建（只产成品工件）
 
 name: release
 
@@ -39,60 +41,40 @@ env:
 
 jobs:
   package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            rust_target: x86_64-pc-windows-msvc
+            wv2: x64
+            msi: true
+          - arch: x86
+            rust_target: i686-pc-windows-msvc
+            wv2: x86
+            msi: true
+          - arch: arm64
+            rust_target: aarch64-pc-windows-msvc
+            wv2: arm64
+            msi: false
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      # 解析版本号与是否应发布
-      # workflow_run：读上游 CI run 的 booth-binaries 工件里的 version.txt
-      # （tag 触发时 CI 写入 tag 名，否则空 → 不发布）
-      # 手动触发：用输入 tag，必发布
-      - name: Download version marker
+      # 下载 CI 构建的对应架构 booth 三二进制
+      - name: Download booth binaries
         uses: actions/download-artifact@v4
         with:
-          name: booth-binaries
-          path: /tmp/ci-artifacts
+          name: booth-binaries-${{ matrix.arch }}
+          path: binaries
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
         continue-on-error: true
 
-      - name: Resolve version
-        id: ver
-        shell: bash
-        run: |
-          SHOULD_RELEASE="false"
-          REF=""
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            if [ -f /tmp/ci-artifacts/version.txt ]; then
-              REF=$(cat /tmp/ci-artifacts/version.txt)
-            fi
-            # 仅合法 v* tag 才发布
-            case "$REF" in
-              v*) SHOULD_RELEASE="true" ;;
-              *) SHOULD_RELEASE="false" ;;
-            esac
-          else
-            REF="${{ github.event.inputs.tag }}"
-            SHOULD_RELEASE="true"
-          fi
-          if [ -z "$REF" ]; then REF="v0.1.0"; fi
-          # 预发布：tag 含 '-'（semver 预发布段）
-          IS_PRERELEASE="false"
-          case "$REF" in
-            *-*) IS_PRERELEASE="true" ;;
-          esac
-          # 手动触发勾选 prerelease 时强制预发布
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.prerelease }}" = "true" ]; then
-            IS_PRERELEASE="true"
-          fi
-          echo "tag=$REF" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
-          echo "should_release=$SHOULD_RELEASE" >> "$GITHUB_OUTPUT"
-          echo "解析结果: tag=$REF should_release=$SHOULD_RELEASE prerelease=$IS_PRERELEASE"
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: ${{ matrix.rust_target }}
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
@@ -103,116 +85,179 @@ jobs:
         working-directory: gui
         run: npm ci
 
-      # 构建 booth 三二进制（根 workspace target）
-      - name: Build booth binaries
-        run: cargo build --release --workspace
+      # 把 CI booth 二进制放回 release target（供 tauri 打包时一并进安装器）
+      - name: Stage booth binaries
+        shell: bash
+        run: |
+          mkdir -p target/${{ matrix.rust_target }}/release
+          cp binaries/booth.exe target/${{ matrix.rust_target }}/release/ 2>/dev/null || true
+          cp binaries/booth-mcp.exe target/${{ matrix.rust_target }}/release/ 2>/dev/null || true
+          cp binaries/booth-shell.exe target/${{ matrix.rust_target }}/release/ 2>/dev/null || true
 
-      # 构建前端 + tauri bundle（NSIS 安装包；产物在根 target/release/bundle/）
+      # 构建 GUI bundle（MSI/NSIS；arm64 仅 NSIS）
       - name: Build GUI bundle
         working-directory: gui
-        run: npm run tauri build
+        run: npm run tauri build -- --target ${{ matrix.rust_target }}
 
-      # 校验 bundle 产物存在（workspace 统一 target 到根目录）
+      # 校验 bundle 产物
       - name: Verify bundle output
         shell: bash
         run: |
-          if [ ! -d "target/release/bundle" ]; then
-            echo "::error::bundle 产物缺失: target/release/bundle 不存在（tauri target 路径不符）"
-            find . -maxdepth 5 -type d -name bundle 2>/dev/null || true
+          if [ ! -d "target/${{ matrix.rust_target }}/release/bundle" ]; then
+            echo "::error::bundle 产物缺失"
+            find . -maxdepth 6 -type d -name bundle 2>/dev/null || true
             exit 1
           fi
-          echo "bundle 产物:"
-          find target/release/bundle -type f
+          find target/${{ matrix.rust_target }}/release/bundle -type f
 
-      # ---- 组装四份发布产物 ----
+      # ---- 便携版组装 ----
 
-      # Lite 便携版：GUI exe + 三 CLI 二进制 + portable.txt 标记
-      # 依赖目标环境的 WebView2（Windows 10 1803+ 已内置）
+      # Lite 便携版：GUI exe + 三 CLI + portable.txt（依赖系统 WebView2）
       - name: Assemble lite portable
         shell: bash
         run: |
           mkdir -p dist/lite
-          cp target/release/booth-keeper.exe dist/lite/ 2>/dev/null || true
-          cp target/release/booth.exe dist/lite/ 2>/dev/null || true
-          cp target/release/booth-mcp.exe dist/lite/ 2>/dev/null || true
-          cp target/release/booth-shell.exe dist/lite/ 2>/dev/null || true
-          # 便携标记（GUI 检测此文件启用便携数据目录）
+          cp target/${{ matrix.rust_target }}/release/booth-keeper.exe dist/lite/ 2>/dev/null || true
+          cp binaries/booth.exe dist/lite/ 2>/dev/null || true
+          cp binaries/booth-mcp.exe dist/lite/ 2>/dev/null || true
+          cp binaries/booth-shell.exe dist/lite/ 2>/dev/null || true
           touch dist/lite/portable.txt
-          # 打成便携 zip（release assets 需文件）
-          cd dist && zip -r booth-keeper-lite.zip lite/
+          cd dist && zip -r booth-keeper-${{ matrix.arch }}-lite.zip lite/
 
-      # Full 版：内置 WebView2 fixed runtime，完全不依赖外部环境。
-      # 从 westinyang/WebView2RuntimeArchive 的 latest release 下载对应架构 cab
-      # （不锁版本，自动跟随最新），解包到 exe 旁；
-      # GUI main() 启动时探测该文件夹并设 WEBVIEW2_BROWSER_EXECUTABLE_FOLDER。
+      # Full 版：内置 WebView2 fixed runtime（对应架构 cab，latest）
       - name: Download WebView2 fixed runtime (latest)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/wv2" -Force | Out-Null
           gh release download --repo westinyang/WebView2RuntimeArchive `
-            --pattern "Microsoft.WebView2.FixedVersionRuntime.*.x64.cab" `
+            --pattern "Microsoft.WebView2.FixedVersionRuntime.*.${{ matrix.wv2 }}.cab" `
             --dir "$env:RUNNER_TEMP/wv2"
           New-Item -ItemType Directory -Path "dist/full/runtime" -Force | Out-Null
-          $cab = (Get-ChildItem "$env:RUNNER_TEMP/wv2" -Filter '*.x64.cab' | Select-Object -First 1).FullName
+          $cab = (Get-ChildItem "$env:RUNNER_TEMP/wv2" -Filter "*.${{ matrix.wv2 }}.cab" | Select-Object -First 1).FullName
           Expand $cab -F:* "dist/full/runtime"
 
       - name: Assemble full portable
         shell: bash
         run: |
           mkdir -p dist/full
-          cp target/release/booth-keeper.exe dist/full/ 2>/dev/null || true
-          cp target/release/booth.exe dist/full/ 2>/dev/null || true
-          cp target/release/booth-mcp.exe dist/full/ 2>/dev/null || true
-          cp target/release/booth-shell.exe dist/full/ 2>/dev/null || true
-          # 便携标记（GUI 检测此文件启用便携数据目录）
+          cp target/${{ matrix.rust_target }}/release/booth-keeper.exe dist/full/ 2>/dev/null || true
+          cp binaries/booth.exe dist/full/ 2>/dev/null || true
+          cp binaries/booth-mcp.exe dist/full/ 2>/dev/null || true
+          cp binaries/booth-shell.exe dist/full/ 2>/dev/null || true
           touch dist/full/portable.txt
-          # runtime 解包产物移到 exe 同级（探测逻辑扫描 exe 目录）
           mv dist/full/runtime/* dist/full/ 2>/dev/null || true
           rm -rf dist/full/runtime
-          # 重命名为可预测的固定名（探测逻辑匹配 Microsoft.WebView2.FixedVersionRuntime.*）
-          cd dist/full && zip -r booth-keeper-full.zip .
+          cd dist/full && zip -r booth-keeper-${{ matrix.arch }}-full.zip .
 
-      # 上传四份产物（无条件）——即使不发布也保留供即时测试
+      # 上传产物（带架构后缀）
       - name: Upload MSI installer
+        if: matrix.msi
         uses: actions/upload-artifact@v4
         with:
-          name: booth-vault-toolhub-packages-msi
-          path: target/release/bundle/msi/**
+          name: booth-packages-${{ matrix.arch }}-msi
+          path: target/${{ matrix.rust_target }}/release/bundle/msi/**
           if-no-files-found: warn
           retention-days: 30
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
         with:
-          name: booth-vault-toolhub-packages-nsis
-          path: target/release/bundle/nsis/**
+          name: booth-packages-${{ matrix.arch }}-nsis
+          path: target/${{ matrix.rust_target }}/release/bundle/nsis/**
           if-no-files-found: warn
           retention-days: 30
       - name: Upload Lite portable
         uses: actions/upload-artifact@v4
         with:
-          name: booth-vault-toolhub-packages-lite
+          name: booth-packages-${{ matrix.arch }}-lite
           path: dist/lite/**
           if-no-files-found: warn
           retention-days: 30
       - name: Upload Full portable
         uses: actions/upload-artifact@v4
         with:
-          name: booth-vault-toolhub-packages-full
+          name: booth-packages-${{ matrix.arch }}-full
           path: dist/full/**
           if-no-files-found: warn
           retention-days: 30
 
-      # 创建 GitHub Release（仅 tag v* 或手动触发）
+      # 上传发布元数据（version marker）供聚合 job 判断
+      - name: Upload release metadata
+        shell: bash
+        run: |
+          if [ -f binaries/version.txt ]; then
+            cp binaries/version.txt release-meta.txt
+          else
+            echo "" > release-meta.txt
+          fi
+      - name: Upload release meta artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-meta
+          path: release-meta.txt
+          if-no-files-found: error
+          retention-days: 3
+
+  # 聚合发布：下载三架构全部产物，统一创建 GitHub Release
+  release:
+    needs: package
+    runs-on: ubuntu-latest
+    if: always()
+    permissions:
+      contents: write
+    steps:
+      - name: Download release metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: release-meta
+          path: meta
+
+      - name: Resolve release flags
+        id: flags
+        shell: bash
+        run: |
+          REF=$(cat meta/release-meta.txt)
+          SHOULD_RELEASE="false"
+          case "$REF" in
+            v*) SHOULD_RELEASE="true" ;;
+            *) SHOULD_RELEASE="false" ;;
+          esac
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            REF="${{ github.event.inputs.tag }}"
+            SHOULD_RELEASE="true"
+          fi
+          if [ -z "$REF" ]; then REF="v0.1.0"; fi
+          IS_PRERELEASE="false"
+          case "$REF" in
+            *-*) IS_PRERELEASE="true" ;;
+          esac
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.prerelease }}" = "true" ]; then
+            IS_PRERELEASE="true"
+          fi
+          echo "tag=$REF" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "should_release=$SHOULD_RELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: booth-packages-*
+          merge-multiple: true
+          path: packages
+
+      - name: List packages
+        shell: bash
+        run: find packages -type f
+
       - name: Create GitHub Release
-        if: steps.ver.outputs.should_release == 'true'
+        if: steps.flags.outputs.should_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.ver.outputs.tag }}
-          name: ${{ steps.ver.outputs.tag }}
-          prerelease: ${{ steps.ver.outputs.prerelease }}
+          tag_name: ${{ steps.flags.outputs.tag }}
+          name: ${{ steps.flags.outputs.tag }}
+          prerelease: ${{ steps.flags.outputs.prerelease }}
           generate_release_notes: true
           files: |
-            target/release/bundle/msi/**/*.msi
-            target/release/bundle/nsis/**/*.exe
-            dist/booth-keeper-lite.zip
-            dist/booth-keeper-full.zip
+            packages/**/*.msi
+            packages/**/*.exe
+            packages/**/*-lite.zip
+            packages/**/*-full.zip

@@ -11,14 +11,37 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Windows 主目标：全 workspace 编译 + 测试 + lint + 构建 + 上传产物
+  # Windows 主目标：三架构（x64/x86/arm64）全量构建 + 测试 + 上传产物。
+  # 产物（booth 三二进制 + tauri bundle + 便携版）供 release 聚合发布。
   windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            rust_target: x86_64-pc-windows-msvc
+            wv2: x64
+          - arch: x86
+            rust_target: i686-pc-windows-msvc
+            wv2: x86
+          - arch: arm64
+            rust_target: aarch64-pc-windows-msvc
+            wv2: arm64
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      # 安装目标架构 MSVC 工具链（x64 原生；x86/arm64 交叉编译）
+      - name: Setup MSVC Build Tools
+        uses: loonghao/msvc-kit@v1
+        with:
+          arch: ${{ matrix.arch }}
+          host-arch: x64
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: ${{ matrix.rust_target }}
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
@@ -38,13 +61,11 @@ jobs:
         working-directory: gui
         run: npm run build
 
-      # 构建 booth 三二进制（根 workspace target）——push/PR/tag/手动都会构建上传，
-      # 便于任何人随时取用即时测试产物。
+      # 构建 booth 三二进制（目标架构，验证可编译；供 release 打包用）
       - name: Build booth binaries
-        run: cargo build --release --workspace
+        run: cargo build --release --target ${{ matrix.rust_target }} --workspace
 
-      # 记录版本元数据：仅 tag 触发时写入 tag 名（如 v1.0.0）。
-      # release 工作流据此判断是否创建 GitHub Release（无条件构建，有条件发布）。
+      # 记录版本元数据：仅 tag 触发时写入 tag 名
       - name: Write version marker
         shell: bash
         run: |
@@ -54,20 +75,21 @@ jobs:
             echo "" > version.txt
           fi
 
-      - name: Upload build artifacts
+      # 上传 booth 三二进制（带架构后缀；含 version.txt）
+      # release 工作流下载后做最终打包（tauri bundle + 便携版）
+      - name: Upload booth binaries
         uses: actions/upload-artifact@v4
         with:
-          name: booth-binaries
+          name: booth-binaries-${{ matrix.arch }}
           path: |
             version.txt
-            target/release/booth.exe
-            target/release/booth-mcp.exe
-            target/release/booth-shell.exe
+            target/${{ matrix.rust_target }}/release/booth.exe
+            target/${{ matrix.rust_target }}/release/booth-mcp.exe
+            target/${{ matrix.rust_target }}/release/booth-shell.exe
           if-no-files-found: warn
           retention-days: 14
 
-  # Linux / macOS 门控：engine 层三平台跑测试。
-  # 非主目标，失败不阻塞 CI 整体（Windows 主目标结果为准）。
+  # Linux / macOS 门控：engine 层三平台跑测试（非主目标，失败不阻塞）
   portable:
     strategy:
       fail-fast: false
