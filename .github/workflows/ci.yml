@@ -3,13 +3,15 @@ name: CI
 on:
   push:
     branches: [master, main]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Windows 主目标：全 workspace 编译 + 测试 + lint（含 gui/shell_win）
+  # Windows 主目标：全 workspace 编译 + 测试 + lint + 构建 + 上传产物
   windows:
     runs-on: windows-latest
     steps:
@@ -34,6 +36,22 @@ jobs:
       - name: Build frontend
         working-directory: gui
         run: npm run build
+
+      # 构建 booth 三二进制（根 workspace target）——push/PR/tag/手动都会构建上传，
+      # 便于任何人随时取用即时测试产物。
+      - name: Build booth binaries
+        run: cargo build --release --workspace
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: booth-binaries
+          path: |
+            target/release/booth.exe
+            target/release/booth-mcp.exe
+            target/release/booth-shell.exe
+          if-no-files-found: warn
+          retention-days: 14
 
   # Linux / macOS 门控：engine 层三平台跑测试
   portable:
