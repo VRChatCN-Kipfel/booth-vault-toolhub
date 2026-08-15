@@ -23,3 +23,10 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 engine = { path = "../../engine" }
+tauri-plugin-dialog = "2"
+tauri-plugin-store = "2"
+tauri-plugin-window-state = "2"
+reqwest = { version = "0.13", features = ["blocking"] }
+
+[target.'cfg(windows)'.dependencies]
+shell_win = { path = "../../shell_win" }

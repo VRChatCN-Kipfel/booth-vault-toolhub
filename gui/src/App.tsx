@@ -1,50 +1,146 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+﻿/**
+ * 应用根组件：主题注入 + 布局 + 页面导航。
+ */
+
+import { useEffect, useState, type CSSProperties } from 'react';
+import styled, { ThemeProvider } from 'styled-components';
+import { useThemeStore, resolveMode } from './store/themeStore';
+import { useAppConfigStore } from './store/appConfigStore';
+import { useSystemTheme } from './hooks/useSystemTheme';
+import { THEMES } from './theme/themes';
+import { GlobalStyle, paletteToVars } from './theme/global';
+import { motifBg } from './theme/motifs';
+import { Sidebar, type NavItemDef } from './components/Sidebar';
+import { Titlebar } from './components/Titlebar';
+import { StatusBar } from './components/StatusBar';
+import { DialogHost } from './components/Dialog';
+import { LinksPage } from './pages/LinksPage';
+import { DragDropPage } from './pages/DragDropPage';
+import { SearchPage } from './pages/SearchPage';
+import { AuditPage } from './pages/AuditPage';
+import { SettingsPage } from './pages/SettingsPage';
+
+const NAV_ITEMS: NavItemDef[] = [
+  { key: 'links', label: '批量链接' },
+  { key: 'drag', label: '拖拽分类' },
+  { key: 'search', label: '实验检索' },
+  { key: 'audit', label: '目录巡检' },
+  { key: 'settings', label: '设置' },
+];
+
+const MOTIF_KIND: Record<string, string> = {
+  zhuyin: 'zhuyin',
+  liujin: 'gold',
+  guwen: 'guwen',
+};
+
+const ROOT_STYLE: CSSProperties = {
+  display: 'flex',
+  height: '100vh',
+  flexDirection: 'column',
+};
+
+const BODY_STYLE: CSSProperties = {
+  display: 'flex',
+  flex: 1,
+  minHeight: 0,
+};
+
+/** 内容区：背景母题垫底 + 页面浮于其上。 */
+const ContentWrap = styled.div`
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+`;
+
+const ContentBg = styled.div`
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  svg { width: 100%; height: 100%; }
+`;
+
+const Content = styled.div`
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+`;
+
+/** 页面容器（key 变化重挂载 → 触发淡入动画）。 */
+const PageWrap = styled.div`
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  animation: bvtPageIn calc(0.28s / var(--bvt-anim)) ease both;
+  @keyframes bvtPageIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+`;
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const { theme, mode, systemTheme, animSpeed, setSystemTheme, hydrate: hydrateTheme } = useThemeStore();
+  const { hydrate: hydrateConfig } = useAppConfigStore();
+  const [page, setPage] = useState('links');
+  const [vars, setVars] = useState<Record<string, string>>({});
+  const sysTheme = useSystemTheme();
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  useEffect(() => {
+    void hydrateTheme();
+    void hydrateConfig();
+  }, [hydrateTheme, hydrateConfig]);
+
+  // 系统明暗变化 → 写入 store（仅 mode=system 时消费）。
+  useEffect(() => {
+    setSystemTheme(sysTheme);
+  }, [sysTheme, setSystemTheme]);
+
+  // 解析实际渲染模式（system → 跟随系统）。
+  const resolved = resolveMode(mode, systemTheme);
+
+  // 主题色板 → CSS variables。
+  useEffect(() => {
+    setVars(paletteToVars(THEMES[theme][resolved]));
+  }, [theme, resolved]);
+
+  const pal = THEMES[theme][resolved];
+  const bgSvg = motifBg(MOTIF_KIND[theme] as never, pal.accentDeep, resolved === 'light');
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <ThemeProvider theme={{ theme, mode: resolved }}>
+      <GlobalStyle />
+      <div style={ROOT_STYLE}>
+        {/* CSS variables 注入到 :root（颜色过渡由 GlobalStyle 通用规则承担，动画倍速全局生效） */}
+        <style>{`:root { ${Object.entries(vars).map(([k, v]) => `${k}: ${v};`).join(' ')} --bvt-anim: ${animSpeed}; }`}</style>
+        <Titlebar />
+        <div style={BODY_STYLE}>
+          <Sidebar items={NAV_ITEMS} active={page} onNavigate={setPage} />
+          <ContentWrap>
+            <ContentBg dangerouslySetInnerHTML={{ __html: bgSvg }} />
+            <Content>
+              <PageWrap key={page}>
+                {page === 'links' && <LinksPage />}
+                {page === 'drag' && <DragDropPage />}
+                {page === 'search' && <SearchPage />}
+                {page === 'audit' && <AuditPage />}
+                {page === 'settings' && <SettingsPage />}
+              </PageWrap>
+            </Content>
+            <StatusBar />
+          </ContentWrap>
+        </div>
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+      <DialogHost />
+    </ThemeProvider>
   );
 }
 

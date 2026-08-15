@@ -26,10 +26,24 @@ pub struct OrganizeOptions<'a> {
     pub cookie: Option<&'a str>,
 }
 
+/// 整理结果状态（供 GUI 区分处理）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrganizeStatus {
+    /// 成功归档。
+    Ok,
+    /// 目标目录已存在同名文件，跳过移动。
+    Exists,
+    /// 同 ID 已在其他类目（错位），需确认是否强制重归档。
+    Mismatch,
+    /// 失败。
+    Error,
+}
+
 /// 整理结果。
 #[derive(Debug, Clone)]
 pub struct OrganizeOutcome {
     pub ok: bool,
+    pub status: OrganizeStatus,
     pub message: String,
     pub target_dir: PathBuf,
     pub moved: bool,
@@ -41,6 +55,7 @@ impl OrganizeOutcome {
     fn fail(message: impl Into<String>) -> Self {
         Self {
             ok: false,
+            status: OrganizeStatus::Error,
             message: message.into(),
             target_dir: PathBuf::new(),
             moved: false,
@@ -159,6 +174,7 @@ pub fn organize_archive(
     if opts.dry_run {
         return OrganizeOutcome {
             ok: true,
+            status: OrganizeStatus::Ok,
             message: format!("[dry-run] 目标: {}", folder.display()),
             target_dir: folder,
             moved: false,
@@ -175,8 +191,10 @@ pub fn organize_archive(
     // 移入归档：内部文件名保持原文件名（清洗后）。
     let dest_arc = folder.join(sanitize(&archive_name(archive), 120));
     let mut moved = false;
+    let mut exists = false;
     if archive != dest_arc {
         if dest_arc.exists() {
+            exists = true;
             message.push_str("；目标文件已存在，跳过移动");
         } else {
             match std::fs::rename(archive, &dest_arc) {
@@ -202,17 +220,46 @@ pub fn organize_archive(
         message.push_str("；已在目标位置");
     }
 
-    // 封面：images[0].original 或 resized → download_cover（幂等，已存在跳过）。
+    // 封面 + 图标 + 免费版本补全（收尾）。
+    let (cover_downloaded, backfilled) =
+        finalize_folder(client, &folder, &item, opts, &icon_fn, &mut message);
+
+    OrganizeOutcome {
+        ok: true,
+        status: if exists {
+            OrganizeStatus::Exists
+        } else {
+            OrganizeStatus::Ok
+        },
+        message,
+        target_dir: folder,
+        moved,
+        cover_downloaded,
+        backfilled,
+    }
+}
+
+/// 归档收尾：封面下载（幂等）+ 图标注入 + 免费版本补全，追加进度消息。
+///
+/// 返回 `(cover_downloaded, backfilled)`。
+fn finalize_folder(
+    client: &Client,
+    folder: &Path,
+    item: &ItemJson,
+    opts: &OrganizeOptions,
+    icon_fn: &impl Fn(&Path, &Path) -> Result<(), String>,
+    message: &mut String,
+) -> (bool, usize) {
     let cover = folder.join(COVER_FILENAME);
     let mut cover_downloaded = false;
     if cover.exists() {
         message.push_str("；封面已存在");
     } else {
-        let thumb = thumb_from_json(&item);
+        let thumb = thumb_from_json(item);
         if thumb.is_empty() {
             message.push_str("；无封面图");
         } else {
-            match download_cover(client, &thumb, &folder) {
+            match download_cover(client, &thumb, folder) {
                 Ok(_) => {
                     message.push_str("；封面已下载");
                     cover_downloaded = true;
@@ -224,18 +271,18 @@ pub fn organize_archive(
 
     // 图标（注入）：封面存在即设置，失败不影响整体结果。
     if cover.exists() {
-        match icon_fn(&cover, &folder) {
+        match icon_fn(&cover, folder) {
             Ok(()) => message.push_str("；图标已设置"),
             Err(e) => message.push_str(&format!("；图标失败: {e}")),
         }
     }
 
     // 免费版本补全。
-    let backfilled = backfill_free_files(client, &folder, &item, opts.cookie);
+    let backfilled = backfill_free_files(client, folder, item, opts.cookie);
     if backfilled > 0 {
         message.push_str(&format!("；免费版本补全 +{backfilled}"));
     } else {
-        let missing = missing_free_files(&folder, &item).len();
+        let missing = missing_free_files(folder, item).len();
         if missing > 0 {
             let hint = if opts.cookie.map(|c| !c.trim().is_empty()).unwrap_or(false) {
                 ""
@@ -245,9 +292,111 @@ pub fn organize_archive(
             message.push_str(&format!("；另有 {missing} 个免费版本缺失{hint}"));
         }
     }
+    (cover_downloaded, backfilled)
+}
+
+/// 错位纠正：把 `source` 目录内容整体迁入目标分类目录并重建三件套。
+///
+/// 目标目录已存在先整体清空重建；源目录内 desktop.ini/Thumbs.db 等系统文件不随迁，
+/// 迁完删除空源目录；封面/图标/免费版本补全流程与 `organize_archive` 一致。
+/// `source` 已位于目标位置时只补齐三件套，不迁移。
+pub fn reorganize_dir(
+    client: &Client,
+    source: &Path,
+    item_id: &str,
+    opts: &OrganizeOptions,
+    icon_fn: impl Fn(&Path, &Path) -> Result<(), String>,
+) -> OrganizeOutcome {
+    let item = match crate::fetch::fetch_item(client, item_id) {
+        Ok(item) => item,
+        Err(e) => {
+            return OrganizeOutcome::fail(format!("无法获取商品 {item_id} 元数据: {e}"));
+        }
+    };
+    let folder = target_folder(opts.out_root, &item, item_id);
+    if opts.dry_run {
+        return OrganizeOutcome {
+            ok: true,
+            status: OrganizeStatus::Ok,
+            message: format!("[dry-run] 目标: {}", folder.display()),
+            target_dir: folder,
+            moved: false,
+            cover_downloaded: false,
+            backfilled: 0,
+        };
+    }
+
+    let mut message = format!("目标: {}", folder.display());
+    let mut moved = false;
+    if source != folder {
+        // 强制重归档：目标目录已存在（可能残留旧三件套）先整体清空。
+        if folder.exists()
+            && let Err(e) = std::fs::remove_dir_all(&folder)
+        {
+            return OrganizeOutcome::fail(format!("清旧目录失败 {}: {e}", folder.display()));
+        }
+        if let Err(e) = std::fs::create_dir_all(&folder) {
+            return OrganizeOutcome::fail(format!("创建目录失败 {}: {e}", folder.display()));
+        }
+        if source.is_dir() {
+            // 源目录内容整体迁入，跳过 desktop.ini/Thumbs.db 等系统文件。
+            let entries: Vec<std::fs::DirEntry> = match std::fs::read_dir(source) {
+                Ok(rd) => rd.filter_map(Result::ok).collect(),
+                Err(e) => {
+                    return OrganizeOutcome::fail(format!(
+                        "读取源目录失败 {}: {e}",
+                        source.display()
+                    ));
+                }
+            };
+            for entry in entries {
+                let name = entry.file_name();
+                if matches!(
+                    name.to_string_lossy().as_ref(),
+                    "desktop.ini" | "Thumbs.db" | ".DS_Store"
+                ) {
+                    continue;
+                }
+                let dst = folder.join(&name);
+                if let Err(e) = std::fs::rename(entry.path(), &dst) {
+                    // 跨盘回退复制且保留原文件。
+                    if let Err(e2) = std::fs::copy(entry.path(), &dst) {
+                        return OrganizeOutcome::fail(format!(
+                            "迁移失败 {}: {e} / {e2}",
+                            entry.path().display()
+                        ));
+                    }
+                }
+                moved = true;
+            }
+            // 删除残留系统文件后清空源目录。
+            let _ = std::fs::remove_file(source.join("desktop.ini"));
+            let _ = std::fs::remove_file(source.join("Thumbs.db"));
+            let _ = std::fs::remove_file(source.join(".DS_Store"));
+            let _ = std::fs::remove_dir(source);
+            message.push_str("；内容已迁入");
+        } else {
+            // 文件形态源（容错）：直接移入。
+            let dest = folder.join(sanitize(&archive_name(source), 120));
+            if source != dest {
+                if let Err(e) = std::fs::rename(source, &dest) {
+                    return OrganizeOutcome::fail(format!("移动失败 {}: {e}", source.display()));
+                }
+                moved = true;
+            }
+            message.push_str("；已移入");
+        }
+    } else {
+        message.push_str("；已在目标位置");
+    }
+
+    // 封面 + 图标 + 免费版本补全（收尾）。
+    let (cover_downloaded, backfilled) =
+        finalize_folder(client, &folder, &item, opts, &icon_fn, &mut message);
 
     OrganizeOutcome {
         ok: true,
+        status: OrganizeStatus::Ok,
         message,
         target_dir: folder,
         moved,

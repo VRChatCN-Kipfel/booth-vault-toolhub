@@ -440,10 +440,12 @@ fn download_one(
     }
     let thumb = engine::fetch::thumb_from_json(&item);
     let cover = folder.join("cover.jpg");
-    if !thumb.is_empty() && !cover.exists()
-        && let Err(e) = engine::cover::download_cover(client, &thumb, &folder) {
-            let _ = e;
-        }
+    if !thumb.is_empty()
+        && !cover.exists()
+        && let Err(e) = engine::cover::download_cover(client, &thumb, &folder)
+    {
+        let _ = e;
+    }
     apply_icon(&cover, &folder);
     engine::download::sleep_rate_limit(rate_limit);
     Ok(true)

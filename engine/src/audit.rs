@@ -5,7 +5,10 @@
 //! 其余平台返回 0）。desktop.ini 按 utf-16 → utf-8 → gbk 三编码读回，
 //! 兼容历史遗留编码契约（当前写入为 UTF-8 无 BOM，旧版曾写 UTF-16）。
 
+use fancy_regex::Regex;
 use std::path::{Path, PathBuf};
+
+use crate::clean::extract_version_tag;
 
 /// HIDDEN 属性位。
 const ATTR_HIDDEN: u32 = 0x02;
@@ -206,6 +209,85 @@ fn audit_tree_with_attrs(base: &Path, attr_fn: impl Fn(&Path) -> u32) -> Vec<Aud
     out
 }
 
+/// 商品目录名匹配：`7 位 ID + 分隔符 + 名称`。
+///
+/// 分隔符为 `\s`（含全角空格）、下划线、ASCII 连字符、全角连字符、日文长音。
+const ID_DIR_RE: &str = r"^(\d{7})[\s_\-－　ー]+(.+)$";
+/// ID_DIR_RE 编译缓存。
+static ID_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+
+/// 递归扫描结果：单个商品目录（ID 目录名）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScannedDir {
+    /// 7 位商品 ID。
+    pub id: String,
+    /// 分隔符之后的目录名。
+    pub name: String,
+    /// 目录绝对路径。
+    pub path: PathBuf,
+    /// 缺失的三件套项（0-3 个）："封面"/"图标"/"ini"。
+    pub missing: Vec<&'static str>,
+    /// 目录名提取的版本标记（`extract_version_tag`）。
+    pub local_tag: String,
+}
+
+/// 递归扫描 `root` 下所有 ID 目录，统计三件套缺失。
+///
+/// 遍历所有子目录（含深层嵌套），跳过隐藏目录（点前缀或 Windows 隐藏属性）与非目录项。
+/// 与 `audit_tree` 不同：只按目录名匹配 ID，不做属性位/字段级检查。
+pub fn scan_library(root: &Path) -> Vec<ScannedDir> {
+    let mut out = Vec::new();
+    walk_dirs(root, &mut out);
+    out
+}
+
+/// 递归遍历目录树：匹配 ID 目录名则记录，并继续深入所有非隐藏子目录。
+fn walk_dirs(dir: &Path, out: &mut Vec<ScannedDir>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if !path.is_dir() || is_hidden(&path) {
+            continue;
+        }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && let Ok(Some(caps)) = ID_RE
+                .get_or_init(|| Regex::new(ID_DIR_RE).expect("valid regex"))
+                .captures(name)
+            && let (Some(id), Some(nm)) = (caps.get(1), caps.get(2))
+        {
+            let mut missing = Vec::new();
+            if !path.join(COVER_FILENAME).exists() {
+                missing.push("封面");
+            }
+            if !path.join(FOLDER_ICO).exists() {
+                missing.push("图标");
+            }
+            if !path.join(DESKTOP_INI).exists() {
+                missing.push("ini");
+            }
+            out.push(ScannedDir {
+                id: id.as_str().to_string(),
+                name: nm.as_str().to_string(),
+                path: path.clone(),
+                missing,
+                local_tag: extract_version_tag(name),
+            });
+        }
+        walk_dirs(&path, out);
+    }
+}
+
+/// 是否隐藏目录：点前缀（跨平台约定）或 Windows 隐藏属性。
+fn is_hidden(p: &Path) -> bool {
+    let dot = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with('.'));
+    dot || default_attr(p) & ATTR_HIDDEN != 0
+}
+
 /// 目录下的子目录（按名称排序，过滤非目录项）。
 fn sorted_dirs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(dir)?
@@ -215,6 +297,151 @@ fn sorted_dirs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
         .collect();
     dirs.sort();
     Ok(dirs)
+}
+
+/// 版本号元组：取第一个数字段（`\d+(\.\d+)*`）拆成整数元组（如 `Ver_2.00` → [2, 0]）。
+fn ver_tuple(tag: &str) -> Vec<u64> {
+    let b = tag.as_bytes();
+    let mut i = 0;
+    while i < b.len() && !b[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == b.len() {
+        return Vec::new();
+    }
+    let mut parts = Vec::new();
+    while i < b.len() {
+        if !b[i].is_ascii_digit() {
+            break;
+        }
+        let start = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if let Ok(n) = tag[start..i].parse::<u64>() {
+            parts.push(n);
+        }
+        if i + 1 < b.len() && b[i] == b'.' && b[i + 1].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    parts
+}
+
+/// `a` 是否严格大于 `b`（按版本号数字逐段比较，缺段补 0）。
+///
+/// 任一侧无版本号返回 false。
+pub fn ver_gt(a: &str, b: &str) -> bool {
+    let ta = ver_tuple(a);
+    let tb = ver_tuple(b);
+    if ta.is_empty() || tb.is_empty() {
+        return false;
+    }
+    for k in 0..ta.len().max(tb.len()) {
+        let x = ta.get(k).copied().unwrap_or(0);
+        let y = tb.get(k).copied().unwrap_or(0);
+        if x != y {
+            return x > y;
+        }
+    }
+    false
+}
+
+/// 版本巡检结果：本地版本落后于官方版本的商品。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionInfo {
+    /// 7 位商品 ID。
+    pub id: String,
+    /// 目录名分隔符之后的名称。
+    pub name: String,
+    /// 本地目录名提取的版本标记。
+    pub local_tag: String,
+    /// 官方商品名提取的版本标记。
+    pub official_tag: String,
+}
+
+/// 版本巡检：经 `fetch` 注入联网比对官方版本号，返回本地落后于官方的商品。
+///
+/// 每件取官方商品名提取版本标记，与本地目录名版本标记比较，严格大于才记录。
+pub fn version_audit(
+    root: &Path,
+    fetch: impl Fn(&str) -> Option<crate::fetch::ItemJson>,
+) -> Vec<VersionInfo> {
+    let mut out = Vec::new();
+    for d in scan_library(root) {
+        let Some(item) = fetch(&d.id) else {
+            continue;
+        };
+        let official = extract_version_tag(&item.name);
+        if ver_gt(&official, &d.local_tag) {
+            out.push(VersionInfo {
+                id: d.id,
+                name: d.name,
+                local_tag: d.local_tag,
+                official_tag: official,
+            });
+        }
+    }
+    out
+}
+
+/// 错位检测结果：目录所在分类与官方分类不一致的商品。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MismatchInfo {
+    /// 7 位商品 ID。
+    pub id: String,
+    /// 目录名分隔符之后的名称。
+    pub name: String,
+    /// 当前目录名（父目录名）。
+    pub wrong_cat: String,
+    /// 目标分类（官方分类映射）。
+    pub dest_cat: String,
+    /// 目录完整路径。
+    pub path: String,
+}
+
+/// 错位检测：经 `fetch` 注入联网比对官方分类。
+///
+/// 目标分类与当前父目录名不一致、且目标分类非「未分类」时记录错位。
+pub fn mismatch_audit(
+    root: &Path,
+    fetch: impl Fn(&str) -> Option<crate::fetch::ItemJson>,
+) -> Vec<MismatchInfo> {
+    let mut out = Vec::new();
+    for d in scan_library(root) {
+        let Some(item) = fetch(&d.id) else {
+            continue;
+        };
+        let parent = item
+            .category
+            .parent
+            .as_ref()
+            .map(|p| p.name.as_str())
+            .unwrap_or("");
+        let dest_cat = crate::classify::classify(&item.category.name, parent);
+        if dest_cat == "未分类" {
+            continue;
+        }
+        let wrong_cat = d
+            .path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        if wrong_cat != dest_cat {
+            out.push(MismatchInfo {
+                id: d.id,
+                name: d.name,
+                wrong_cat,
+                dest_cat,
+                path: d.path.display().to_string(),
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -435,6 +662,139 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn make_id_dir(base: &Path, name: &str) -> PathBuf {
+        let d = base.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn scan_library_normal_dir() {
+        let base = tmpdir("scan_ok");
+        let d = make_id_dir(&base, "1234567_メカ弾");
+        std::fs::write(d.join("cover.jpg"), vec![0u8; 100]).unwrap();
+        std::fs::write(d.join(".folder_icon.ico"), vec![0u8; 2048]).unwrap();
+        std::fs::write(d.join("desktop.ini"), good_ini()).unwrap();
+        let out = scan_library(&base);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "1234567");
+        assert_eq!(out[0].name, "メカ弾");
+        assert!(out[0].missing.is_empty());
+        assert_eq!(out[0].local_tag, "");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn scan_library_missing_cover() {
+        let base = tmpdir("scan_nocover");
+        let d = make_id_dir(&base, "1234567_无封面");
+        std::fs::write(d.join(".folder_icon.ico"), vec![0u8; 2048]).unwrap();
+        std::fs::write(d.join("desktop.ini"), good_ini()).unwrap();
+        let out = scan_library(&base);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].missing, vec!["封面"]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn scan_library_missing_icon() {
+        let base = tmpdir("scan_noicon");
+        let d = make_id_dir(&base, "1234567_无图标");
+        std::fs::write(d.join("cover.jpg"), vec![0u8; 100]).unwrap();
+        std::fs::write(d.join("desktop.ini"), good_ini()).unwrap();
+        let out = scan_library(&base);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].missing, vec!["图标"]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn scan_library_missing_ini() {
+        let base = tmpdir("scan_noini");
+        let d = make_id_dir(&base, "1234567_无ini");
+        std::fs::write(d.join("cover.jpg"), vec![0u8; 100]).unwrap();
+        std::fs::write(d.join(".folder_icon.ico"), vec![0u8; 2048]).unwrap();
+        let out = scan_library(&base);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].missing, vec!["ini"]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn scan_library_missing_all() {
+        let base = tmpdir("scan_none");
+        make_id_dir(&base, "1234567_全缺");
+        let out = scan_library(&base);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].missing, vec!["封面", "图标", "ini"]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn scan_library_skips_non_id_dirs() {
+        let base = tmpdir("scan_skip");
+        make_id_dir(&base, "未分类");
+        make_id_dir(&base, "1234567"); // 无分隔符
+        make_id_dir(&base, "123456_短id");
+        make_id_dir(&base, "12345678_长id");
+        make_id_dir(&base, "abcdefg_非数字");
+        let out = scan_library(&base);
+        assert!(out.is_empty(), "out: {:?}", out);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn scan_library_separators() {
+        let base = tmpdir("scan_sep");
+        let seps = ["_", "-", " ", "　", "－", "ー"];
+        for (i, s) in seps.iter().enumerate() {
+            let id = format!("{i:07}");
+            make_id_dir(&base, &format!("{id}{s}名称"));
+        }
+        let out = scan_library(&base);
+        assert_eq!(out.len(), seps.len(), "out: {:?}", out);
+        for (i, d) in out.iter().enumerate() {
+            assert_eq!(d.id, format!("{i:07}"), "{d:?}");
+            assert_eq!(d.name, "名称", "{d:?}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn scan_library_recurses_nested() {
+        let base = tmpdir("scan_nest");
+        let nested = base.join("分类").join("子分类");
+        std::fs::create_dir_all(&nested).unwrap();
+        let d = nested.join("2222222_深层");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("cover.jpg"), vec![0u8; 100]).unwrap();
+        std::fs::write(d.join(".folder_icon.ico"), vec![0u8; 2048]).unwrap();
+        std::fs::write(d.join("desktop.ini"), good_ini()).unwrap();
+        let out = scan_library(&base);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "2222222");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn scan_library_skips_hidden_dirs() {
+        let base = tmpdir("scan_hidden");
+        let hidden = make_id_dir(&base, ".1234567_隐藏");
+        std::fs::write(hidden.join("cover.jpg"), vec![0u8; 100]).unwrap();
+        let out = scan_library(&base);
+        assert!(out.is_empty(), "out: {:?}", out);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn scan_library_extracts_local_tag() {
+        let base = tmpdir("scan_tag");
+        make_id_dir(&base, "1234567_メカ弾v2_商品");
+        let out = scan_library(&base);
+        assert_eq!(out[0].local_tag, "Ver_2");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn audit_tree_reports_only_problem_dirs() {
         let base = tmpdir("tree");
@@ -461,6 +821,187 @@ mod tests {
         assert_eq!(results.len(), 1, "results: {:?}", results);
         assert_eq!(results[0].dir, bad);
         assert!(results[0].issues.iter().any(|i| i == "ini 缺失"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    fn json_item(name: &str) -> crate::fetch::ItemJson {
+        crate::fetch::ItemJson {
+            name: name.to_string(),
+            ..crate::fetch::ItemJson::default()
+        }
+    }
+
+    #[test]
+    fn ver_gt_basic() {
+        assert!(ver_gt("1.0", "0.9"));
+        assert!(!ver_gt("0.9", "1.0"));
+        assert!(!ver_gt("1.0", "1.0"));
+        assert!(ver_gt("2.0", "1.9"));
+    }
+
+    #[test]
+    fn ver_gt_empty() {
+        assert!(!ver_gt("", "1.0"));
+        assert!(!ver_gt("1.0", ""));
+        assert!(!ver_gt("", ""));
+    }
+
+    #[test]
+    fn ver_gt_multi_segment() {
+        assert!(ver_gt("1.0.1", "1.0"));
+        assert!(!ver_gt("1.0", "1.0.1"));
+        assert!(!ver_gt("1.0.2", "1.0.10"));
+        assert!(ver_gt("1.0.10", "1.0.9"));
+    }
+
+    #[test]
+    fn ver_gt_padding_zero() {
+        assert!(ver_gt("1.5.1", "1.5"));
+        assert!(!ver_gt("1.5", "1.5.0"));
+        assert!(!ver_gt("Ver_2.00", "Ver_2"));
+    }
+
+    #[test]
+    fn ver_gt_first_number_segment() {
+        assert!(ver_gt("v3.0", "名前0.5"));
+        assert!(!ver_gt("名前0.5", "v3.0"));
+    }
+
+    #[test]
+    fn version_audit_reports_updateable() {
+        let base = tmpdir("va_update");
+        make_id_dir(&base, "1111111_雪女v1");
+        make_id_dir(&base, "2222222_メカv3");
+        let out = version_audit(&base, |id| match id {
+            "1111111" => Some(json_item("雪女v2")),
+            "2222222" => Some(json_item("メカv2")),
+            _ => None,
+        });
+        assert_eq!(out.len(), 1, "out: {:?}", out);
+        assert_eq!(out[0].id, "1111111");
+        assert_eq!(out[0].local_tag, "Ver_1");
+        assert_eq!(out[0].official_tag, "Ver_2");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn version_audit_no_version_skipped() {
+        let base = tmpdir("va_nover");
+        make_id_dir(&base, "3333333_无版本");
+        make_id_dir(&base, "4444444_plain");
+        let out = version_audit(&base, |_| Some(json_item("无版本商品")));
+        assert!(out.is_empty(), "out: {:?}", out);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn version_audit_empty_library() {
+        let base = tmpdir("va_empty");
+        let out = version_audit(&base, |_| Some(json_item("雪女Ver_2")));
+        assert!(out.is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn version_audit_fetch_none_skipped() {
+        let base = tmpdir("va_none");
+        make_id_dir(&base, "5555555_脱机");
+        let out = version_audit(&base, |_| None);
+        assert!(out.is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    fn json_item_cat(cat: &str) -> crate::fetch::ItemJson {
+        crate::fetch::ItemJson {
+            name: "商品".to_string(),
+            category: crate::fetch::CategoryJson {
+                name: cat.to_string(),
+                parent: None,
+            },
+            ..crate::fetch::ItemJson::default()
+        }
+    }
+
+    #[test]
+    fn mismatch_audit_reports_wrong_category() {
+        let base = tmpdir("ma_wrong");
+        let cat = base.join("3D模型");
+        std::fs::create_dir_all(&cat).unwrap();
+        make_id_dir(&cat, "1111111_错位");
+        let out = mismatch_audit(&base, |id| match id {
+            "1111111" => Some(json_item_cat("髪")),
+            _ => None,
+        });
+        assert_eq!(out.len(), 1, "out: {:?}", out);
+        assert_eq!(out[0].id, "1111111");
+        assert_eq!(out[0].wrong_cat, "3D模型");
+        assert_eq!(out[0].dest_cat, "3D发型");
+        assert_eq!(out[0].path, cat.join("1111111_错位").display().to_string());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn mismatch_audit_skips_correct_category() {
+        let base = tmpdir("ma_ok");
+        let cat = base.join("3D发型");
+        std::fs::create_dir_all(&cat).unwrap();
+        make_id_dir(&cat, "2222222_正确");
+        let out = mismatch_audit(&base, |id| match id {
+            "2222222" => Some(json_item_cat("髪")),
+            _ => None,
+        });
+        assert!(out.is_empty(), "out: {:?}", out);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn mismatch_audit_skips_uncategorized() {
+        let base = tmpdir("ma_uncat");
+        let cat = base.join("3D模型");
+        std::fs::create_dir_all(&cat).unwrap();
+        make_id_dir(&cat, "3333333_未分类");
+        let out = mismatch_audit(&base, |id| match id {
+            "3333333" => Some(json_item_cat("")),
+            _ => None,
+        });
+        assert!(out.is_empty(), "out: {:?}", out);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn mismatch_audit_uses_parent_classify() {
+        let base = tmpdir("ma_parent");
+        let cat = base.join("3D模型");
+        std::fs::create_dir_all(&cat).unwrap();
+        make_id_dir(&cat, "4444444_带父类");
+        let item = crate::fetch::ItemJson {
+            name: "商品".to_string(),
+            category: crate::fetch::CategoryJson {
+                name: "衣装".to_string(),
+                parent: Some(crate::fetch::ParentCategory {
+                    name: "3Dモデル".to_string(),
+                }),
+            },
+            ..crate::fetch::ItemJson::default()
+        };
+        let out = mismatch_audit(&base, |id| {
+            if id == "4444444" {
+                Some(item.clone())
+            } else {
+                None
+            }
+        });
+        assert_eq!(out.len(), 1, "out: {:?}", out);
+        assert_eq!(out[0].wrong_cat, "3D模型");
+        assert_eq!(out[0].dest_cat, "3D服饰");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn mismatch_audit_empty_library() {
+        let base = tmpdir("ma_empty");
+        let out = mismatch_audit(&base, |_| Some(json_item_cat("髪")));
+        assert!(out.is_empty());
         let _ = std::fs::remove_dir_all(&base);
     }
 }
