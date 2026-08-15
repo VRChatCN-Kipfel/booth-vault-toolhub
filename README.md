@@ -1,15 +1,28 @@
 # booth-vault-toolhub
 
+[![CI](https://img.shields.io/github/actions/workflow/status/VRChatCN-Kipfel/booth-vault-toolhub/ci.yml?branch=master&label=CI)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/actions)
+[![Build](https://img.shields.io/github/actions/workflow/status/VRChatCN-Kipfel/booth-vault-toolhub/build.yml?branch=master&label=Build)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/actions)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![GitHub](https://img.shields.io/badge/GitHub-VRChatCN--Kipfel%2Fbooth--vault--toolhub-181717?logo=github)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub)
+
+[![Release](https://img.shields.io/github/v/release/VRChatCN-Kipfel/booth-vault-toolhub?label=Release)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/releases)
+[![Release Date](https://img.shields.io/github/release-date/VRChatCN-Kipfel/booth-vault-toolhub?label=更新日期)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/releases)
+[![Downloads](https://img.shields.io/github/downloads/VRChatCN-Kipfel/booth-vault-toolhub/total?label=Downloads)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/releases)
+
+[![Stars](https://img.shields.io/github/stars/VRChatCN-Kipfel/booth-vault-toolhub?label=Stars)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub)
+[![Forks](https://img.shields.io/github/forks/VRChatCN-Kipfel/booth-vault-toolhub?label=Forks)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub)
+[![Last Commit](https://img.shields.io/github/last-commit/VRChatCN-Kipfel/booth-vault-toolhub?label=最近提交)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub)
+[![Code Size](https://img.shields.io/github/languages/code-size/VRChatCN-Kipfel/booth-vault-toolhub?label=代码体积)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub)
+[![Top Lang](https://img.shields.io/github/languages/top/VRChatCN-Kipfel/booth-vault-toolhub?label=主要语言)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub)
 
 BOOTH 素材统一管理工具 —— VRChat / XR 创作者的 BOOTH 资产全流程工具链。
 用 Rust 统一重写原 Python 双仓库（[booth-keeper](https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-keeper) + [booth-free-collector](https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-free-collector)），
 一份引擎同时支撑 **CLI / MCP / GUI** 三种接口。
+
 ### 鸣谢
-- GUI设计提供：[linnnnnnnnnnnnnnnnnnnnn/booth-keeper](https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-keeper)
-- CLI灵感提供：[linnnnnnnnnnnnnnnnnnnnn/booth-free-collector](https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-free-collector)
+
+- GUI 设计提供：[linnnnnnnnnnnnnnnnnnnnn/booth-keeper](https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-keeper)
+- CLI 灵感提供：[linnnnnnnnnnnnnnnnnnnnn/booth-free-collector](https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-free-collector)
 
 ## 功能
 
@@ -138,4 +151,4 @@ cargo fmt --check
 
 ## 许可
 
-MIT OR Apache-2.0
+MIT
