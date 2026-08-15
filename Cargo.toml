@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "engine",
     "shell_win",
+    "booth-mcp",
     "gui/src-tauri",
 ]
 
