@@ -1,0 +1,34 @@
+booth-vault-toolhub
+Copyright (c) 2026 VRChatCN-Kipfel
+
+Licensed under the Apache License, Version 2.0 (the "License").
+See the LICENSE file for the full license text.
+
+This product includes software derived from the following upstream projects
+(under the MIT License, Copyright (c) 2026 linnnnnnnnnnnnnnnnnnnnn):
+
+  * booth-keeper       — BOOTH.pm 资产整理桌面端（PySide6）
+    https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-keeper
+    Contributions: 主题系统（三主题六配色 / SVG 母题纹样）、四页面交互框架、
+    目录/版本/错位巡检逻辑、文件夹图标三件套行为基线、主题化弹窗设计。
+
+  * booth-free-collector — BOOTH 免费商品下载归档（Python CLI / Agent Skills）
+    https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-free-collector
+    Contributions: CATEGORY_MAP 分类映射、sanitize_query 搜索候选策略、
+    评分权重与歧义阈值、文件名清洗与版本提取、断点续传下载、
+    UnityPackage 资源名验真、压缩包水印识别。
+
+These upstream projects are licensed under the MIT License. Their copyright
+and permission notices are preserved in the original repositories (kept
+read-only under booth-keeper/ and booth-free-collector/ in this repository,
+excluded from version control).
+
+The behavior contracts implemented in this project (scoring weights,
+sanitization strategies, folder-icon contracts, etc.) are derived from the
+upstream implementations and retain their behavioral fidelity by design.
+
+Additional third-party notices:
+
+  * This project is built with the Rust toolchain, Tauri v2, React 19,
+    and various crates/npm packages — see Cargo.lock and package-lock.json
+    for their respective licenses.

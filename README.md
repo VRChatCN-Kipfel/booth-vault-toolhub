@@ -3,7 +3,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/VRChatCN-Kipfel/booth-vault-toolhub/ci.yml?branch=master&label=CI)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/actions)
 [![Build](https://img.shields.io/github/actions/workflow/status/VRChatCN-Kipfel/booth-vault-toolhub/build.yml?branch=master&label=Build)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/actions)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 [![Release](https://img.shields.io/github/v/release/VRChatCN-Kipfel/booth-vault-toolhub?label=Release)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/releases)
 [![Release Date](https://img.shields.io/github/release-date/VRChatCN-Kipfel/booth-vault-toolhub?label=更新日期)](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/releases)
@@ -151,4 +151,7 @@ cargo fmt --check
 
 ## 许可
 
-MIT
+Apache License 2.0 — 见 [LICENSE](LICENSE)。
+
+本项目部分逻辑参考并衍生自 [linnnnnnnnnnnnnnnnnnnnn](https://github.com/linnnnnnnnnnnnnnnnnnnnn)
+的 MIT 开源项目（见 [NOTICE](NOTICE)），版权与许可声明在 NOTICE 中完整保留。
