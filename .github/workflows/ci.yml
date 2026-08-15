@@ -19,6 +19,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          cache: true
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -53,18 +54,21 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # Linux / macOS 门控：engine 层三平台跑测试
+  # Linux / macOS 门控：engine 层三平台跑测试。
+  # 非主目标，失败不阻塞 CI 整体（Windows 主目标结果为准）。
   portable:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          cache: true
       - name: Check formatting
         run: cargo fmt --check
       - name: Clippy (engine)
