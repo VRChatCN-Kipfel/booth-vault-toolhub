@@ -41,6 +41,11 @@ env:
 
 jobs:
   package:
+    # 仅当触发源 CI 成功时才运行（workflow_run 判断上游结论；手动触发直接跑）。
+    # 防止 CI 失败或进行中时误触发发布流。
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -73,10 +78,8 @@ jobs:
 
       # 目标架构 MSVC 编译器（tauri build 多架构需要；x86/arm64 交叉编译）
       - name: Setup MSVC Build Tools
-        uses: loonghao/msvc-kit@v0.2.15
-        with:
-          arch: ${{ matrix.arch }}
-          host-arch: x64
+        shell: pwsh
+        run: scripts/setup-msvc.ps1 -Arch ${{ matrix.arch }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -208,7 +211,6 @@ jobs:
   release:
     needs: package
     runs-on: ubuntu-latest
-    if: always()
     permissions:
       contents: write
     steps:
