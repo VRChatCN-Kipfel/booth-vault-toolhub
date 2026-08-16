@@ -171,28 +171,28 @@ jobs:
         if: matrix.msi
         uses: actions/upload-artifact@v4
         with:
-          name: booth-packages-${{ matrix.arch }}-msi
+          name: booth-vault-toolhub-packages-${{ matrix.arch }}-msi
           path: target/${{ matrix.rust_target }}/release/bundle/msi/**
           if-no-files-found: warn
           retention-days: 30
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
         with:
-          name: booth-packages-${{ matrix.arch }}-nsis
+          name: booth-vault-toolhub-packages-${{ matrix.arch }}-nsis
           path: target/${{ matrix.rust_target }}/release/bundle/nsis/**
           if-no-files-found: warn
           retention-days: 30
       - name: Upload Lite portable
         uses: actions/upload-artifact@v4
         with:
-          name: booth-packages-${{ matrix.arch }}-lite
+          name: booth-vault-toolhub-packages-${{ matrix.arch }}-lite
           path: dist/lite/**
           if-no-files-found: warn
           retention-days: 30
       - name: Upload Full portable
         uses: actions/upload-artifact@v4
         with:
-          name: booth-packages-${{ matrix.arch }}-full
+          name: booth-vault-toolhub-packages-${{ matrix.arch }}-full
           path: dist/full/**
           if-no-files-found: warn
           retention-days: 30
@@ -220,6 +220,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'workflow_run'
+          && github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.head_branch == '')
     steps:
       - name: Download release metadata
         uses: actions/download-artifact@v4
