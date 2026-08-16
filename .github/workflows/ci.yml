@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -86,7 +86,7 @@ jobs:
       # 上传 booth 三二进制（带架构后缀；含 version.txt）
       # release 工作流下载后做最终打包（tauri bundle + 便携版）
       - name: Upload booth binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: booth-binaries-${{ matrix.arch }}
           path: |

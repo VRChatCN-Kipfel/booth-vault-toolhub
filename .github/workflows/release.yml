@@ -1,4 +1,4 @@
-﻿# Release 发布：消费 CI 的三架构 booth 二进制，做最终打包（安装器 + 便携版）并发布。
+# Release 发布：消费 CI 的三架构 booth 二进制，做最终打包（安装器 + 便携版）并发布。
 #
 # 职责划分：
 #   CI   = 测试门控 + 构建三架构 booth 二进制（副产品，供 release 用）
@@ -169,28 +169,28 @@ jobs:
       # 上传产物（带架构后缀）
       - name: Upload MSI installer
         if: matrix.msi
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: booth-vault-toolhub-packages-${{ matrix.arch }}-msi
           path: target/${{ matrix.rust_target }}/release/bundle/msi/**
           if-no-files-found: warn
           retention-days: 30
       - name: Upload NSIS installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: booth-vault-toolhub-packages-${{ matrix.arch }}-nsis
           path: target/${{ matrix.rust_target }}/release/bundle/nsis/**
           if-no-files-found: warn
           retention-days: 30
       - name: Upload Lite portable
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: booth-vault-toolhub-packages-${{ matrix.arch }}-lite
           path: dist/lite/**
           if-no-files-found: warn
           retention-days: 30
       - name: Upload Full portable
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: booth-vault-toolhub-packages-${{ matrix.arch }}-full
           path: dist/full/**
@@ -207,7 +207,7 @@ jobs:
             echo "" > release-meta.txt
           fi
       - name: Upload release meta artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-meta
           path: release-meta.txt
