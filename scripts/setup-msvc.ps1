@@ -63,12 +63,33 @@ if ($LASTEXITCODE -ne 0) { throw "msvc-kit setup failed (arch=$Arch)" }
 $curName = $null
 $curValue = ""
 $inArray = $false
+# PATH 前缀段（msvc-kit 的 $NewPaths 数组 → 加入 GITHUB_PATH）
+$pathSegs = @()
+$inPathArray = $false
 
 foreach ($line in $envScript) {
     $t = $line.Trim()
     if ($t -eq "" -or $t.StartsWith("#")) { continue }
 
-    # 数组起始
+    # $NewPaths = @( → PATH 数组起始
+    if ($t.StartsWith('$NewPaths') -and $t.Contains('= @(')) {
+        $inPathArray = $true
+        continue
+    }
+    if ($inPathArray) {
+        if ($t.StartsWith('"')) {
+            $item = $t.Trim().TrimEnd(',').Trim('"')
+            if ($item) { $pathSegs += $item }
+            continue
+        }
+        if ($t.StartsWith(')')) {
+            $inPathArray = $false
+            continue
+        }
+        continue
+    }
+
+    # 数组起始：$env:NAME = @(
     if ($t.StartsWith('$env:') -and $t.Contains('= @(')) {
         FlushVar $curName $curValue
         $curName = $t.Substring(5).Split('=')[0].Trim()
@@ -120,5 +141,14 @@ foreach ($line in $envScript) {
     }
 }
 FlushVar $curName $curValue
+
+# 把 MSVC bin 目录加入 GITHUB_PATH（rustc 需要在此找 link.exe/rc.exe，
+# 否则命中 Git Bash 的 /usr/bin/link.exe 导致链接失败）
+foreach ($seg in $pathSegs) {
+    if ($seg) {
+        Write-Host "GITHUB_PATH: $seg"
+        Add-Content $env:GITHUB_PATH $seg
+    }
+}
 
 Write-Host "MSVC toolchain ready for arch=$Arch"
