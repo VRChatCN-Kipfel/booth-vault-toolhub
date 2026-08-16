@@ -124,7 +124,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p target/${{ matrix.rust_target }}/release
-          cp binaries/booth.exe binaries/booth-mcp.exe binaries/booth-shell.exe target/${{ matrix.rust_target }}/release/
+          cp binaries/target/${{ matrix.rust_target }}/release/booth.exe \
+             binaries/target/${{ matrix.rust_target }}/release/booth-mcp.exe \
+             binaries/target/${{ matrix.rust_target }}/release/booth-shell.exe \
+             target/${{ matrix.rust_target }}/release/
 
       # 构建 GUI bundle（MSI/NSIS；arm64 仅 NSIS）
       - name: Build GUI bundle
