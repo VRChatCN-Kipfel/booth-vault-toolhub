@@ -62,6 +62,26 @@ Get-ChildItem "$env:ProgramFiles\booth-vault-toolhub" -Filter 'booth*.exe'
 MCP 客户端若 `booth-mcp` 不在 PATH，配置改填绝对路径（示例见 `skills/booth/README.md`）。
 **优先走 `booth` CLI（官方通道），不要绕开或重新实现。**
 
+## 全部找不到时（诚实契约 + 推荐安装器 + 准许后的自助供给）
+
+1. **如实报备**：三路发现全失败 → 向用户说明"booth 工具未安装或不在本机"，不要静默跳过任务或伪造结果。
+2. **推荐用户走官方安装器（首选渠道）**：给出
+   [latest release](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/releases/latest)，
+   按 CPU 架构选 MSI 或 NSIS 安装。理由：默认加入用户 PATH、GUI 自注册位置变量、卸载自动清理、
+   带升级路径，是维护最省心的形态。
+3. **若用户明确准许 agent 自助供给**（且用户不想自己装）：优先便携版 zip（免提权、免 WebView2），
+   按架构解压后即可直接用 CLI：
+   ```powershell
+   $arch = switch ($env:PROCESSOR_ARCHITECTURE) { 'AMD64' { 'x64' } 'x86' { 'x86' } 'ARM64' { 'arm64' } }
+   $zip = "$env:TEMP\booth-lite.zip"
+   Invoke-WebRequest "https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/releases/latest/download/booth-vault-toolhub-$arch-lite.zip" -OutFile $zip
+   Expand-Archive $zip "$env:LOCALAPPDATA\booth-vault-toolhub" -Force
+   ```
+   解压目录即含 `booth` / `booth-mcp` / `booth-shell`，直接用；如需 `%BOOTHVAULT_TOOLHUB%` 自注册，
+   运行一次 `booth-vault-toolhub.exe`。
+4. **仅当用户明确要求系统级安装**才由 agent 走安装器参数静默安装（NSIS `/S`；MSI `/qn` 需管理员权限，
+   非提权会失败）。
+
 ```bash
 booth download <店铺URL|散链> [--cookie ...] [--out DIR]   # 下载免费商品
 booth organize <本地包...> [--id ID] [--out DIR]           # 按 ID 整理归档
@@ -81,6 +101,10 @@ JSON 输入输出与 CLI 完全一致。客户端配置示例（`.mcp.json` 片�
   "booth": { "command": "booth-mcp", "args": [] }
 } }
 ```
+
+> 规范配置：读技能包内与 SKILL.md 同目录的 `mcp.example.json`（本地缺失时抓取
+> `https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/blob/master/skills/booth/mcp.example.json?raw=true` ）。
+> 上面内联为最小片段，完整结构以该文件为准。
 
 ## 子命令路由（决策树）
 

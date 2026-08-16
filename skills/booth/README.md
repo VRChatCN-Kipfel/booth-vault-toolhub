@@ -49,6 +49,10 @@ $dir = "$env:ProgramFiles\booth-vault-toolhub"
 便携版同样生效。agent 定位工具目录时**优先读该变量**（先验证路径存在，残留值可能指向
 已删除目录），再回退 `where booth` / 常规位置。
 
+**全部找不到时**：向用户如实报备，并**推荐官方安装器**（见 `SKILL.md`，会默认加 PATH、自注册、
+卸载清理）。仅当用户准许 agent 自助供给时才下载便携版 zip 解压使用；agent 不主动安装器静默安装，
+除非用户明确要求系统级安装（MSI 静默需管理员）。
+
 ### opencode
 
 编辑 `opencode.json`，合并 `skills/booth/mcp.example.json` 的内容：
