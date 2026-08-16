@@ -117,6 +117,22 @@ cd gui && npm run tauri dev # GUI 开发
 15. 空目录链清理：跳过隐藏文件（desktop.ini/Thumbs.db/.DS_Store），walk-up 清理 max 6 级，root 不删。
 16. macOS NFD 归一化：去重/比对前 `unicode-normalization` 归一化。
 
+### 安装器 vendor 模板 / PATH 契约
+
+17. `gui/src-tauri/wix/main.wxs` 与 `gui/src-tauri/nsis/installer.nsi` **vendor 自 tauri-bundler v2.11.5**：
+    升级 Tauri 大版本必须对照官方模板同步合并（文件头有警告注释），否则 MSI/NSIS 打包可能失效。
+    模板一律 **ASCII**：Tauri 渲染输出无 BOM，makensis/candle 按 ANSI 读，中文会乱码。
+18. 三个 booth 二进制**不**挂 `bundle.externalBin`（GUI 编译期强制 sidecar 文件存在，与 stage-cli 时序冲突），
+    由 `beforeBundleCommand` 钩子 `gui/scripts/stage-cli.mjs` 生成：
+    - MSI fragment `gui/src-tauri/wix/generated.wxs`（绝对路径），经 `featureRefs` 挂 `External` feature；
+    - NSIS `{project_out}/nsis/generated.nsh` + 把 EnVar.dll 预置到 `{project_out}/nsis/plugins/`。
+    **路径基准**：tauri-cli 打包前 `set_current_dir(dirs.tauri)`（切到 src-tauri），故
+    `template`/`fragmentPaths`/`nsis.template` 均相对 src-tauri 解析。
+19. **四可选组件契约**（booth CLI / booth MCP / booth Shell / Add to user PATH，默认全选）：
+    PATH 写**用户级 HKCU**（perMachine 安装也写当前用户），卸载按原生机制清理
+    （MSI `Environment` 表 `Action=set Part=last` / NSIS `EnVar::DeleteValue`），
+    重装幂等不重复追加（NSIS 已实测）。改动须重新实测安装/卸载/重装。
+
 ## 已修复的原实现缺陷（记录备查，不得回退）
 
 | 缺陷 | 修复 |

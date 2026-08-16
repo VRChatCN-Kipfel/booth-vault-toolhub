@@ -5,6 +5,7 @@
 *.png binary
 *.ico binary
 *.icns binary
+*.dll binary
 
 # 编码契约：配置文件强制 LF 检出；禁止 UTF-8 BOM（GitHub Dependabot 校验器拒读带 BOM 的 yml，曾致配置校验失败）
 *.yml eol=lf

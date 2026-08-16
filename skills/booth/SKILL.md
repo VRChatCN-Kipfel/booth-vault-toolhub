@@ -39,15 +39,48 @@ BOOTH（日本数字创作集市，VRChat 素材主产地）素材的**下载 / 
 | 安装版（MSI/NSIS） | `C:\Program Files\booth-vault-toolhub\`（与主程序同目录） |
 | 源码构建 | 仓库 `target/release/`（`--target` 时在 `target/<triple>/release/`） |
 
-定位命令（Windows）：
+**安装器默认把安装目录加入用户 PATH**（components/功能选择页有"Add to user PATH"勾选项，默认选中；
+MSI 用原生 Environment 表、NSIS 用 EnVar 插件，均幂等且在卸载时自动移除）。
+此外**主程序每次启动都会把自身目录写入用户环境变量 `BOOTHVAULT_TOOLHUB`**（便携版同样生效，
+GUI 一跑就自报位置；安装器卸载时按值清理，便携版不清理）。
+
+**发现顺序**（按优先级）：
 
 ```powershell
-where.exe booth booth-mcp        # 已在 PATH 时直接命中
+# ① 自注册变量（首选）：GUI 跑过一次即有；读到必须验证路径存在
+$dir = $env:BOOTHVAULT_TOOLHUB
+if ($dir -and (Test-Path "$dir\booth.exe")) { "$dir\booth.exe" }
+# ② PATH 直命（安装器默认加入）
+where.exe booth booth-mcp
+# ③ 常规位置兜底
 Get-ChildItem "$env:ProgramFiles\booth-vault-toolhub" -Filter 'booth*.exe'
 ```
 
-若 `booth-mcp` 不在 PATH，MCP 客户端配置改填绝对路径（示例见 `skills/booth/README.md`）。
+> 注意：`%BOOTHVAULT_TOOLHUB%` 可能**残留指向已删除的目录**（程序删了但变量还在，
+> 便携版无卸载器不清理），**读到后必须先验证路径存在**，不存在则回退 ②③。
+
+MCP 客户端若 `booth-mcp` 不在 PATH，配置改填绝对路径（示例见 `skills/booth/README.md`）。
 **优先走 `booth` CLI（官方通道），不要绕开或重新实现。**
+
+## 全部找不到时（诚实契约 + 推荐安装器 + 准许后的自助供给）
+
+1. **如实报备**：三路发现全失败 → 向用户说明"booth 工具未安装或不在本机"，不要静默跳过任务或伪造结果。
+2. **推荐用户走官方安装器（首选渠道）**：给出
+   [latest release](https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/releases/latest)，
+   按 CPU 架构选 MSI 或 NSIS 安装。理由：默认加入用户 PATH、GUI 自注册位置变量、卸载自动清理、
+   带升级路径，是维护最省心的形态。
+3. **若用户明确准许 agent 自助供给**（且用户不想自己装）：优先便携版 zip（免提权、免 WebView2），
+   按架构解压后即可直接用 CLI：
+   ```powershell
+   $arch = switch ($env:PROCESSOR_ARCHITECTURE) { 'AMD64' { 'x64' } 'x86' { 'x86' } 'ARM64' { 'arm64' } }
+   $zip = "$env:TEMP\booth-lite.zip"
+   Invoke-WebRequest "https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/releases/latest/download/booth-vault-toolhub-$arch-lite.zip" -OutFile $zip
+   Expand-Archive $zip "$env:LOCALAPPDATA\booth-vault-toolhub" -Force
+   ```
+   解压目录即含 `booth` / `booth-mcp` / `booth-shell`，直接用；如需 `%BOOTHVAULT_TOOLHUB%` 自注册，
+   运行一次 `booth-vault-toolhub.exe`。
+4. **仅当用户明确要求系统级安装**才由 agent 走安装器参数静默安装（NSIS `/S`；MSI `/qn` 需管理员权限，
+   非提权会失败）。
 
 ```bash
 booth download <店铺URL|散链> [--cookie ...] [--out DIR]   # 下载免费商品
@@ -68,6 +101,10 @@ JSON 输入输出与 CLI 完全一致。客户端配置示例（`.mcp.json` 片�
   "booth": { "command": "booth-mcp", "args": [] }
 } }
 ```
+
+> 规范配置：读技能包内与 SKILL.md 同目录的 `mcp.example.json`（本地缺失时抓取
+> `https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/blob/master/skills/booth/mcp.example.json?raw=true` ）。
+> 上面内联为最小片段，完整结构以该文件为准。
 
 ## 子命令路由（决策树）
 

@@ -35,14 +35,23 @@ npx skills add -y --all --skill '*' -a opencode -a claude-code /path/to/booth-va
 - 便携版 zip：解压目录
 - 安装版（MSI/NSIS）：`C:\Program Files\booth-vault-toolhub\`
 
-若不在 PATH，用绝对路径（例如 `C:\Program Files\booth-vault-toolhub\booth-mcp.exe`）。
-建议把该目录加入 PATH 后技能即可直接调 `booth`：
+**MSI/NSIS 安装器都带"Add to user PATH"选项（默认勾选）**：安装目录自动加入当前用户 PATH
+（MSI 用原生 Environment 表，NSIS 用 EnVar 插件，均幂等；卸载时自动移除），装完即可直接调 `booth`
+而无需手动改 PATH。仅当用户安装时取消了该勾选，才需要补 PATH：
 
 ```powershell
 # 把 booth 二进制目录加入当前用户 PATH
 $dir = "$env:ProgramFiles\booth-vault-toolhub"
 [Environment]::SetEnvironmentVariable('Path', "$dir;$env:Path", 'User')
 ```
+
+**主程序自注册位置**：GUI 每次启动会把自身目录写入用户环境变量 `BOOTHVAULT_TOOLHUB`，
+便携版同样生效。agent 定位工具目录时**优先读该变量**（先验证路径存在，残留值可能指向
+已删除目录），再回退 `where booth` / 常规位置。
+
+**全部找不到时**：向用户如实报备，并**推荐官方安装器**（见 `SKILL.md`，会默认加 PATH、自注册、
+卸载清理）。仅当用户准许 agent 自助供给时才下载便携版 zip 解压使用；agent 不主动安装器静默安装，
+除非用户明确要求系统级安装（MSI 静默需管理员）。
 
 ### opencode
 

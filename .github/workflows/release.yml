@@ -118,8 +118,8 @@ jobs:
         working-directory: gui
         run: npm ci
 
-      # 把 CI booth 三二进制放回 release target；resources 由 tauri 的
-      # beforeBundleCommand 钩子（gui/scripts/stage-cli.mjs）自动复制进安装器。
+      # 把 CI booth 三二进制放回 release target；beforeBundleCommand 钩子
+      # （gui/scripts/stage-cli.mjs）据此生成 MSI fragment / NSIS generated.nsh 打进行安装器。
       - name: Stage booth binaries
         shell: bash
         run: |
