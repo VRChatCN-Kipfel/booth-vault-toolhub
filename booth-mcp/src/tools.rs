@@ -352,8 +352,8 @@ impl BoothServer {
         if !base.is_dir() {
             return tool_error(&format!("FATAL: {} 不存在", base.display()));
         }
-        let results = engine::audit::audit_tree(&base);
         let fix = !params.dry_run && !params.no_fix;
+        let results = engine::audit::audit_tree_with_fix(&base, fix);
         let mut fixed = 0usize;
         let mut no_cover = 0usize;
         let mut failed = 0usize;
