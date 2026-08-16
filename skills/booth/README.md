@@ -30,17 +30,17 @@ npx skills add -y --all --skill '*' -a opencode -a claude-code /path/to/booth-va
 
 ### 安装版 / 便携版的 CLI 位置
 
-`booth` / `booth-mcp` / `booth-shell` 三个二进制**与主程序 `booth-keeper` 同目录**：
+`booth` / `booth-mcp` / `booth-shell` 三个二进制**与主程序 `booth-vault-toolhub` 同目录**：
 
 - 便携版 zip：解压目录
-- 安装版（MSI/NSIS）：`C:\Program Files\booth-keeper\`
+- 安装版（MSI/NSIS）：`C:\Program Files\booth-vault-toolhub\`
 
-若不在 PATH，用绝对路径（例如 `C:\Program Files\booth-keeper\booth-mcp.exe`）。
+若不在 PATH，用绝对路径（例如 `C:\Program Files\booth-vault-toolhub\booth-mcp.exe`）。
 建议把该目录加入 PATH 后技能即可直接调 `booth`：
 
 ```powershell
 # 把 booth 二进制目录加入当前用户 PATH
-$dir = "$env:ProgramFiles\booth-keeper"
+$dir = "$env:ProgramFiles\booth-vault-toolhub"
 [Environment]::SetEnvironmentVariable('Path', "$dir;$env:Path", 'User')
 ```
 
@@ -67,7 +67,7 @@ $dir = "$env:ProgramFiles\booth-keeper"
   "mcp": {
     "booth": {
       "type": "stdio",
-      "command": "C:\\Program Files\\booth-keeper\\booth-mcp.exe",
+      "command": "C:\\Program Files\\booth-vault-toolhub\\booth-mcp.exe",
       "args": []
     }
   }
@@ -86,7 +86,7 @@ $dir = "$env:ProgramFiles\booth-keeper"
 }
 ```
 
-同样，不在 PATH 时改用绝对路径 `"command": "C:\\Program Files\\booth-keeper\\booth-mcp.exe"`。
+同样，不在 PATH 时改用绝对路径 `"command": "C:\\Program Files\\booth-vault-toolhub\\booth-mcp.exe"`。
 
 ### 可视化管理（可选）
 
