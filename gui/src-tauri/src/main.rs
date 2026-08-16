@@ -61,11 +61,11 @@ fn find_fixed_runtime(dir: &PathBuf) -> Option<PathBuf> {
 fn register_location() {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::System::Registry::{
-        RegCloseKey, RegGetValueW, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
-        KEY_SET_VALUE, RRF_RT_REG_SZ, REG_SZ,
+        HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RRF_RT_REG_SZ, RegCloseKey, RegGetValueW,
+        RegOpenKeyExW, RegSetValueExW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+        HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE,
     };
     use windows::core::PCWSTR;
 
@@ -82,7 +82,9 @@ fn register_location() {
         v.trim_end_matches(['\\', '/'])
     }
 
-    let Ok(exe_path) = std::env::current_exe() else { return };
+    let Ok(exe_path) = std::env::current_exe() else {
+        return;
+    };
     let Some(dir) = exe_path.parent() else { return };
     let current = dir.to_string_lossy().into_owned();
 
@@ -102,7 +104,8 @@ fn register_location() {
             None,
             None,
             Some(&mut size),
-        ) .0 == 0
+        )
+        .0 == 0
         {
             let mut buf = vec![0u16; (size as usize).div_ceil(2)];
             let mut value_type = REG_SZ;
@@ -115,9 +118,12 @@ fn register_location() {
                 Some(&mut value_type),
                 Some(buf.as_mut_ptr().cast()),
                 Some(&mut size2),
-) .0 == 0
+            )
+            .0 == 0
             {
-                String::from_utf16_lossy(&buf).trim_end_matches('\0').to_owned()
+                String::from_utf16_lossy(&buf)
+                    .trim_end_matches('\0')
+                    .to_owned()
             } else {
                 String::new()
             }
