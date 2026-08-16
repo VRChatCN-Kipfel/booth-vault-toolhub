@@ -1,5 +1,5 @@
 //! HTTP 请求重试：transport 错误指数退避（ConnectionError/Timeout 等价物）。
-//! HTTP 状态码留给调用方判断（404 页可优雅处理而非重试）。
+//! HTTP 状态码：404 等留给调用方判断；403/429（风控/限流）在此指数退避重试。
 
 use std::time::Duration;
 
@@ -7,6 +7,9 @@ use reqwest::blocking::{Client, Response};
 
 /// 最大重试次数。
 pub const MAX_RETRIES: u32 = 3;
+
+/// 触发限流退避的 HTTP 状态码（Cloudflare 风控 403 / GitHub 限流 429）。
+pub const RATE_LIMIT_STATUSES: &[u16] = &[403, 429];
 
 /// 通用指数退避重试循环（生产与测试共用）。
 ///
@@ -45,12 +48,47 @@ where
 }
 
 /// 便捷封装：GET + 指定 headers。
+///
+/// 对「传输层错误」与「403/429 限流」双重指数退避：
+///   - 传输层错误（连接/超时/响应体截断）走 `is_connect || is_timeout || is_body`。
+///   - HTTP 403/429（Cloudflare 风控 / GitHub 限流）按指数档退避，
+///     优先尊重响应 `Retry-After` 头，最长不超过 `MAX_RETRIES` 次。
+///
+/// 重试耗尽后返回最后一次响应（可能仍带错误状态码），由调用方判定业务语义。
 pub fn get(
     client: &Client,
     url: &str,
     headers: reqwest::header::HeaderMap,
 ) -> Result<Response, reqwest::Error> {
-    retry(|| client.get(url).headers(headers.clone()).send())
+    for attempt in 1..=MAX_RETRIES {
+        match client.get(url).headers(headers.clone()).send() {
+            Ok(resp) => {
+                let code = resp.status().as_u16();
+                if RATE_LIMIT_STATUSES.contains(&code) && attempt < MAX_RETRIES {
+                    let wait = retry_after_secs(&resp).unwrap_or(u64::from(attempt) * 2);
+                    std::thread::sleep(Duration::from_secs(wait));
+                    continue;
+                }
+                return Ok(resp);
+            }
+            Err(e) => {
+                if (e.is_connect() || e.is_timeout() || e.is_body()) && attempt < MAX_RETRIES {
+                    std::thread::sleep(Duration::from_secs(u64::from(attempt) * 2));
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+    unreachable!("get: retry loop must return before exhausting")
+}
+
+/// 解析 `Retry-After` 头（秒数）；非法或缺失返回 None。
+fn retry_after_secs(resp: &Response) -> Option<u64> {
+    resp.headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
 }
 
 #[cfg(test)]
