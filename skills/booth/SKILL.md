@@ -40,16 +40,26 @@ BOOTH（日本数字创作集市，VRChat 素材主产地）素材的**下载 / 
 | 源码构建 | 仓库 `target/release/`（`--target` 时在 `target/<triple>/release/`） |
 
 **安装器默认把安装目录加入用户 PATH**（components/功能选择页有"Add to user PATH"勾选项，默认选中；
-MSI 用原生 Environment 表、NSIS 用 EnVar 插件，均幂等且在卸载时自动移除）。装完即可直接调用：
+MSI 用原生 Environment 表、NSIS 用 EnVar 插件，均幂等且在卸载时自动移除）。
+此外**主程序每次启动都会把自身目录写入用户环境变量 `BOOTHVAULT_TOOLHUB`**（便携版同样生效，
+GUI 一跑就自报位置；安装器卸载时按值清理，便携版不清理）。
+
+**发现顺序**（按优先级）：
 
 ```powershell
-where.exe booth booth-mcp        # 安装后通常直接命中（PATH 已含安装目录）
-booth --help
+# ① 自注册变量（首选）：GUI 跑过一次即有；读到必须验证路径存在
+$dir = $env:BOOTHVAULT_TOOLHUB
+if ($dir -and (Test-Path "$dir\booth.exe")) { "$dir\booth.exe" }
+# ② PATH 直命（安装器默认加入）
+where.exe booth booth-mcp
+# ③ 常规位置兜底
+Get-ChildItem "$env:ProgramFiles\booth-vault-toolhub" -Filter 'booth*.exe'
 ```
 
-若用户安装时取消了 PATH 勾选、或 `booth-mcp` 不在 PATH，MCP 客户端配置改填绝对路径
-（示例见 `skills/booth/README.md`），或直接轮询常规位置：
-`Get-ChildItem "$env:ProgramFiles\booth-vault-toolhub" -Filter 'booth*.exe'`。
+> 注意：`%BOOTHVAULT_TOOLHUB%` 可能**残留指向已删除的目录**（程序删了但变量还在，
+> 便携版无卸载器不清理），**读到后必须先验证路径存在**，不存在则回退 ②③。
+
+MCP 客户端若 `booth-mcp` 不在 PATH，配置改填绝对路径（示例见 `skills/booth/README.md`）。
 **优先走 `booth` CLI（官方通道），不要绕开或重新实现。**
 
 ```bash

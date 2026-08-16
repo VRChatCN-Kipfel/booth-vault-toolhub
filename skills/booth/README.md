@@ -45,6 +45,10 @@ $dir = "$env:ProgramFiles\booth-vault-toolhub"
 [Environment]::SetEnvironmentVariable('Path', "$dir;$env:Path", 'User')
 ```
 
+**主程序自注册位置**：GUI 每次启动会把自身目录写入用户环境变量 `BOOTHVAULT_TOOLHUB`，
+便携版同样生效。agent 定位工具目录时**优先读该变量**（先验证路径存在，残留值可能指向
+已删除目录），再回退 `where booth` / 常规位置。
+
 ### opencode
 
 编辑 `opencode.json`，合并 `skills/booth/mcp.example.json` 的内容：

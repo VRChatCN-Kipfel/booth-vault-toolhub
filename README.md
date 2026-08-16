@@ -70,7 +70,9 @@ cargo build --release --workspace
 > 直接按此定位，无需另行安装。
 >
 > MSI/NSIS 安装器均带可选组件页（booth CLI / booth MCP / booth Shell / Add to user PATH，
-> 默认全勾选）：默认把安装目录加入当前用户 PATH（幂等，卸载自动移除），装完即可直接调 `booth`。
+> 默认全勾选）：默认把安装目录加入当前用户 PATH（幂等，卸载自动移除）。
+> **主程序每次启动会把自身目录写入用户环境变量 `BOOTHVAULT_TOOLHUB`**（便携版同样生效），
+> agent 定位工具目录优先读该变量（验证路径存在），再回退 PATH / 常规位置。
 
 ### CLI
 
