@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 拖拽分类页：文件拖入 → 提取 ID → 归档队列。
  * 用 getCurrentWebview().onDragDropEvent 拿绝对路径。
  * 拖入区麻叶纹（asa_no_ha）+ 高亮，对齐原版 dragdrop_page.py。

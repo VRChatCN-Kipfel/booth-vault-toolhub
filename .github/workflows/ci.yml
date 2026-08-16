@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -11,9 +11,54 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # 编码契约（前置门控）：本次变更涉及的 tracked 文本文件必须严格为 UTF-8 且无 BOM。
+  # 只扫 diff 内文件（PR 取 merge-base 三点 diff，push 取 before..HEAD，拿不到基线则全量兜底）；
+  # gitattributes 只管行尾，UTF-8 合法性与 BOM 由本步把关（曾因 dependabot.yml 带 BOM 致配置校验失败）。
+  encoding:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reject non-UTF-8 / UTF-8 BOM in changed text files
+        shell: bash
+        run: |
+          base=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base=$(git rev-list --max-parents=0 HEAD)
+          fi
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            files=$(git diff --name-only --diff-filter=ACMRT "$base"...HEAD)
+          else
+            files=$(git diff --name-only --diff-filter=ACMRT "$base" HEAD)
+          fi
+          fail=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if git check-attr binary -- "$f" | grep -q ': set'; then
+              continue
+            fi
+            first=$(head -c 3 "$f" | od -An -tx1 | tr -d ' \n')
+            if [ "$first" = "efbbbf" ]; then
+              echo "::error file=$f::UTF-8 BOM (EF BB BF) at file start"
+              fail=1
+            fi
+            if ! iconv -f UTF-8 -t UTF-8 "$f" >/dev/null 2>&1; then
+              echo "::error file=$f::not strictly valid UTF-8"
+              fail=1
+            fi
+          done <<< "$files"
+          exit $fail
+
   # Windows 主目标：三架构（x64/x86/arm64）全量构建 + 测试 + 上传产物。
   # 产物（booth 三二进制 + tauri bundle + 便携版）供 release 聚合发布。
   windows:
+    needs: encoding
     strategy:
       fail-fast: false
       matrix:
@@ -99,6 +144,7 @@ jobs:
 
   # Linux / macOS 门控：engine 层三平台跑测试（非主目标，失败不阻塞）
   portable:
+    needs: encoding
     strategy:
       fail-fast: false
       matrix:

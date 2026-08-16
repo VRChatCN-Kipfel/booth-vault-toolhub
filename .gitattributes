@@ -1,0 +1,11 @@
+# 行尾契约：全部文本文件入库统一 LF，text=auto 自动识别文本/二进制
+* text=auto
+
+# 显式二进制，防误判
+*.png binary
+*.ico binary
+*.icns binary
+
+# 编码契约：配置文件强制 LF 检出；禁止 UTF-8 BOM（GitHub Dependabot 校验器拒读带 BOM 的 yml，曾致配置校验失败）
+*.yml eol=lf
+*.yaml eol=lf

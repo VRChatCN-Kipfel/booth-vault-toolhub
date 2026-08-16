@@ -1,4 +1,4 @@
-﻿//! BOOTH 商品元数据：fetch_item JSON / refine_from_json / 价格解析 / 缩略图。
+//! BOOTH 商品元数据：fetch_item JSON / refine_from_json / 价格解析 / 缩略图。
 
 use reqwest::blocking::Client;
 use serde::Deserialize;

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 基础 UI 组件库（styled-components）。
  * 对齐 booth-keeper 的形状体系：直角 / 2px 微圆角 / flat 无阴影 / 1px 分隔线。
  */

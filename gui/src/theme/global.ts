@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 全局样式：CSS variables 注入 + 基础 reset。
  * styled-components 的 createGlobalStyle，消费主题 store 提供的色板。
  */
