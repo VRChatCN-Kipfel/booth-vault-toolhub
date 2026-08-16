@@ -1,4 +1,4 @@
-﻿# Release 发布：消费 CI 的三架构 booth 二进制，做最终打包（安装器 + 便携版）并发布。
+# Release 发布：消费 CI 的三架构 booth 二进制，做最终打包（安装器 + 便携版）并发布。
 #
 # 职责划分：
 #   CI   = 测试门控 + 构建三架构 booth 二进制（副产品，供 release 用）
@@ -74,7 +74,7 @@ jobs:
 
       # 下载 CI 构建的对应架构 booth 三二进制
       - name: Download booth binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: booth-binaries-${{ matrix.arch }}
           path: binaries
@@ -227,7 +227,7 @@ jobs:
           && github.event.workflow_run.head_branch == '')
     steps:
       - name: Download release metadata
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-meta
           path: meta
@@ -259,7 +259,7 @@ jobs:
           echo "should_release=$SHOULD_RELEASE" >> "$GITHUB_OUTPUT"
 
       - name: Download all packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: booth-packages-*
           merge-multiple: true
