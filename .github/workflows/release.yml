@@ -139,7 +139,7 @@ jobs:
           cp binaries/booth-mcp.exe dist/lite/ 2>/dev/null || true
           cp binaries/booth-shell.exe dist/lite/ 2>/dev/null || true
           touch dist/lite/portable.txt
-          cd dist && zip -r booth-keeper-${{ matrix.arch }}-lite.zip lite/
+          cd dist && 7z a -r -tzip booth-keeper-${{ matrix.arch }}-lite.zip lite/
 
       # Full 版：内置 WebView2 fixed runtime（对应架构 cab，latest）
       - name: Download WebView2 fixed runtime (latest)
@@ -164,7 +164,7 @@ jobs:
           touch dist/full/portable.txt
           mv dist/full/runtime/* dist/full/ 2>/dev/null || true
           rm -rf dist/full/runtime
-          cd dist/full && zip -r booth-keeper-${{ matrix.arch }}-full.zip .
+          cd dist/full && 7z a -r -tzip booth-keeper-${{ matrix.arch }}-full.zip .
 
       # 上传产物（带架构后缀）
       - name: Upload MSI installer
