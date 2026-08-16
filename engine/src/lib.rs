@@ -12,3 +12,4 @@ pub mod organize;
 pub mod score;
 pub mod search;
 pub mod session;
+pub mod update;

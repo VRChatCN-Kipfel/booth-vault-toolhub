@@ -114,6 +114,12 @@ enum Command {
         #[command(subcommand)]
         command: ShellCmd,
     },
+    /// 检查工具自身是否有新版本（GitHub Releases）。
+    UpdateCheck {
+        /// 使用配置/环境代理（默认直连，规避代理失败）。
+        #[arg(long)]
+        proxy: bool,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]

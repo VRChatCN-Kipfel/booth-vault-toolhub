@@ -21,6 +21,7 @@ pub fn run() {
             commands::version_audit,
             commands::mismatch_audit,
             commands::fix_mismatch,
+            commands::update_check,
             commands::cancel_task,
         ])
         .setup(|app| {

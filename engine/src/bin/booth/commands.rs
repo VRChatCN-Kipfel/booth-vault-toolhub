@@ -76,6 +76,7 @@ pub fn run(cli: Cli) -> u8 {
             no_fix,
         } => cmd_audit(&config, base.as_deref(), dry_run, no_fix, cli.json),
         Command::Shell { command } => cmd_shell(command),
+        Command::UpdateCheck { proxy } => cmd_update_check(proxy, cli.json),
     }
 }
 
@@ -658,6 +659,34 @@ fn cmd_shell(cmd: ShellCmd) -> u8 {
             }
         }
     }
+}
+
+/// update_check 命令（检查工具自更新）。
+fn cmd_update_check(use_proxy: bool, json: bool) -> u8 {
+    let info = engine::update::check_update(use_proxy);
+    if json {
+        let out = serde_json::json!({
+            "command": "update_check",
+            "has_update": info.has_update,
+            "local_version": info.local_version,
+            "remote_version": info.remote_version,
+            "url": info.url,
+            "error": info.error,
+        });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    } else if let Some(err) = &info.error {
+        eprintln!("检查更新失败: {err}");
+    } else if info.has_update {
+        println!(
+            "发现新版本: {} → {}  下载: {}",
+            info.local_version, info.remote_version, info.url
+        );
+    } else {
+        println!("已是最新版本: {}", info.local_version);
+    }
+    // 退出码：0 成功 / 1 有失败（网络不可达）——按 AGENTS.md 契约，
+    // 网络波动属「有失败」而非「致命」（致命通常指参数/配置类错误）。
+    if info.error.is_some() { 1 } else { 0 }
 }
 
 /// 致命错误输出。
