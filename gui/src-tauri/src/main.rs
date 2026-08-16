@@ -54,8 +54,112 @@ fn find_fixed_runtime(dir: &PathBuf) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
+/// 自注册位置：把当前 exe 目录写入用户级环境变量 BOOTHVAULT_TOOLHUB。
+/// 便携版无安装器记录安装位置，靠 GUI 首次运行自报，agent 读该变量确定性发现工具目录。
+/// 契约：值缺失或与当前目录不同才写；写入后广播 WM_SETTINGCHANGE；失败静默，不阻塞启动。
+#[cfg(windows)]
+fn register_location() {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegGetValueW, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+        KEY_SET_VALUE, RRF_RT_REG_SZ, REG_SZ,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+    };
+    use windows::core::PCWSTR;
+
+    const VAR: &str = "BOOTHVAULT_TOOLHUB";
+    const KEY: &str = "Environment";
+
+    fn wide(s: &str) -> Vec<u16> {
+        let mut v: Vec<u16> = s.encode_utf16().collect();
+        v.push(0);
+        v
+    }
+    // 兼容尾反斜杠：可能被写为 `C:\...\booth-vault-toolhub\`，归一后比较
+    fn norm(v: &str) -> &str {
+        v.trim_end_matches(['\\', '/'])
+    }
+
+    let Ok(exe_path) = std::env::current_exe() else { return };
+    let Some(dir) = exe_path.parent() else { return };
+    let current = dir.to_string_lossy().into_owned();
+
+    let var_wide = wide(VAR);
+    let key_wide = wide(KEY);
+    let var_pw = PCWSTR(var_wide.as_ptr());
+    let key_pw = PCWSTR(key_wide.as_ptr());
+
+    unsafe {
+        // 1) 读现有值（REG_SZ）
+        let mut size = 0u32;
+        let existing = if RegGetValueW(
+            HKEY_CURRENT_USER,
+            key_pw,
+            var_pw,
+            RRF_RT_REG_SZ,
+            None,
+            None,
+            Some(&mut size),
+        ) .0 == 0
+        {
+            let mut buf = vec![0u16; (size as usize).div_ceil(2)];
+            let mut value_type = REG_SZ;
+            let mut size2 = size;
+            if RegGetValueW(
+                HKEY_CURRENT_USER,
+                key_pw,
+                var_pw,
+                RRF_RT_REG_SZ,
+                Some(&mut value_type),
+                Some(buf.as_mut_ptr().cast()),
+                Some(&mut size2),
+) .0 == 0
+            {
+                String::from_utf16_lossy(&buf).trim_end_matches('\0').to_owned()
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        if norm(&existing) == norm(&current) {
+            return; // 已指向自身运行目录，无需重写
+        }
+
+        // 2) 写入
+        let mut hkey = HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, key_pw, None, KEY_SET_VALUE, &mut hkey).0 != 0 {
+            return;
+        }
+        let data = wide(&current);
+        let bytes = std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), data.len() * 2);
+        let rc = RegSetValueExW(hkey, var_pw, None, REG_SZ, Some(bytes));
+        let _ = RegCloseKey(hkey);
+        if rc.0 != 0 {
+            return;
+        }
+
+        // 3) 广播环境变更，让新进程继承
+        let msg_wide = wide(KEY);
+        SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            WPARAM(0),
+            LPARAM(msg_wide.as_ptr() as isize),
+            SMTO_ABORTIFHUNG,
+            100,
+            None,
+        );
+    }
+}
+
 fn main() {
     #[cfg(windows)]
     setup_webview2();
+    #[cfg(windows)]
+    register_location();
     gui_lib::run()
 }

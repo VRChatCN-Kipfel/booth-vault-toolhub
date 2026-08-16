@@ -1992,6 +1992,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-store",
  "tauri-plugin-window-state",
+ "windows 0.62.2",
 ]
 
 [[package]]
