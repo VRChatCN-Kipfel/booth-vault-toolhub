@@ -153,11 +153,11 @@ jobs:
         run: |
           mkdir -p dist/lite
           GUI_BIN=target/${{ matrix.rust_target }}/release/gui.exe
-          [ -f "$GUI_BIN" ] || GUI_BIN=target/${{ matrix.rust_target }}/release/booth-keeper.exe
-          cp "$GUI_BIN" dist/lite/booth-keeper.exe
+          [ -f "$GUI_BIN" ] || GUI_BIN=target/${{ matrix.rust_target }}/release/booth-vault-toolhub.exe
+          cp "$GUI_BIN" dist/lite/booth-vault-toolhub.exe
           cp target/${{ matrix.rust_target }}/release/booth.exe target/${{ matrix.rust_target }}/release/booth-mcp.exe target/${{ matrix.rust_target }}/release/booth-shell.exe dist/lite/
           touch dist/lite/portable.txt
-          cd dist && 7z a -r -tzip booth-keeper-${{ matrix.arch }}-lite.zip lite/
+          cd dist && 7z a -r -tzip booth-vault-toolhub-${{ matrix.arch }}-lite.zip lite/
 
       # Full 版：内置 WebView2 fixed runtime（对应架构 cab，latest）
       - name: Download WebView2 fixed runtime (latest)
@@ -177,15 +177,15 @@ jobs:
         run: |
           mkdir -p dist/full
           GUI_BIN=target/${{ matrix.rust_target }}/release/gui.exe
-          [ -f "$GUI_BIN" ] || GUI_BIN=target/${{ matrix.rust_target }}/release/booth-keeper.exe
-          cp "$GUI_BIN" dist/full/booth-keeper.exe
+          [ -f "$GUI_BIN" ] || GUI_BIN=target/${{ matrix.rust_target }}/release/booth-vault-toolhub.exe
+          cp "$GUI_BIN" dist/full/booth-vault-toolhub.exe
           cp target/${{ matrix.rust_target }}/release/booth.exe target/${{ matrix.rust_target }}/release/booth-mcp.exe target/${{ matrix.rust_target }}/release/booth-shell.exe dist/full/
           touch dist/full/portable.txt
           if [ -d dist/full/runtime ] && [ -n "$(ls -A dist/full/runtime 2>/dev/null)" ]; then
             mv dist/full/runtime/* dist/full/
           fi
           rm -rf dist/full/runtime
-          cd dist/full && 7z a -r -tzip booth-keeper-${{ matrix.arch }}-full.zip .
+          cd dist/full && 7z a -r -tzip booth-vault-toolhub-${{ matrix.arch }}-full.zip .
 
       # 上传产物（带架构后缀）
       - name: Upload MSI installer

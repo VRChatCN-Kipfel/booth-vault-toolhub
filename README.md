@@ -66,7 +66,7 @@ cargo build --release --workspace
 ```
 
 > 发布包（安装版/便携版）中 `booth` / `booth-mcp` / `booth-shell` 与主程序
-> `booth-keeper` 同目录（安装版在 `C:\Program Files\booth-keeper\`），agent/MCP
+> `booth-vault-toolhub` 同目录（安装版在 `C:\Program Files\booth-vault-toolhub\`），agent/MCP
 > 直接按此定位，无需另行安装。
 
 ### CLI
