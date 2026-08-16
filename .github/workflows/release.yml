@@ -52,17 +52,23 @@ jobs:
         include:
           - arch: x64
             rust_target: x86_64-pc-windows-msvc
+            msvc_arch: x64
+            runs_on: windows-latest
             wv2: x64
             msi: true
           - arch: x86
             rust_target: i686-pc-windows-msvc
+            msvc_arch: amd64_x86
+            runs_on: windows-latest
             wv2: x86
             msi: true
           - arch: arm64
             rust_target: aarch64-pc-windows-msvc
+            msvc_arch: arm64
+            runs_on: windows-11-arm
             wv2: arm64
             msi: false
-    runs-on: windows-latest
+    runs-on: ${{ matrix.runs_on }}
     steps:
       - uses: actions/checkout@v4
 
@@ -76,10 +82,11 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
         continue-on-error: true
 
-      # 目标架构 MSVC 编译器（tauri build 多架构需要；x86/arm64 交叉编译）
-      - name: Setup MSVC Build Tools
-        shell: pwsh
-        run: scripts/setup-msvc.ps1 -Arch ${{ matrix.arch }}
+      # 配置 MSVC 开发环境（tauri build 多架构需要；x86 用 VS amd64_x86 交叉工具集）
+      - name: Enable Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:

@@ -18,23 +18,33 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # x64/x86 在 x64 runner 上编译（x86 用 VS amd64_x86 交叉工具集）
           - arch: x64
             rust_target: x86_64-pc-windows-msvc
+            msvc_arch: x64
+            runs_on: windows-latest
             wv2: x64
           - arch: x86
             rust_target: i686-pc-windows-msvc
+            msvc_arch: amd64_x86
+            runs_on: windows-latest
             wv2: x86
+          # arm64 用原生 arm64 runner（VS 2022 Enterprise，工具链齐全）
           - arch: arm64
             rust_target: aarch64-pc-windows-msvc
+            msvc_arch: arm64
+            runs_on: windows-11-arm
             wv2: arm64
-    runs-on: windows-latest
+    runs-on: ${{ matrix.runs_on }}
     steps:
       - uses: actions/checkout@v4
 
-      # 安装目标架构 MSVC 工具链（x64 原生；x86/arm64 交叉编译）
-      - name: Setup MSVC Build Tools
-        shell: pwsh
-        run: scripts/setup-msvc.ps1 -Arch ${{ matrix.arch }}
+      # 配置 MSVC 开发环境（vcvarsall 官方 PATH/INCLUDE/LIB；
+      # 复用 VS 自带工具集，避免 Git Bash /usr/bin/link.exe 遮蔽）
+      - name: Enable Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
