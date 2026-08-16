@@ -72,15 +72,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 下载 CI 构建的对应架构 booth 三二进制
+      # 解析 CI 运行 ID：workflow_run 直接用上游运行；workflow_dispatch 取所选分支上
+      # 最近一次 CI push 运行，查不到则失败（与下载失败同等处理）。
+      - name: Resolve CI run ID
+        id: ci-run
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "ci_run_id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
+          else
+            RUN_ID=$(gh api "/repos/${{ github.repository }}/actions/runs?event=push&branch=${{ github.ref_name }}&workflow_id=ci.yml&per_page=1" --jq '.workflow_runs[0].id // empty' 2>/dev/null || true)
+            if [ -z "$RUN_ID" ]; then
+              echo "::error::未找到分支 ${{ github.ref_name }} 上最近的 CI 运行，无法获取 booth 二进制"
+              exit 1
+            fi
+            echo "ci_run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 下载 CI 构建的对应架构 booth 三二进制；缺失即失败，不产出残缺包
       - name: Download booth binaries
         uses: actions/download-artifact@v4
         with:
           name: booth-binaries-${{ matrix.arch }}
           path: binaries
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ github.event.workflow_run.id }}
-        continue-on-error: true
+          run-id: ${{ steps.ci-run.outputs.ci_run_id }}
 
       # 配置 MSVC 开发环境（tauri build 多架构需要；x86 用 VS amd64_x86 交叉工具集）
       - name: Enable Developer Command Prompt
@@ -102,14 +118,13 @@ jobs:
         working-directory: gui
         run: npm ci
 
-      # 把 CI booth 二进制放回 release target（供 tauri 打包时一并进安装器）
+      # 把 CI booth 三二进制放回 release target；resources 由 tauri 的
+      # beforeBundleCommand 钩子（gui/scripts/stage-cli.mjs）自动复制进安装器。
       - name: Stage booth binaries
         shell: bash
         run: |
           mkdir -p target/${{ matrix.rust_target }}/release
-          cp binaries/booth.exe target/${{ matrix.rust_target }}/release/ 2>/dev/null || true
-          cp binaries/booth-mcp.exe target/${{ matrix.rust_target }}/release/ 2>/dev/null || true
-          cp binaries/booth-shell.exe target/${{ matrix.rust_target }}/release/ 2>/dev/null || true
+          cp binaries/booth.exe binaries/booth-mcp.exe binaries/booth-shell.exe target/${{ matrix.rust_target }}/release/
 
       # 构建 GUI bundle（MSI/NSIS；arm64 仅 NSIS）
       - name: Build GUI bundle
@@ -134,10 +149,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/lite
-          cp target/${{ matrix.rust_target }}/release/booth-keeper.exe dist/lite/ 2>/dev/null || true
-          cp binaries/booth.exe dist/lite/ 2>/dev/null || true
-          cp binaries/booth-mcp.exe dist/lite/ 2>/dev/null || true
-          cp binaries/booth-shell.exe dist/lite/ 2>/dev/null || true
+          GUI_BIN=target/${{ matrix.rust_target }}/release/gui.exe
+          [ -f "$GUI_BIN" ] || GUI_BIN=target/${{ matrix.rust_target }}/release/booth-keeper.exe
+          cp "$GUI_BIN" dist/lite/booth-keeper.exe
+          cp target/${{ matrix.rust_target }}/release/booth.exe target/${{ matrix.rust_target }}/release/booth-mcp.exe target/${{ matrix.rust_target }}/release/booth-shell.exe dist/lite/
           touch dist/lite/portable.txt
           cd dist && 7z a -r -tzip booth-keeper-${{ matrix.arch }}-lite.zip lite/
 
@@ -151,18 +166,21 @@ jobs:
             --dir "$env:RUNNER_TEMP/wv2"
           New-Item -ItemType Directory -Path "dist/full/runtime" -Force | Out-Null
           $cab = (Get-ChildItem "$env:RUNNER_TEMP/wv2" -Filter "*.${{ matrix.wv2 }}.cab" | Select-Object -First 1).FullName
-          Expand $cab -F:* "dist/full/runtime"
+          if (-not $cab) { throw "WebView2 runtime cab 未下载成功" }
+          & "$env:SystemRoot\System32\expand.exe" $cab -F:* "dist/full/runtime"
 
       - name: Assemble full portable
         shell: bash
         run: |
           mkdir -p dist/full
-          cp target/${{ matrix.rust_target }}/release/booth-keeper.exe dist/full/ 2>/dev/null || true
-          cp binaries/booth.exe dist/full/ 2>/dev/null || true
-          cp binaries/booth-mcp.exe dist/full/ 2>/dev/null || true
-          cp binaries/booth-shell.exe dist/full/ 2>/dev/null || true
+          GUI_BIN=target/${{ matrix.rust_target }}/release/gui.exe
+          [ -f "$GUI_BIN" ] || GUI_BIN=target/${{ matrix.rust_target }}/release/booth-keeper.exe
+          cp "$GUI_BIN" dist/full/booth-keeper.exe
+          cp target/${{ matrix.rust_target }}/release/booth.exe target/${{ matrix.rust_target }}/release/booth-mcp.exe target/${{ matrix.rust_target }}/release/booth-shell.exe dist/full/
           touch dist/full/portable.txt
-          mv dist/full/runtime/* dist/full/ 2>/dev/null || true
+          if [ -d dist/full/runtime ] && [ -n "$(ls -A dist/full/runtime 2>/dev/null)" ]; then
+            mv dist/full/runtime/* dist/full/
+          fi
           rm -rf dist/full/runtime
           cd dist/full && 7z a -r -tzip booth-keeper-${{ matrix.arch }}-full.zip .
 
@@ -261,7 +279,7 @@ jobs:
       - name: Download all packages
         uses: actions/download-artifact@v4
         with:
-          pattern: booth-packages-*
+          pattern: booth-vault-toolhub-packages-*
           merge-multiple: true
           path: packages
 

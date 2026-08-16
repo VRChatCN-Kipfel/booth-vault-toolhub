@@ -29,6 +29,26 @@ BOOTH（日本数字创作集市，VRChat 素材主产地）素材的**下载 / 
 | **booth-mcp** | MCP stdio server，暴露同四工具 | opencode / Claude Code 等 MCP 客户端 |
 | 原 `python scripts/booth.py` | 旧版 Python（仅参考，已废弃） | 不推荐 |
 
+## 找到 CLI / MCP 二进制（先定位，再调用）
+
+`booth`、`booth-mcp`、`booth-shell` 三个二进制**永远与主程序 `booth-keeper` 同目录**：
+
+| 安装形态 | 二进制位置 |
+|------|------|
+| 便携版 zip | 解压目录（与 `booth-keeper.exe` 同目录） |
+| 安装版（MSI/NSIS） | `C:\Program Files\booth-keeper\`（与主程序同目录） |
+| 源码构建 | 仓库 `target/release/`（`--target` 时在 `target/<triple>/release/`） |
+
+定位命令（Windows）：
+
+```powershell
+where.exe booth booth-mcp        # 已在 PATH 时直接命中
+Get-ChildItem "$env:ProgramFiles\booth-keeper" -Filter 'booth*.exe'
+```
+
+若 `booth-mcp` 不在 PATH，MCP 客户端配置改填绝对路径（示例见 `skills/booth/README.md`）。
+**优先走 `booth` CLI（官方通道），不要绕开或重新实现。**
+
 ```bash
 booth download <店铺URL|散链> [--cookie ...] [--out DIR]   # 下载免费商品
 booth organize <本地包...> [--id ID] [--out DIR]           # 按 ID 整理归档
