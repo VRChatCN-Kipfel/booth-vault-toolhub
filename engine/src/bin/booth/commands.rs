@@ -681,12 +681,12 @@ fn cmd_update_check(use_proxy: bool, json: bool) -> u8 {
             "发现新版本: {} → {}  下载: {}",
             info.local_version, info.remote_version, info.url
         );
-    } else if info.remote_version.is_empty() {
-        println!("无法获取最新版本（网络不可达）");
     } else {
         println!("已是最新版本: {}", info.local_version);
     }
-    if info.error.is_some() { 2 } else { 0 }
+    // 退出码：0 成功 / 1 有失败（网络不可达）——按 AGENTS.md 契约，
+    // 网络波动属「有失败」而非「致命」（致命通常指参数/配置类错误）。
+    if info.error.is_some() { 1 } else { 0 }
 }
 
 /// 致命错误输出。
