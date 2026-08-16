@@ -6,6 +6,7 @@
 //! 兼容历史遗留编码契约（当前写入为 UTF-8 无 BOM，旧版曾写 UTF-16）。
 
 use fancy_regex::Regex;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::clean::extract_version_tag;
@@ -180,11 +181,20 @@ fn default_attr(_p: &Path) -> u32 {
 ///
 /// 跳过隐藏目录与非目录项。
 pub fn audit_tree(base: &Path) -> Vec<AuditResult> {
-    audit_tree_with_attrs(base, default_attr)
+    audit_tree_with_fix(base, false)
+}
+
+/// 遍历 `base` 下的商品目录；`fix=true` 时为每个问题目录给出修复建议。
+pub fn audit_tree_with_fix(base: &Path, fix: bool) -> Vec<AuditResult> {
+    audit_tree_with_attrs(base, fix, default_attr)
 }
 
 /// `audit_tree` 的属性注入版本（平台无关，便于测试）。
-fn audit_tree_with_attrs(base: &Path, attr_fn: impl Fn(&Path) -> u32) -> Vec<AuditResult> {
+fn audit_tree_with_attrs(
+    base: &Path,
+    fix: bool,
+    attr_fn: impl Fn(&Path) -> u32,
+) -> Vec<AuditResult> {
     let mut out = Vec::new();
     let Ok(cats) = sorted_dirs(base) else {
         return out;
@@ -200,7 +210,7 @@ fn audit_tree_with_attrs(base: &Path, attr_fn: impl Fn(&Path) -> u32) -> Vec<Aud
             if attr_fn(&d) & ATTR_HIDDEN != 0 {
                 continue;
             }
-            let result = audit_one_with_attrs(&d, false, &attr_fn);
+            let result = audit_one_with_attrs(&d, fix, &attr_fn);
             if !result.issues.is_empty() {
                 out.push(result);
             }
@@ -237,7 +247,8 @@ pub struct ScannedDir {
 /// 与 `audit_tree` 不同：只按目录名匹配 ID，不做属性位/字段级检查。
 pub fn scan_library(root: &Path) -> Vec<ScannedDir> {
     let mut out = Vec::new();
-    walk_dirs(root, &mut out);
+    let mut visited = HashSet::new();
+    walk_dirs(root, &mut out, &mut visited);
     // 按 id 稳定排序：跨平台目录枚举顺序不一致（Windows vs Linux/macOS），
     // 巡检结果必须有确定顺序，否则测试与后续处理依赖枚举顺序。
     out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -245,7 +256,13 @@ pub fn scan_library(root: &Path) -> Vec<ScannedDir> {
 }
 
 /// 递归遍历目录树：匹配 ID 目录名则记录，并继续深入所有非隐藏子目录。
-fn walk_dirs(dir: &Path, out: &mut Vec<ScannedDir>) {
+fn walk_dirs(dir: &Path, out: &mut Vec<ScannedDir>, visited: &mut HashSet<PathBuf>) {
+    // `is_dir` 会跟随符号链接和 Windows junction；按规范化路径去重以避免环路。
+    if let Ok(canonical) = dir.canonicalize()
+        && !visited.insert(canonical)
+    {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -278,7 +295,7 @@ fn walk_dirs(dir: &Path, out: &mut Vec<ScannedDir>) {
                 local_tag: extract_version_tag(name),
             });
         }
-        walk_dirs(&path, out);
+        walk_dirs(&path, out, visited);
     }
 }
 
@@ -811,7 +828,7 @@ mod tests {
         std::fs::write(good.join("desktop.ini"), good_ini()).unwrap();
         std::fs::write(good.join(".folder_icon.ico"), vec![0u8; 2048]).unwrap();
         // bad 与隐藏目录均为空；隐藏目录应被跳过。
-        let results = audit_tree_with_attrs(&base, |p| {
+        let results = audit_tree_with_attrs(&base, true, |p| {
             let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
             match name {
                 "desktop.ini" => ATTR_HIDDEN | ATTR_SYSTEM,
@@ -824,6 +841,20 @@ mod tests {
         assert_eq!(results.len(), 1, "results: {:?}", results);
         assert_eq!(results[0].dir, bad);
         assert!(results[0].issues.iter().any(|i| i == "ini 缺失"));
+        assert_eq!(results[0].suggested_fix, Some(FixAction::NeedsCover));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_library_skips_symlink_cycles() {
+        let base = tmpdir("scan_cycle");
+        make_id_dir(&base, "1234567_商品");
+        std::os::unix::fs::symlink(&base, base.join("cycle")).unwrap();
+
+        let out = scan_library(&base);
+
+        assert_eq!(out.len(), 1, "out: {out:?}");
         let _ = std::fs::remove_dir_all(&base);
     }
 

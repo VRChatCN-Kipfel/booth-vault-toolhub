@@ -53,12 +53,12 @@ pub fn resolve_proxy(config: &AppConfig) -> Option<String> {
 /// 加载配置：用户目录优先，应用目录兜底，字段级合并。
 pub fn load_config() -> AppConfig {
     let mut cfg = AppConfig::default();
-    if let Some(dir) = user_config_dir() {
-        let path = dir.join(CONFIG_FILENAME);
-        merge_from_file(&mut cfg, &path);
-    }
     if let Some(dir) = local_config_dir() {
         let path = dir.join(LOCAL_CONFIG_FILENAME);
+        merge_from_file(&mut cfg, &path);
+    }
+    if let Some(dir) = user_config_dir() {
+        let path = dir.join(CONFIG_FILENAME);
         merge_from_file(&mut cfg, &path);
     }
     cfg
@@ -168,6 +168,23 @@ mod tests {
         std::fs::write(&path, "proxy = \"http://file.example:9090\"\n").unwrap();
         merge_from_file(&mut cfg, &path);
         assert_eq!(cfg.proxy.as_deref(), Some("http://file.example:9090"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn user_config_overrides_local_config() {
+        let dir = std::env::temp_dir().join(format!("bvt_config_order_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let local = dir.join("local.toml");
+        let user = dir.join("user.toml");
+        std::fs::write(&local, "proxy = \"http://local.example:8080\"\n").unwrap();
+        std::fs::write(&user, "proxy = \"http://user.example:8080\"\n").unwrap();
+
+        let mut cfg = AppConfig::default();
+        merge_from_file(&mut cfg, &local);
+        merge_from_file(&mut cfg, &user);
+
+        assert_eq!(cfg.proxy.as_deref(), Some("http://user.example:8080"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
