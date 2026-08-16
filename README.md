@@ -30,6 +30,7 @@ BOOTH 素材统一管理工具 —— VRChat / XR 创作者的 BOOTH 资产全�
 - **整理**：本地压缩包文件名含 7 位 ID → 按 ID 取元数据归档（无登录）
 - **按名搜索**：文件名无 ID 时，清洗生成搜索候选 → 评分选优 → 归档（含水印/UnityPackage 二次验真）
 - **巡检**：文件夹图标三件套（cover.jpg + .folder_icon.ico + desktop.ini）完整性扫描 + 自动修复 + 版本巡检 + 错位纠正
+- **自更新检查**：GitHub 查最新 release（HTML 重定向法规避 API 限流 + 403/429 退避 + 代理直连重试），CLI/MCP 可用；GUI 预留 backend `update_check` 命令，前端入口待接入
 - **三主题六配色 GUI**：朱印 / 鎏金 / 古纹 × 亮 / 暗，SVG 母题纹样，动效齐全
 
 ## 架构
@@ -76,6 +77,7 @@ booth download <店铺URL|散链> [--cookie ...] [--out DIR]   # 下载免费商
 booth organize <本地包...> [--id ID] [--out DIR]           # 按 ID 整理归档
 booth search   <本地文件...> [--id ID] [--base-dir DIR]    # 按名搜索整理
 booth audit    [--base DIR] [--dry-run]                    # 图标三件套巡检
+booth update-check [--proxy]                               # 工具自更新检查
 ```
 
 - 全局 `--json`：结构化输出（MCP 依赖）

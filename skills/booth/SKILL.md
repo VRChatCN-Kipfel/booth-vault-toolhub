@@ -25,8 +25,8 @@ BOOTH（日本数字创作集市，VRChat 素材主产地）素材的**下载 / 
 
 | 入口 | 说明 | 适用 |
 |------|------|------|
-| **`booth` CLI** | 编译后的二进制，四子命令 | 终端/agent 首选 |
-| **booth-mcp** | MCP stdio server，暴露同四工具 | opencode / Claude Code 等 MCP 客户端 |
+| **`booth` CLI** | 编译后的二进制，五子命令 | 终端/agent 首选 |
+| **booth-mcp** | MCP stdio server，暴露同五工具 | opencode / Claude Code 等 MCP 客户端 |
 | 原 `python scripts/booth.py` | 旧版 Python（仅参考，已废弃） | 不推荐 |
 
 ## 找到 CLI / MCP 二进制（先定位，再调用）
@@ -54,13 +54,14 @@ booth download <店铺URL|散链> [--cookie ...] [--out DIR]   # 下载免费商
 booth organize <本地包...> [--id ID] [--out DIR]           # 按 ID 整理归档
 booth search   <本地文件...> [--id ID] [--base-dir DIR]    # 按名搜索整理
 booth audit    [--base DIR] [--dry-run]                    # 图标三件套巡检
+booth update-check [--proxy]                               # 工具自更新检查
 ```
 
 全局 `--json` 输出结构化结果，退出码语义：`0` 成功 / `1` 有失败项 / `2` 致命错误。
 
 ## MCP 接入（可选）
 
-以 stdio server 运行 `booth-mcp`，同四工具（download/organize/search/audit），
+以 stdio server 运行 `booth-mcp`，同五工具（download/organize/search/audit/update_check），
 JSON 输入输出与 CLI 完全一致。客户端配置示例（`.mcp.json` 片段）：
 
 ```json
@@ -81,6 +82,8 @@ JSON 输入输出与 CLI 完全一致。客户端配置示例（`.mcp.json` 片�
 │   └─► booth search                （按名字搜索 + 水印/UnityPackage 辅助识别）
 └─ 主上想让整个库图标整齐 / 图标异常
     └─► booth audit                 （三件套巡检 + 自动修复）
+└─ 询问工具是否有新版本 / 版本号
+    └─► booth update-check [--proxy]（GitHub 查最新 release，HTML 重定向法规避限流）
 ```
 
 ## 关键共享知识
