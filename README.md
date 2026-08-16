@@ -68,6 +68,9 @@ cargo build --release --workspace
 > 发布包（安装版/便携版）中 `booth` / `booth-mcp` / `booth-shell` 与主程序
 > `booth-vault-toolhub` 同目录（安装版在 `C:\Program Files\booth-vault-toolhub\`），agent/MCP
 > 直接按此定位，无需另行安装。
+>
+> MSI/NSIS 安装器均带可选组件页（booth CLI / booth MCP / booth Shell / Add to user PATH，
+> 默认全勾选）：默认把安装目录加入当前用户 PATH（幂等，卸载自动移除），装完即可直接调 `booth`。
 
 ### CLI
 

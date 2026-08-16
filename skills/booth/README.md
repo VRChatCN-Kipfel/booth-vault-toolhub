@@ -35,8 +35,9 @@ npx skills add -y --all --skill '*' -a opencode -a claude-code /path/to/booth-va
 - 便携版 zip：解压目录
 - 安装版（MSI/NSIS）：`C:\Program Files\booth-vault-toolhub\`
 
-若不在 PATH，用绝对路径（例如 `C:\Program Files\booth-vault-toolhub\booth-mcp.exe`）。
-建议把该目录加入 PATH 后技能即可直接调 `booth`：
+**MSI/NSIS 安装器都带"Add to user PATH"选项（默认勾选）**：安装目录自动加入当前用户 PATH
+（MSI 用原生 Environment 表，NSIS 用 EnVar 插件，均幂等；卸载时自动移除），装完即可直接调 `booth`
+而无需手动改 PATH。仅当用户安装时取消了该勾选，才需要补 PATH：
 
 ```powershell
 # 把 booth 二进制目录加入当前用户 PATH
