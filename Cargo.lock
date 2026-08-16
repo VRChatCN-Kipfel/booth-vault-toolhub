@@ -1349,7 +1349,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shell_win",
- "toml 0.9.12+spec-1.1.0",
+ "toml 1.1.4+spec-1.1.0",
  "unicode-general-category",
 ]
 
