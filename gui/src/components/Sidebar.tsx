@@ -170,7 +170,7 @@ export function Sidebar({
         <Brand>
           <Seal>{sealSvg}</Seal>
           <BrandText>
-            <span className="en">Booth Keeper</span>
+            <span className="en">Booth Vault Toolhub</span>
             <span className="zh">展位守护者</span>
           </BrandText>
         </Brand>

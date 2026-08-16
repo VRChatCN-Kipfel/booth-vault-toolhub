@@ -48,7 +48,7 @@ export function Titlebar() {
 
   return (
     <Bar data-tauri-drag-region>
-      <Title data-tauri-drag-region>Booth Keeper</Title>
+      <Title data-tauri-drag-region>Booth Vault Toolhub</Title>
       <Controls>
         <CtrlBtn onClick={() => void win.minimize()} title="最小化">
           <Minus />
