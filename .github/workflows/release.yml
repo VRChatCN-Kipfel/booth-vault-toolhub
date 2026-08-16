@@ -1,4 +1,4 @@
-﻿# Release 发布：消费 CI 的三架构 booth 二进制，做最终打包（安装器 + 便携版）并发布。
+# Release 发布：消费 CI 的三架构 booth 二进制，做最终打包（安装器 + 便携版）并发布。
 #
 # 职责划分：
 #   CI   = 测试门控 + 构建三架构 booth 二进制（副产品，供 release 用）
@@ -70,7 +70,7 @@ jobs:
             msi: false
     runs-on: ${{ matrix.runs_on }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 下载 CI 构建的对应架构 booth 三二进制
       - name: Download booth binaries

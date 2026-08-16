@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -37,7 +37,7 @@ jobs:
             wv2: arm64
     runs-on: ${{ matrix.runs_on }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 配置 MSVC 开发环境（vcvarsall 官方 PATH/INCLUDE/LIB；
       # 复用 VS 自带工具集，避免 Git Bash /usr/bin/link.exe 遮蔽）
@@ -106,7 +106,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
