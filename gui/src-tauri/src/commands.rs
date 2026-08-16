@@ -793,3 +793,20 @@ pub async fn fix_mismatch(
     unregister_task(&registry, &task_id);
     Ok(serde_json::json!({ "task_id": task_id, "fixed": fixed, "failed": failed }))
 }
+
+/// update_check：检查工具自身是否有新版本（GitHub Releases）。
+#[tauri::command]
+pub async fn update_check(use_proxy: bool) -> Result<serde_json::Value, String> {
+    let info =
+        tauri::async_runtime::spawn_blocking(move || engine::update::check_update(use_proxy))
+            .await
+            .map_err(|e| format!("更新检查任务失败: {e}"))?;
+    Ok(serde_json::json!({
+        "command": "update_check",
+        "has_update": info.has_update,
+        "local_version": info.local_version,
+        "remote_version": info.remote_version,
+        "url": info.url,
+        "error": info.error,
+    }))
+}

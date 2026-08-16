@@ -130,6 +130,25 @@ struct AuditResult {
     failed: usize,
 }
 
+// ── update_check ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+struct UpdateCheckParams {
+    /// 是否使用配置/环境代理（默认直连）。
+    #[serde(default)]
+    use_proxy: bool,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct UpdateCheckResult {
+    command: String,
+    has_update: bool,
+    local_version: String,
+    remote_version: String,
+    url: String,
+    error: Option<String>,
+}
+
 // ── 服务 ─────────────────────────────────────────────────────────
 
 /// BOOTH MCP 服务。
@@ -385,6 +404,27 @@ impl BoothServer {
             fixed,
             no_cover,
             failed,
+        };
+        let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+        CallToolResult::success(vec![ContentBlock::text(text)])
+    }
+
+    /// 检查工具自身是否有新版本（GitHub Releases）。
+    #[tool(
+        description = "检查 booth-vault-toolhub 工具自身是否有新版本：拉取 GitHub Releases 最新 tag 与本地版本比较，返回是否有更新、最新版本号与下载链接。优先用 HTML 重定向法（不消耗 API 配额）。"
+    )]
+    async fn update_check(
+        &self,
+        Parameters(params): Parameters<UpdateCheckParams>,
+    ) -> CallToolResult {
+        let info = engine::update::check_update(params.use_proxy);
+        let result = UpdateCheckResult {
+            command: "update_check".to_string(),
+            has_update: info.has_update,
+            local_version: info.local_version,
+            remote_version: info.remote_version,
+            url: info.url,
+            error: info.error,
         };
         let text = serde_json::to_string_pretty(&result).unwrap_or_default();
         CallToolResult::success(vec![ContentBlock::text(text)])
