@@ -1,4 +1,4 @@
-﻿# Release 发布：消费 CI 的三架构 booth 二进制，做最终打包（安装器 + 便携版）并发布。
+# Release 发布：消费 CI 的三架构 booth 二进制，做最终打包（安装器 + 便携版）并发布。
 #
 # 职责划分：
 #   CI   = 测试门控 + 构建三架构 booth 二进制（副产品，供 release 用）
@@ -93,7 +93,7 @@ jobs:
           components: rustfmt, clippy
           targets: ${{ matrix.rust_target }}
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
