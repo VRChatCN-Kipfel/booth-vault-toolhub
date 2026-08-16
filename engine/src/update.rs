@@ -177,21 +177,24 @@ pub fn check_update(use_proxy: bool) -> UpdateInfo {
     } else {
         None
     };
+    // 复用 client：代理与直连各 1 个，避免每次调用建 4 个 reqwest Client。
+    let proxied = github_client(proxy.clone());
+    let direct = github_client(None);
 
     // 通道 1：HTML 重定向法（无配额）
-    if let Some(tag) = fetch_html_tag(&github_client(proxy.clone())) {
+    if let Some(tag) = fetch_html_tag(&proxied) {
         return build_info(tag, None);
     }
     // 通道 2：API（可能限流 403）
-    if let Some(tag) = fetch_api_tag(&github_client(proxy.clone())) {
+    if let Some(tag) = fetch_api_tag(&proxied) {
         return build_info(tag, None);
     }
     // 通道 3：代理失败 → 直连重试
     if proxy.is_some() {
-        if let Some(tag) = fetch_html_tag(&github_client(None)) {
+        if let Some(tag) = fetch_html_tag(&direct) {
             return build_info(tag, None);
         }
-        if let Some(tag) = fetch_api_tag(&github_client(None)) {
+        if let Some(tag) = fetch_api_tag(&direct) {
             return build_info(tag, None);
         }
     }
