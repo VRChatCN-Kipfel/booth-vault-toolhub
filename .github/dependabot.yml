@@ -1,0 +1,41 @@
+﻿version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "00:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: "chore(deps:cargo)"
+    groups:
+      cargo:
+        patterns:
+          - "*"
+  - package-ecosystem: "npm"
+    directory: "/gui"
+    schedule:
+      interval: "daily"
+      time: "00:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: "chore(deps:npm)"
+    groups:
+      npm:
+        patterns:
+          - "*"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "00:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: "chore(deps:workflow)"
+    groups:
+      actions:
+        patterns:
+          - "*"
