@@ -28,9 +28,7 @@ fn is_rate_limit(url: &str, code: u16) -> bool {
 ///
 /// `attempt` 从 1 起（第 1 次失败后等待 2s，第 2 次 4s……）。
 fn backoff_secs(attempt: u32, retry_after: Option<u64>) -> u64 {
-    retry_after
-        .unwrap_or(1 << attempt)
-        .min(MAX_BACKOFF_SECS)
+    retry_after.unwrap_or(1 << attempt).min(MAX_BACKOFF_SECS)
 }
 
 /// 通用指数退避重试循环（测试与潜在复用共用）。
