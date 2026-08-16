@@ -247,6 +247,8 @@
                 Absent="disallow">
 
             <ComponentRef Id="RegistryEntries"/>
+            <!-- self-registered location var (installed unconditionally; the GUI also writes it at runtime, removed on uninstall) -->
+            <ComponentRef Id="RegisterToolhubLocation"/>
 
             {{#each resource_file_ids as |resource_file_id| ~}}
                 <ComponentRef Id="{{ resource_file_id }}"/>

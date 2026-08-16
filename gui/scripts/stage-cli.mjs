@@ -76,6 +76,10 @@ const wxs = `<?if $(sys.BUILDARCH)="x86"?>
             <Component Id="AddBoothToPath" Guid="{7726564C-F68A-48B6-9CE1-D283EACF716A}" KeyPath="yes">
                 <Environment Id="AddBoothToPathEnv" Name="PATH" Value="[INSTALLDIR]" Action="set" Part="last" System="no" />
             </Component>
+            <!-- 自注册位置变量：与 GUI 运行时自注册同语义（等值覆盖），卸载时按值清理 -->
+            <Component Id="RegisterToolhubLocation" Guid="{D78CAD9C-C0A8-4AD9-8715-BFC6DB0E82E6}" KeyPath="yes">
+                <Environment Id="ToolhubLocationEnv" Name="BOOTHVAULT_TOOLHUB" Value="[INSTALLDIR]" Action="set" System="no" />
+            </Component>
         </DirectoryRef>
 
         <Feature Id="BoothCLI" Title="booth CLI" Level="1" Absent="allow">

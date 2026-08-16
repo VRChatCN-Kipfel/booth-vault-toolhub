@@ -38,6 +38,7 @@ ManifestDPIAwareness PerMonitorV2
 !include "StrFunc.nsh"
 ${StrCase}
 ${StrLoc}
+${UnStrCase}
 
 {{#if installer_hooks}}
 !include "{{installer_hooks}}"
@@ -785,6 +786,9 @@ Section "Add booth dir to user PATH" SEC_AddToPath
   !endif
   EnVar::AddValue "PATH" "$INSTDIR"
   Pop $0
+  ; self-registered location var (same semantics as the GUI runtime self-registration;
+  ; overwritten in place; user-level HKCU)
+  WriteRegStr HKCU "Environment" "BOOTHVAULT_TOOLHUB" "$INSTDIR"
 SectionEnd
 
 Function .onInstSuccess
@@ -943,6 +947,20 @@ Section Uninstall
     !endif
     EnVar::DeleteValue "PATH" "$INSTDIR"
     Pop $0
+  ${EndIf}
+
+  ; Remove BOOTHVAULT_TOOLHUB if it still points to this install dir (case-insensitive)
+  ${If} $UpdateMode <> 1
+    ReadRegStr $R8 HKCU "Environment" "BOOTHVAULT_TOOLHUB"
+    ${If} $R8 != ""
+      ${UnStrCase} $R8 $R8 "L"
+      ${UnStrCase} $R9 "$INSTDIR" "L"
+      ${If} $R8 == $R9
+        EnVar::SetHKCU
+        EnVar::Delete "BOOTHVAULT_TOOLHUB"
+        Pop $0
+      ${EndIf}
+    ${EndIf}
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL
