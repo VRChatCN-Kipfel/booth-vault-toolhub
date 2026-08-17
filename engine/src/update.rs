@@ -52,10 +52,16 @@ pub fn local_version() -> String {
 
 /// 原始 Cargo 版本 → 显示版本映射（纯函数，供测试与本地版本展示）。
 ///
-/// `0.0.0` 占位映射为 `Nightly Build`；其余版本原样返回。
+/// 规则：
+///   - `0.0.0` 占位映射为 `Nightly Build`。
+///   - `0.0.0-{tail}`（CI 分支构建的非法版本补位）剥离前缀显示 `{tail}`（如
+///     `0.0.0-refactor-update-and-version-d54d83f` → `refactor-update-and-version-d54d83f`）。
+///   - 其余版本（tag 直发/最近 tag 分支构建）原样返回。
 pub fn display_version(raw: &str) -> String {
     if raw == "0.0.0" {
         "Nightly Build".to_string()
+    } else if let Some(tail) = raw.strip_prefix("0.0.0-") {
+        tail.to_string()
     } else {
         raw.to_string()
     }
@@ -466,6 +472,15 @@ mod tests {
         assert_eq!(display_version("0.0.0"), "Nightly Build");
         assert_eq!(display_version("1.2.3"), "1.2.3");
         assert_eq!(display_version("1.0.0-f3ab2c1"), "1.0.0-f3ab2c1");
+        // 分支构建非法版本补位后剥离前缀显示。
+        assert_eq!(
+            display_version("0.0.0-refactor-update-and-version-d54d83f"),
+            "refactor-update-and-version-d54d83f"
+        );
+        assert_eq!(
+            display_version("0.0.0-24-merge-d54d83f"),
+            "24-merge-d54d83f"
+        );
     }
 
     #[test]
