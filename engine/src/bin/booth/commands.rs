@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use crate::{Cli, Command, GroupBy, ShellCmd};
-use engine::config::{AppConfig, default_rate_limit_secs, load_config};
+use engine::config::{AppConfig, default_rate_limit_secs, load_config, resolve_cookie};
 use engine::session::make_session;
 
 /// 运行命令，返回退出码。
@@ -129,7 +129,8 @@ fn cmd_download(
         }
     }
 
-    let client = make_session(config, cookie);
+    let cookie = resolve_cookie(cookie, config);
+    let client = make_session(config, cookie.as_deref());
     let rate_limit = config
         .rate_limit_secs
         .unwrap_or_else(default_rate_limit_secs);
@@ -244,17 +245,10 @@ fn process_download_one(
     Ok(true)
 }
 
-/// 设置文件夹图标（Windows 用 shell_win；其余平台跳过）。
+/// 设置文件夹图标（Windows / macOS 走 engine 默认实现）。
 fn apply_icon(cover: &Path, folder: &Path) {
-    #[cfg(windows)]
-    {
-        if cover.is_file() {
-            let _ = shell_win::folder_icon::make_folder_icon(cover, folder);
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (cover, folder);
+    if cover.is_file() {
+        let _ = engine::organize::default_icon_fn(cover, folder);
     }
 }
 
@@ -275,11 +269,12 @@ fn cmd_organize(
             return fail(json, "未指定输出目录：用 --out 或配置文件 download_root");
         }
     };
-    let client = make_session(config, cookie);
+    let cookie = resolve_cookie(cookie, config);
+    let client = make_session(config, cookie.as_deref());
     let opts = engine::organize::OrganizeOptions {
         out_root: &out_root,
         dry_run,
-        cookie,
+        cookie: cookie.as_deref(),
     };
     let mut ok = 0usize;
     let mut failures: Vec<String> = Vec::new();
@@ -333,17 +328,9 @@ fn cmd_organize(
     if failures.is_empty() { 0 } else { 1 }
 }
 
-/// 图标注入：Windows 用 shell_win，其余平台 no-op。
+/// 图标注入：Windows / macOS 走 engine 默认实现。
 fn icon_fn(cover: &Path, folder: &Path) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        shell_win::folder_icon::make_folder_icon(cover, folder).map_err(|e| e.to_string())
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (cover, folder);
-        Ok(())
-    }
+    engine::organize::default_icon_fn(cover, folder)
 }
 
 /// search 命令（按名搜索）。
@@ -369,7 +356,8 @@ fn cmd_search(
             );
         }
     };
-    let client = make_session(config, cookie);
+    let cookie = resolve_cookie(cookie, config);
+    let client = make_session(config, cookie.as_deref());
     let mut matched: Vec<String> = Vec::new();
     let mut failures: Vec<String> = Vec::new();
 
@@ -398,7 +386,7 @@ fn cmd_search(
             continue;
         }
         // 完整路径：搜索 + 整理。
-        match process_search_file(&client, path, &base, force_id, cookie) {
+        match process_search_file(&client, path, &base, force_id, cookie.as_deref()) {
             Ok(Some(id)) => matched.push(id),
             Ok(None) => {}
             Err(e) => failures.push(format!("{}: {e}", path.display())),
@@ -597,27 +585,17 @@ fn cmd_audit(
 /// shell 图标命令。
 fn cmd_shell(cmd: ShellCmd) -> u8 {
     match cmd {
-        ShellCmd::Set { cover, folder } => {
-            #[cfg(windows)]
-            {
-                match shell_win::folder_icon::make_folder_icon(&cover, &folder) {
-                    Ok(()) => {
-                        println!("ok: 三件套已写入 {}", folder.display());
-                        0
-                    }
-                    Err(e) => {
-                        eprintln!("error: {e}");
-                        1
-                    }
-                }
+        ShellCmd::Set { cover, folder } => match engine::organize::default_icon_fn(&cover, &folder)
+        {
+            Ok(()) => {
+                println!("ok: 图标已写入 {}", folder.display());
+                0
             }
-            #[cfg(not(windows))]
-            {
-                let _ = (cover, folder);
-                eprintln!("error: shell 命令仅支持 Windows");
-                2
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
             }
-        }
+        },
         ShellCmd::Reset { folder } => {
             #[cfg(windows)]
             {
@@ -632,30 +610,41 @@ fn cmd_shell(cmd: ShellCmd) -> u8 {
                     }
                 }
             }
-            #[cfg(not(windows))]
+            #[cfg(target_os = "macos")]
+            {
+                match shell_mac::folder_icon::reset_folder_icon(&folder) {
+                    Ok(()) => {
+                        println!("ok: 已清理 {}", folder.display());
+                        0
+                    }
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        1
+                    }
+                }
+            }
+            #[cfg(all(not(windows), not(target_os = "macos")))]
             {
                 let _ = folder;
-                eprintln!("error: shell 命令仅支持 Windows");
+                eprintln!("error: shell reset 仅支持 Windows / macOS");
                 2
             }
         }
         ShellCmd::Audit { folder } => {
             #[cfg(windows)]
-            {
-                let ok = shell_win::folder_icon::has_folder_icon(&folder);
-                if ok {
-                    println!("audit PASS: 三件套完整");
-                    0
-                } else {
-                    println!("audit FAIL: 三件套不完整");
-                    1
-                }
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = folder;
-                eprintln!("error: shell 命令仅支持 Windows");
-                2
+            let ok = shell_win::folder_icon::has_folder_icon(&folder);
+            #[cfg(target_os = "macos")]
+            let ok = shell_mac::folder_icon::has_folder_icon(&folder);
+            #[cfg(all(not(windows), not(target_os = "macos")))]
+            let ok = false;
+            #[cfg(all(not(windows), not(target_os = "macos")))]
+            let _ = &folder;
+            if ok {
+                println!("audit PASS: 图标完整");
+                0
+            } else {
+                println!("audit FAIL: 图标不完整");
+                1
             }
         }
     }

@@ -28,3 +28,6 @@ unicode-general-category = "1.1"
 
 [target.'cfg(windows)'.dependencies]
 shell_win = { path = "../shell_win" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+shell_mac = { path = "../shell_mac" }

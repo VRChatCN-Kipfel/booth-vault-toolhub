@@ -4,11 +4,10 @@
 
 import { useState } from 'react';
 import styled from 'styled-components';
-import { invoke } from '@tauri-apps/api/core';
-import { Channel } from '@tauri-apps/api/core';
 import { AccentButton, SecondaryButton, TextArea, ObsPanel, ProgressBar, Badge, PanelLabel } from '../components/ui';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
+import { runTask } from '../lib/task';
 
 interface ResultItem {
   id: string;
@@ -57,6 +56,7 @@ const ResultRow = styled.div<{ selected: boolean }>`
 
 export function SearchPage() {
   const boothRoot = useAppConfigStore((s) => s.boothRoot);
+  const cookie = useAppConfigStore((s) => s.cookie);
   const [text, setText] = useState('');
   const [results, setResults] = useState<ResultItem[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -71,24 +71,28 @@ export function SearchPage() {
     setStatus('搜索中…');
     setResults([]);
     setRunning(true);
-    const onEvent = new Channel<Record<string, unknown>>();
-    // 把输入当文件路径传入（dry-run 模式只搜不整理）。
-    await invoke('search', {
-      files: [text.trim()],
-      baseDir: boothRoot || null,
-      dryRun: true,
-      onEvent,
-    }).catch((e) => setStatus(String(e)));
-
-    onEvent.onmessage = (evt) => {
-      const type = evt.type as string;
-      if (type === 'itemDone') {
-        setResults((r) => [...r, { id: String(evt.id ?? ''), name: String(evt.message ?? ''), priceText: '' }]);
-      } else if (type === 'finished' || type === 'cancelled') {
-        setRunning(false);
-        setStatus('搜索完成');
-      }
-    };
+    try {
+      await runTask(
+        'search',
+        {
+          files: [text.trim()],
+          baseDir: boothRoot || null,
+          dryRun: true,
+          cookie: cookie || null,
+        },
+        (evt) => {
+          if (evt.type === 'itemDone') {
+            setResults((r) => [...r, { id: String(evt.id ?? ''), name: String(evt.message ?? ''), priceText: '' }]);
+          } else if (evt.type === 'finished' || evt.type === 'cancelled') {
+            setRunning(false);
+            setStatus('搜索完成');
+          }
+        },
+      );
+    } catch (e) {
+      setStatus(String(e));
+      setRunning(false);
+    }
   }
 
   function toggleSelect(id: string) {
@@ -99,25 +103,30 @@ export function SearchPage() {
     if (selected.length === 0) return;
     setArchiving(true);
     setTotal(selected.length);
-    const onEvent = new Channel<Record<string, unknown>>();
-    await invoke('search', {
-      files: selected,
-      baseDir: boothRoot || null,
-      dryRun: false,
-      onEvent,
-    }).catch((e) => setQueue([{ id: '-', message: String(e), status: 'err' }]));
-
-    onEvent.onmessage = (evt) => {
-      const type = evt.type as string;
-      if (type === 'itemDone') {
-        setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'ok' }]);
-      } else if (type === 'itemError') {
-        setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'err' }]);
-      } else if (type === 'finished' || type === 'cancelled') {
-        setArchiving(false);
-        setSelected([]);
-      }
-    };
+    try {
+      await runTask(
+        'search',
+        {
+          files: selected,
+          baseDir: boothRoot || null,
+          dryRun: false,
+          cookie: cookie || null,
+        },
+        (evt) => {
+          if (evt.type === 'itemDone') {
+            setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'ok' }]);
+          } else if (evt.type === 'itemError') {
+            setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'err' }]);
+          } else if (evt.type === 'finished' || evt.type === 'cancelled') {
+            setArchiving(false);
+            setSelected([]);
+          }
+        },
+      );
+    } catch (e) {
+      setQueue([{ id: '-', message: String(e), status: 'err' }]);
+      setArchiving(false);
+    }
   }
 
   return (

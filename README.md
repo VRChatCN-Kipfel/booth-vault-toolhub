@@ -54,6 +54,7 @@ BOOTH 素材统一管理工具 —— VRChat / XR 创作者的 BOOTH 资产全�
 |---|---|---|
 | `engine` | 纯函数层 + 网络 + 归档 + 巡检，三端共享单一事实源 | 三平台 |
 | `shell_win` | 属性位 / desktop.ini / ICO / SHChangeNotify（图标三件套） | Windows only |
+| `shell_mac` | 封面正方形化 + Finder 自定义文件夹图标 | macOS only |
 | `booth-mcp` | MCP stdio server，暴露四工具 | 三平台 |
 | `gui` | Tauri v2 + React 19 桌面应用 | 三平台 |
 
@@ -74,6 +75,8 @@ cargo build --release --workspace
 > 默认全勾选）：默认把安装目录加入当前用户 PATH（幂等，卸载自动移除）。
 > **主程序每次启动会把自身目录写入用户环境变量 `BOOTHVAULT_TOOLHUB`**（便携版同样生效），
 > agent 定位工具目录优先读该变量（验证路径存在），再回退 PATH / 常规位置。
+> macOS：写入 `launchctl setenv` + `~/Library/LaunchAgents/com.boothvault.toolhub.env.plist`，
+> 工具在 `.app/Contents/MacOS/`。
 
 ### CLI
 
@@ -132,11 +135,13 @@ git clone https://github.com/VRChatCN-Kipfel/booth-vault-toolhub.git
 
 ```toml
 proxy = "http://127.0.0.1:7890"   # 可选；优先级 配置文件 > HTTPS_PROXY > 系统默认
+proxy_enabled = true               # false = 强制直连（忽略环境变量/系统代理）
 download_root = "D:/BOOTH"         # 归档根目录（不硬编码路径）
 rate_limit_secs = 0.8              # 限速秒数（三端统一，防封）
+cookie = ""                        # 可选；仅用户目录。CLI --cookie / MCP 参数优先
 ```
 
-- 用户目录：`{config_dir}/booth-vault-toolhub/config.toml`
+- 用户目录：`{config_dir}/booth-vault-toolhub/config.toml`（GUI 设置页写入这里，三端共用）
 - 应用目录：exe 同目录或 CWD 的 `config.toml`
 
 ## 目录结构

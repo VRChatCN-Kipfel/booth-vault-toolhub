@@ -12,12 +12,15 @@ use serde::Serialize;
 use tauri::State;
 use tauri::ipc::Channel;
 
-use engine::config::{AppConfig, default_rate_limit_secs, load_config};
+use engine::config::{
+    AppConfig, GuiSettings, apply_gui_settings, default_rate_limit_secs, gui_settings_from_config,
+    load_config, resolve_cookie, save_user_config,
+};
 use engine::session::make_session;
 
 /// 全局任务取消状态：`task_id -> cancel_flag`。
-#[derive(Default)]
-pub struct TaskRegistry(pub Mutex<HashMap<String, Arc<AtomicBool>>>);
+#[derive(Clone, Default)]
+pub struct TaskRegistry(pub Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>);
 
 /// 进度事件（前端 Channel 载荷）。
 #[derive(Clone, Debug, Serialize)]
@@ -65,11 +68,6 @@ fn register_task(registry: &State<'_, TaskRegistry>) -> (String, Arc<AtomicBool>
     (task_id, flag)
 }
 
-/// 任务完成后从注册表移除。
-fn unregister_task(registry: &State<'_, TaskRegistry>, task_id: &str) {
-    registry.0.lock().unwrap().remove(task_id);
-}
-
 /// 协作式取消：检查标志并睡眠一小段（让出）。
 fn cancelled(flag: &AtomicBool) -> bool {
     flag.load(Ordering::Relaxed)
@@ -97,28 +95,70 @@ pub fn cancel_task(registry: State<'_, TaskRegistry>, task_id: String) -> bool {
     }
 }
 
-/// download：下载免费商品（散链/店铺）。
+/// 立刻返回 task_id，工作在后台跑；结束时从注册表摘掉。
+fn spawn_job<F>(registry: &State<'_, TaskRegistry>, job: F) -> String
+where
+    F: FnOnce(Arc<AtomicBool>) + Send + 'static,
+{
+    let (task_id, flag) = register_task(registry);
+    let map = registry.0.clone();
+    let tid = task_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        job(flag);
+        if let Ok(mut g) = map.lock() {
+            g.remove(&tid);
+        }
+    });
+    task_id
+}
+
+#[tauri::command]
+pub fn load_app_config() -> GuiSettings {
+    gui_settings_from_config(&load_config())
+}
+
+#[tauri::command]
+pub fn save_app_config(
+    booth_root: String,
+    proxy: bool,
+    proxy_url: String,
+    cookie: String,
+) -> Result<(), String> {
+    let mut cfg = load_config();
+    apply_gui_settings(
+        &mut cfg,
+        &GuiSettings {
+            booth_root,
+            proxy,
+            proxy_url,
+            cookie,
+        },
+    );
+    save_user_config(&cfg)
+}
+
+/// download：下载免费商品（散链/店铺）。立刻返回 task_id。
 #[allow(clippy::too_many_arguments)] // Tauri command 参数由前端 invoke 传入
 #[tauri::command]
-pub async fn download(
+pub fn download(
     registry: State<'_, TaskRegistry>,
     items: Vec<String>,
     shop: Option<String>,
     out: Option<String>,
-    limit: usize,
+    limit: Option<usize>,
     dry_run: bool,
     cookie: Option<String>,
     on_event: Channel<ProgressEvent>,
-) -> Result<serde_json::Value, String> {
+) -> Result<String, String> {
     let config = load_config();
     let out_root = resolve_root(&config, out.as_deref())?;
+    let cookie = resolve_cookie(cookie.as_deref(), &config);
     let client = make_session(&config, cookie.as_deref());
     let rate_limit = config
         .rate_limit_secs
         .unwrap_or_else(default_rate_limit_secs);
-    let (task_id, cancel_flag) = register_task(&registry);
+    let limit = limit.unwrap_or(0);
 
-    // 解析散链/裸 ID。
     let mut ids: Vec<String> = Vec::new();
     for blob in &items {
         for id in engine::id::parse_discrete(blob) {
@@ -140,28 +180,39 @@ pub async fn download(
         }
     }
     if ids.is_empty() && shop_id.is_none() {
-        unregister_task(&registry, &task_id);
         return Err("提供店铺 URL/子域名，或用 items 提供商品链接/ID".to_string());
     }
-    if let Some(sub) = shop_id {
-        let found = engine::search::crawl_item_ids(&client, &sub, rate_limit)
-            .map_err(|e| format!("店铺翻页失败: {e}"))?;
-        for id in found {
-            if !ids.contains(&id) {
-                ids.push(id);
+
+    Ok(spawn_job(&registry, move |flag| {
+        let mut ids = ids;
+        if let Some(sub) = shop_id {
+            if cancelled(&flag) {
+                let _ = on_event.send(ProgressEvent::Cancelled);
+                return;
+            }
+            match engine::search::crawl_item_ids(&client, &sub, rate_limit) {
+                Ok(found) => {
+                    for id in found {
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = on_event.send(ProgressEvent::ItemError {
+                        id: sub,
+                        message: format!("店铺翻页失败: {e}"),
+                    });
+                    let _ = on_event.send(ProgressEvent::Finished { done: 0, failed: 1 });
+                    return;
+                }
             }
         }
-    }
-
-    let total = ids.len();
-    let _ = on_event.send(ProgressEvent::TaskStarted { total });
-
-    // blocking 任务移入 spawn_blocking（进度发送全部在闭包内，避免 move 后借用）。
-    let client_c = client.clone();
-    let flag = cancel_flag.clone();
-    let handle = tauri::async_runtime::spawn_blocking(move || {
+        let total = ids.len();
+        let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let mut d = 0usize;
         let mut f = 0usize;
+        let mut processed = 0usize;
         let mut cancelled_now = false;
         for item_id in ids {
             if cancelled(&flag) {
@@ -171,9 +222,22 @@ pub async fn download(
             if limit > 0 && d >= limit {
                 break;
             }
-            match download_one(&client_c, &out_root, &item_id, dry_run, rate_limit) {
-                Ok(true) => d += 1,
-                Ok(false) => {}
+            match download_one(&client, &out_root, &item_id, dry_run, rate_limit) {
+                Ok(true) => {
+                    d += 1;
+                    let _ = on_event.send(ProgressEvent::ItemDone {
+                        id: item_id.clone(),
+                        message: "已下载".to_string(),
+                        status: "ok".to_string(),
+                    });
+                }
+                Ok(false) => {
+                    let _ = on_event.send(ProgressEvent::ItemDone {
+                        id: item_id.clone(),
+                        message: "无免费文件".to_string(),
+                        status: "warn".to_string(),
+                    });
+                }
                 Err(e) => {
                     f += 1;
                     let _ = on_event.send(ProgressEvent::ItemError {
@@ -182,19 +246,18 @@ pub async fn download(
                     });
                 }
             }
-            let _ = on_event.send(ProgressEvent::Progress { done: d, total });
+            processed += 1;
+            let _ = on_event.send(ProgressEvent::Progress {
+                done: processed,
+                total,
+            });
         }
         if cancelled_now {
             let _ = on_event.send(ProgressEvent::Cancelled);
         } else {
             let _ = on_event.send(ProgressEvent::Finished { done: d, failed: f });
         }
-        (d, f)
-    });
-
-    let (done, failed) = handle.await.unwrap_or((0, 0));
-    unregister_task(&registry, &task_id);
-    Ok(serde_json::json!({ "task_id": task_id, "done": done, "failed": failed }))
+    }))
 }
 
 /// 单个商品下载（spawn_blocking 内执行）。
@@ -250,36 +313,21 @@ fn download_one(
     Ok(true)
 }
 
-/// 图标注入（Windows 用 shell_win）。
+/// 图标注入（Windows / macOS 走 engine 默认实现）。
 fn apply_icon(cover: &std::path::Path, folder: &std::path::Path) {
-    #[cfg(windows)]
-    {
-        if cover.is_file() {
-            let _ = shell_win::folder_icon::make_folder_icon(cover, folder);
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (cover, folder);
+    if cover.is_file() {
+        let _ = engine::organize::default_icon_fn(cover, folder);
     }
 }
 
 /// 图标注入（返回 Result，供 organize 编排）。
 fn icon_fn(cover: &std::path::Path, folder: &std::path::Path) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        shell_win::folder_icon::make_folder_icon(cover, folder).map_err(|e| e.to_string())
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (cover, folder);
-        Ok(())
-    }
+    engine::organize::default_icon_fn(cover, folder)
 }
 
-/// organize：按 ID 整理本地压缩包。
+/// organize：按 ID 整理本地压缩包。立刻返回 task_id。
 #[tauri::command]
-pub async fn organize(
+pub fn organize(
     registry: State<'_, TaskRegistry>,
     archives: Vec<String>,
     out: Option<String>,
@@ -287,17 +335,15 @@ pub async fn organize(
     dry_run: bool,
     cookie: Option<String>,
     on_event: Channel<ProgressEvent>,
-) -> Result<serde_json::Value, String> {
+) -> Result<String, String> {
     let config = load_config();
     let out_root = resolve_root(&config, out.as_deref())?;
+    let cookie = resolve_cookie(cookie.as_deref(), &config);
     let client = make_session(&config, cookie.as_deref());
-    let (task_id, cancel_flag) = register_task(&registry);
     let total = archives.len();
-    let _ = on_event.send(ProgressEvent::TaskStarted { total });
 
-    let client_c = client.clone();
-    let flag = cancel_flag.clone();
-    let handle = tauri::async_runtime::spawn_blocking(move || {
+    Ok(spawn_job(&registry, move |flag| {
+        let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let mut ok = 0usize;
         let mut failed = 0usize;
         let mut cancelled_now = false;
@@ -331,7 +377,7 @@ pub async fn organize(
                 cookie: cookie.as_deref(),
             };
             let outcome =
-                engine::organize::organize_archive(&client_c, &path, &item_id, &opts, icon_fn);
+                engine::organize::organize_archive(&client, &path, &item_id, &opts, icon_fn);
             if outcome.ok {
                 ok += 1;
                 let status_str = match outcome.status {
@@ -361,34 +407,28 @@ pub async fn organize(
         } else {
             let _ = on_event.send(ProgressEvent::Finished { done: ok, failed });
         }
-        (ok, failed)
-    });
-
-    let (ok, failed) = handle.await.unwrap_or((0, 0));
-    unregister_task(&registry, &task_id);
-    Ok(serde_json::json!({ "task_id": task_id, "ok": ok, "failed": failed }))
+    }))
 }
 
-/// search：按名搜索并整理本地文件。
+/// search：按名搜索并整理本地文件。立刻返回 task_id。
 #[tauri::command]
-pub async fn search(
+pub fn search(
     registry: State<'_, TaskRegistry>,
     files: Vec<String>,
     base_dir: Option<String>,
     dry_run: bool,
     force_id: Option<String>,
+    cookie: Option<String>,
     on_event: Channel<ProgressEvent>,
-) -> Result<serde_json::Value, String> {
+) -> Result<String, String> {
     let config = load_config();
     let base = resolve_root(&config, base_dir.as_deref())?;
-    let client = make_session(&config, None);
-    let (task_id, cancel_flag) = register_task(&registry);
+    let cookie = resolve_cookie(cookie.as_deref(), &config);
+    let client = make_session(&config, cookie.as_deref());
     let total = files.len();
-    let _ = on_event.send(ProgressEvent::TaskStarted { total });
 
-    let client_c = client.clone();
-    let flag = cancel_flag.clone();
-    let handle = tauri::async_runtime::spawn_blocking(move || {
+    Ok(spawn_job(&registry, move |flag| {
+        let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let mut matched = 0usize;
         let mut failed = 0usize;
         let mut cancelled_now = false;
@@ -406,7 +446,7 @@ pub async fn search(
                 let candidates = engine::clean::sanitize_query(&fname);
                 let mut hit = false;
                 for q in candidates {
-                    match engine::search::search_booth(&client_c, &q) {
+                    match engine::search::search_booth(&client, &q) {
                         Ok(results) => {
                             if let Some(it) = results.first() {
                                 matched += 1;
@@ -434,7 +474,8 @@ pub async fn search(
                 }
                 continue;
             }
-            match process_search_file(&client_c, path, &base, force_id.as_deref()) {
+            match process_search_file(&client, path, &base, force_id.as_deref(), cookie.as_deref())
+            {
                 Ok(Some(id)) => {
                     matched += 1;
                     let _ = on_event.send(ProgressEvent::ItemDone {
@@ -471,12 +512,7 @@ pub async fn search(
                 failed,
             });
         }
-        (matched, failed)
-    });
-
-    let (matched, failed) = handle.await.unwrap_or((0, 0));
-    unregister_task(&registry, &task_id);
-    Ok(serde_json::json!({ "task_id": task_id, "matched": matched, "failed": failed }))
+    }))
 }
 
 /// 按名搜索 + 评分 + 整理。
@@ -485,6 +521,7 @@ fn process_search_file(
     path: &std::path::Path,
     base: &std::path::Path,
     force_id: Option<&str>,
+    cookie: Option<&str>,
 ) -> Result<Option<String>, String> {
     let fname = path
         .file_name()
@@ -527,7 +564,7 @@ fn process_search_file(
     let opts = engine::organize::OrganizeOptions {
         out_root: base,
         dry_run: false,
-        cookie: None,
+        cookie,
     };
     let outcome = engine::organize::organize_archive(client, path, &item.id, &opts, icon_fn);
     if !outcome.ok {
@@ -543,94 +580,100 @@ fn canonical_name(client: &reqwest::blocking::Client, id: &str) -> String {
         .unwrap_or_default()
 }
 
-/// audit：全库文件夹图标三件套巡检（递归扫描 ID 目录）。
+/// audit：全库文件夹图标三件套巡检（递归扫描 ID 目录）。立刻返回 task_id。
 #[tauri::command]
-pub async fn audit(
+pub fn audit(
     registry: State<'_, TaskRegistry>,
     base: Option<String>,
     dry_run: bool,
     no_fix: bool,
     on_event: Channel<ProgressEvent>,
-) -> Result<serde_json::Value, String> {
+) -> Result<String, String> {
     let config = load_config();
     let base_path = resolve_root(&config, base.as_deref())?;
     if !base_path.is_dir() {
         return Err(format!("FATAL: {} 不存在", base_path.display()));
     }
-    let (task_id, cancel_flag) = register_task(&registry);
-    let dirs = engine::audit::scan_library(&base_path);
-    let total = dirs.len();
-    let _ = on_event.send(ProgressEvent::TaskStarted { total });
-    let mut missing = 0usize;
-    for d in &dirs {
-        if cancelled(&cancel_flag) {
-            break;
-        }
-        if !d.missing.is_empty() {
-            missing += 1;
-            if !dry_run && !no_fix {
-                let cover = d.path.join(engine::audit::COVER_FILENAME);
-                if cover.is_file()
-                    && let Err(e) = icon_fn(&cover, &d.path)
-                {
-                    let _ = on_event.send(ProgressEvent::Log {
-                        line: format!("修复失败 {}: {e}", d.path.display()),
-                    });
+
+    Ok(spawn_job(&registry, move |flag| {
+        let dirs = engine::audit::scan_library(&base_path);
+        let total = dirs.len();
+        let _ = on_event.send(ProgressEvent::TaskStarted { total });
+        let mut missing = 0usize;
+        let mut cancelled_now = false;
+        for d in &dirs {
+            if cancelled(&flag) {
+                cancelled_now = true;
+                break;
+            }
+            if !d.missing.is_empty() {
+                missing += 1;
+                if !dry_run && !no_fix {
+                    let cover = d.path.join(engine::audit::COVER_FILENAME);
+                    if cover.is_file()
+                        && let Err(e) = icon_fn(&cover, &d.path)
+                    {
+                        let _ = on_event.send(ProgressEvent::Log {
+                            line: format!("修复失败 {}: {e}", d.path.display()),
+                        });
+                    }
                 }
             }
+            let _ = on_event.send(ProgressEvent::ItemDone {
+                id: format!("{} · {}", d.id, d.name),
+                message: if d.missing.is_empty() {
+                    "[完整]".to_string()
+                } else {
+                    format!("[缺{}]", d.missing.join("/"))
+                },
+                status: if d.missing.is_empty() {
+                    "ok".to_string()
+                } else {
+                    "warn".to_string()
+                },
+            });
         }
-        let _ = on_event.send(ProgressEvent::ItemDone {
-            id: format!("{} · {}", d.id, d.name),
-            message: if d.missing.is_empty() {
-                "[完整]".to_string()
-            } else {
-                format!("[缺{}]", d.missing.join("/"))
-            },
-            status: if d.missing.is_empty() {
-                "ok".to_string()
-            } else {
-                "warn".to_string()
-            },
+        if cancelled_now {
+            let _ = on_event.send(ProgressEvent::Cancelled);
+            return;
+        }
+        let _ = on_event.send(ProgressEvent::Log {
+            line: format!("共 {total} 件，{missing} 件缺失三件套"),
         });
-    }
-    let _ = on_event.send(ProgressEvent::Log {
-        line: format!("共 {total} 件，{missing} 件缺失三件套"),
-    });
-    let _ = on_event.send(ProgressEvent::Finished {
-        done: total,
-        failed: missing,
-    });
-    unregister_task(&registry, &task_id);
-    Ok(serde_json::json!({ "task_id": task_id, "total": total, "missing": missing }))
+        let _ = on_event.send(ProgressEvent::Finished {
+            done: total,
+            failed: missing,
+        });
+    }))
 }
 
 /// version_audit：联网比对官方商品名版本号，报告本地落后于官方的商品。
 #[tauri::command]
-pub async fn version_audit(
+pub fn version_audit(
     registry: State<'_, TaskRegistry>,
     base: Option<String>,
     on_event: Channel<ProgressEvent>,
-) -> Result<serde_json::Value, String> {
+) -> Result<String, String> {
     let config = load_config();
     let base_path = resolve_root(&config, base.as_deref())?;
     if !base_path.is_dir() {
         return Err(format!("FATAL: {} 不存在", base_path.display()));
     }
-    let client = make_session(&config, None);
-    let (task_id, cancel_flag) = register_task(&registry);
+    let cookie = resolve_cookie(None, &config);
+    let client = make_session(&config, cookie.as_deref());
 
-    let client_c = client.clone();
-    let flag = cancel_flag.clone();
-    let handle = tauri::async_runtime::spawn_blocking(move || {
+    Ok(spawn_job(&registry, move |flag| {
         let dirs = engine::audit::scan_library(&base_path);
         let total = dirs.len();
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let mut updateable = 0usize;
+        let mut cancelled_now = false;
         for d in &dirs {
             if cancelled(&flag) {
+                cancelled_now = true;
                 break;
             }
-            let item = match engine::fetch::fetch_item(&client_c, &d.id) {
+            let item = match engine::fetch::fetch_item(&client, &d.id) {
                 Ok(i) => i,
                 Err(e) => {
                     let _ = on_event.send(ProgressEvent::Log {
@@ -665,47 +708,49 @@ pub async fn version_audit(
                 });
             }
         }
-        let _ = on_event.send(ProgressEvent::Finished {
-            done: total,
-            failed: updateable,
-        });
-        (total, updateable)
-    });
-
-    let (total, updateable) = handle.await.unwrap_or((0, 0));
-    unregister_task(&registry, &task_id);
-    Ok(serde_json::json!({ "task_id": task_id, "total": total, "updateable": updateable }))
+        if cancelled_now {
+            let _ = on_event.send(ProgressEvent::Cancelled);
+        } else {
+            let _ = on_event.send(ProgressEvent::Finished {
+                done: total,
+                failed: updateable,
+            });
+        }
+    }))
 }
 
 /// mismatch_audit：联网比对官方分类，报告目录所在分类与官方分类不一致的商品。
 #[tauri::command]
-pub async fn mismatch_audit(
+pub fn mismatch_audit(
     registry: State<'_, TaskRegistry>,
     base: Option<String>,
     on_event: Channel<ProgressEvent>,
-) -> Result<serde_json::Value, String> {
+) -> Result<String, String> {
     let config = load_config();
     let base_path = resolve_root(&config, base.as_deref())?;
     if !base_path.is_dir() {
         return Err(format!("FATAL: {} 不存在", base_path.display()));
     }
-    let client = make_session(&config, None);
-    let (task_id, cancel_flag) = register_task(&registry);
+    let cookie = resolve_cookie(None, &config);
+    let client = make_session(&config, cookie.as_deref());
 
-    let client_c = client.clone();
-    let flag = cancel_flag.clone();
-    let handle = tauri::async_runtime::spawn_blocking(move || {
+    Ok(spawn_job(&registry, move |flag| {
         let total = engine::audit::scan_library(&base_path).len();
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let found = engine::audit::mismatch_audit(&base_path, |id| {
             if cancelled(&flag) {
                 return None;
             }
-            engine::fetch::fetch_item(&client_c, id).ok()
+            engine::fetch::fetch_item(&client, id).ok()
         });
+        if cancelled(&flag) {
+            let _ = on_event.send(ProgressEvent::Cancelled);
+            return;
+        }
         for m in &found {
             if cancelled(&flag) {
-                break;
+                let _ = on_event.send(ProgressEvent::Cancelled);
+                return;
             }
             let _ = on_event.send(ProgressEvent::ItemDone {
                 id: format!("{} · {}", m.id, m.name),
@@ -717,53 +762,51 @@ pub async fn mismatch_audit(
             done: total,
             failed: found.len(),
         });
-        (total, found.len())
-    });
-
-    let (total, mismatches) = handle.await.unwrap_or((0, 0));
-    unregister_task(&registry, &task_id);
-    Ok(serde_json::json!({ "task_id": task_id, "total": total, "mismatches": mismatches }))
+    }))
 }
 
 /// fix_mismatch：重检测错位目录并强制重归档到正确分类。
 #[tauri::command]
-pub async fn fix_mismatch(
+pub fn fix_mismatch(
     registry: State<'_, TaskRegistry>,
     base: Option<String>,
     on_event: Channel<ProgressEvent>,
-) -> Result<serde_json::Value, String> {
+) -> Result<String, String> {
     let config = load_config();
     let base_path = resolve_root(&config, base.as_deref())?;
     if !base_path.is_dir() {
         return Err(format!("FATAL: {} 不存在", base_path.display()));
     }
-    let client = make_session(&config, None);
-    let (task_id, cancel_flag) = register_task(&registry);
+    let cookie = resolve_cookie(None, &config);
+    let client = make_session(&config, cookie.as_deref());
 
-    let client_c = client.clone();
-    let flag = cancel_flag.clone();
-    let handle = tauri::async_runtime::spawn_blocking(move || {
+    Ok(spawn_job(&registry, move |flag| {
         let found = engine::audit::mismatch_audit(&base_path, |id| {
             if cancelled(&flag) {
                 return None;
             }
-            engine::fetch::fetch_item(&client_c, id).ok()
+            engine::fetch::fetch_item(&client, id).ok()
         });
+        if cancelled(&flag) {
+            let _ = on_event.send(ProgressEvent::Cancelled);
+            return;
+        }
         let total = found.len();
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let opts = engine::organize::OrganizeOptions {
             out_root: &base_path,
             dry_run: false,
-            cookie: None,
+            cookie: cookie.as_deref(),
         };
         let mut fixed = 0usize;
         let mut failed = 0usize;
         for m in &found {
             if cancelled(&flag) {
-                break;
+                let _ = on_event.send(ProgressEvent::Cancelled);
+                return;
             }
             let outcome = engine::organize::reorganize_dir(
-                &client_c,
+                &client,
                 std::path::Path::new(&m.path),
                 &m.id,
                 &opts,
@@ -786,12 +829,7 @@ pub async fn fix_mismatch(
             done: fixed,
             failed,
         });
-        (fixed, failed)
-    });
-
-    let (fixed, failed) = handle.await.unwrap_or((0, 0));
-    unregister_task(&registry, &task_id);
-    Ok(serde_json::json!({ "task_id": task_id, "fixed": fixed, "failed": failed }))
+    }))
 }
 
 /// update_check：检查工具自身是否有新版本（GitHub Releases）。

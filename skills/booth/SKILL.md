@@ -37,6 +37,7 @@ BOOTH（日本数字创作集市，VRChat 素材主产地）素材的**下载 / 
 |------|------|
 | 便携版 zip | 解压目录（与 `booth-vault-toolhub.exe` 同目录） |
 | 安装版（MSI/NSIS） | `C:\Program Files\booth-vault-toolhub\`（与主程序同目录） |
+| macOS .app | `booth-vault-toolhub.app/Contents/MacOS/`（与主程序同目录；读 `$BOOTHVAULT_TOOLHUB`） |
 | 源码构建 | 仓库 `target/release/`（`--target` 时在 `target/<triple>/release/`） |
 
 **安装器默认把安装目录加入用户 PATH**（components/功能选择页有"Add to user PATH"勾选项，默认选中；

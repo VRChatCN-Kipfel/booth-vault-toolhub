@@ -167,5 +167,58 @@ fn main() {
     setup_webview2();
     #[cfg(windows)]
     register_location();
+    #[cfg(target_os = "macos")]
+    register_location_macos();
     gui_lib::run()
+}
+
+/// 自注册位置：写入用户环境变量 BOOTHVAULT_TOOLHUB，并落一份 LaunchAgent 以便登录后仍在。
+#[cfg(target_os = "macos")]
+fn register_location_macos() {
+    const VAR: &str = "BOOTHVAULT_TOOLHUB";
+    let Ok(exe_path) = std::env::current_exe() else {
+        return;
+    };
+    let Some(dir) = exe_path.parent() else {
+        return;
+    };
+    let current = dir.to_string_lossy().replace('\\', "/");
+    let current = current.trim_end_matches('/').to_string();
+
+    let _ = std::process::Command::new("launchctl")
+        .args(["setenv", VAR, &current])
+        .status();
+
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let agents = home.join("Library/LaunchAgents");
+    let _ = std::fs::create_dir_all(&agents);
+    let plist = agents.join("com.boothvault.toolhub.env.plist");
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.boothvault.toolhub.env</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/launchctl</string>
+    <string>setenv</string>
+    <string>{VAR}</string>
+    <string>{current}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+"#
+    );
+    if std::fs::write(&plist, xml).is_ok() {
+        let _ = std::process::Command::new("launchctl")
+            .args(["load", "-w"])
+            .arg(&plist)
+            .status();
+    }
 }

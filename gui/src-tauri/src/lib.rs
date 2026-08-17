@@ -23,6 +23,8 @@ pub fn run() {
             commands::fix_mismatch,
             commands::update_check,
             commands::cancel_task,
+            commands::load_app_config,
+            commands::save_app_config,
         ])
         .setup(|app| {
             // 主窗口手建（config create:false）。
@@ -35,6 +37,12 @@ pub fn run() {
             if let Some(data_dir) = portable::portable_webview_dir() {
                 std::fs::create_dir_all(&data_dir).ok();
                 builder = builder.data_directory(data_dir);
+            }
+            #[cfg(target_os = "macos")]
+            {
+                builder = builder
+                    .hidden_title(true)
+                    .title_bar_style(tauri::TitleBarStyle::Overlay);
             }
             builder.build()?;
             Ok(())

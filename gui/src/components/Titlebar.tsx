@@ -43,23 +43,31 @@ const CtrlBtn = styled.button`
   svg { width: 14px; height: 14px; }
 `;
 
-export function Titlebar() {
-  const win = getCurrentWindow();
+const isMac =
+  typeof navigator !== 'undefined' && /Mac|Macintosh/.test(navigator.userAgent);
 
+export function Titlebar() {
   return (
-    <Bar data-tauri-drag-region>
+    <Bar data-tauri-drag-region style={isMac ? { paddingLeft: 78 } : undefined}>
       <Title data-tauri-drag-region>Booth Vault Toolhub</Title>
-      <Controls>
-        <CtrlBtn onClick={() => void win.minimize()} title="最小化">
-          <Minus />
-        </CtrlBtn>
-        <CtrlBtn onClick={() => void win.toggleMaximize()} title="最大化">
-          <Square />
-        </CtrlBtn>
-        <CtrlBtn className="close" onClick={() => void win.close()} title="关闭">
-          <X />
-        </CtrlBtn>
-      </Controls>
+      {!isMac && <WinControls />}
     </Bar>
+  );
+}
+
+function WinControls() {
+  const win = getCurrentWindow();
+  return (
+    <Controls>
+      <CtrlBtn onClick={() => void win.minimize()} title="最小化">
+        <Minus />
+      </CtrlBtn>
+      <CtrlBtn onClick={() => void win.toggleMaximize()} title="最大化">
+        <Square />
+      </CtrlBtn>
+      <CtrlBtn className="close" onClick={() => void win.close()} title="关闭">
+        <X />
+      </CtrlBtn>
+    </Controls>
   );
 }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use reqwest::blocking::Client;
 use reqwest::cookie::Jar;
 
-use crate::config::{AppConfig, resolve_proxy};
+use crate::config::{AppConfig, proxy_disabled, resolve_proxy};
 
 /// 构建 blocking Client。
 ///
@@ -21,12 +21,14 @@ pub fn make_session(config: &AppConfig, cookie: Option<&str>) -> Client {
              (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
         )
         .default_headers(default_headers());
-    if let Some(proxy) = resolve_proxy(config)
+    if proxy_disabled(config) {
+        builder = builder.no_proxy();
+    } else if let Some(proxy) = resolve_proxy(config)
         && let Ok(p) = reqwest::Proxy::all(&proxy)
     {
         builder = builder.proxy(p);
     }
-    if let Some(c) = cookie {
+    if let Some(c) = cookie.map(str::trim).filter(|s| !s.is_empty()) {
         let jar = Arc::new(parse_cookie(c));
         builder = builder.cookie_provider(jar);
     }

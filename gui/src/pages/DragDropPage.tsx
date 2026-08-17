@@ -6,13 +6,12 @@
 
 import { useEffect, useState } from 'react';
 import styled from 'styled-components';
-import { invoke } from '@tauri-apps/api/core';
-import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { AccentButton, SecondaryButton, ObsPanel, ProgressBar, Badge, PanelLabel } from '../components/ui';
 import { confirmation } from '../components/Dialog';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
+import { runTask } from '../lib/task';
 import { useThemeStore, resolveMode } from '../store/themeStore';
 import { THEMES } from '../theme/themes';
 
@@ -106,6 +105,7 @@ const QueueRow = styled.div`
 
 export function DragDropPage() {
   const boothRoot = useAppConfigStore((s) => s.boothRoot);
+  const cookie = useAppConfigStore((s) => s.cookie);
   const { theme, mode, systemTheme } = useThemeStore();
   const resolved = resolveMode(mode, systemTheme);
   const pal = THEMES[theme][resolved];
@@ -149,39 +149,41 @@ export function DragDropPage() {
     setQueue([]);
     setTotal(pending.length);
     setRunning(true);
-    const onEvent = new Channel<Record<string, unknown>>();
-    const taskId = await invoke<string>('organize', {
-      archives: pending,
-      out: boothRoot || null,
-      dryRun: false,
-      onEvent,
-    }).catch((e) => {
+    try {
+      await runTask(
+        'organize',
+        {
+          archives: pending,
+          out: boothRoot || null,
+          dryRun: false,
+          cookie: cookie || null,
+        },
+        (evt) => {
+          if (evt.type === 'taskStarted' && typeof evt.total === 'number') {
+            setTotal(evt.total);
+          } else if (evt.type === 'itemDone') {
+            const status = String(evt.status ?? 'ok');
+            if (status === 'exists') {
+              void confirmation('已存在', `${evt.id}\n目标目录已存在同名文件，跳过移动。`);
+              setQueue((q) => [...q, { id: String(evt.id ?? ''), message: '目标已存在，跳过', status: 'warn' }]);
+            } else if (status === 'mismatch') {
+              void confirmation('错位', `${evt.id}\n同 ID 已在其他类目。是否重新归档到正确分类？`);
+              setQueue((q) => [...q, { id: String(evt.id ?? ''), message: '已归档（可能错位）', status: 'ok' }]);
+            } else {
+              setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'ok' }]);
+            }
+            setPending((p) => p.filter((x) => x !== String(evt.id ?? '')));
+          } else if (evt.type === 'itemError') {
+            setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'err' }]);
+          } else if (evt.type === 'finished' || evt.type === 'cancelled') {
+            setRunning(false);
+          }
+        },
+      );
+    } catch (e) {
       setQueue([{ id: '-', message: String(e), status: 'err' }]);
       setRunning(false);
-      return null;
-    });
-    if (taskId === null) return;
-
-    onEvent.onmessage = (evt) => {
-      const type = evt.type as string;
-      if (type === 'itemDone') {
-        const status = String(evt.status ?? 'ok');
-        if (status === 'exists') {
-          void confirmation('已存在', `${evt.id}\n目标目录已存在同名文件，跳过移动。`);
-          setQueue((q) => [...q, { id: String(evt.id ?? ''), message: '目标已存在，跳过', status: 'warn' }]);
-        } else if (status === 'mismatch') {
-          void confirmation('错位', `${evt.id}\n同 ID 已在其他类目。是否重新归档到正确分类？`);
-          setQueue((q) => [...q, { id: String(evt.id ?? ''), message: '已归档（可能错位）', status: 'ok' }]);
-        } else {
-          setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'ok' }]);
-        }
-        setPending((p) => p.filter((x) => x !== String(evt.id ?? '')));
-      } else if (type === 'itemError') {
-        setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'err' }]);
-      } else if (type === 'finished' || type === 'cancelled') {
-        setRunning(false);
-      }
-    };
+    }
   }
 
   function clearAll() {

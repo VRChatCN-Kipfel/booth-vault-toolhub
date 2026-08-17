@@ -1,9 +1,11 @@
 /**
- * 应用配置状态（归档根目录 / 代理 / Cookie）。
- * 对应旧版 ~/.boothkeeper.json，持久化到 Tauri plugin-store。
+ * 应用配置（归档根目录 / 代理 / Cookie）。
+ * 单一事实源：用户目录 config.toml（与 CLI / MCP 共用）。
+ * 旧版 Tauri plugin-store 仅作一次性迁移。
  */
 
 import { create } from 'zustand';
+import { invoke } from '@tauri-apps/api/core';
 
 interface AppConfigState {
   boothRoot: string;
@@ -18,7 +20,14 @@ interface AppConfigState {
   hydrate: () => Promise<void>;
 }
 
-async function loadConfig(): Promise<Partial<AppConfigState> | null> {
+interface TomlSettings {
+  boothRoot: string;
+  proxy: boolean;
+  proxyUrl: string;
+  cookie: string;
+}
+
+async function loadLegacyStore(): Promise<Partial<AppConfigState> | null> {
   try {
     const { load } = await import('@tauri-apps/plugin-store');
     const store = await load('appconfig.json', { autoSave: false });
@@ -26,23 +35,10 @@ async function loadConfig(): Promise<Partial<AppConfigState> | null> {
     const proxy = (await store.get<boolean>('proxy')) ?? true;
     const proxyUrl = (await store.get<string>('proxy_url')) ?? '';
     const cookie = (await store.get<string>('cookie')) ?? '';
+    if (!boothRoot && !proxyUrl && !cookie) return null;
     return { boothRoot, proxy, proxyUrl, cookie };
   } catch {
     return null;
-  }
-}
-
-async function saveConfig(state: AppConfigState) {
-  try {
-    const { load } = await import('@tauri-apps/plugin-store');
-    const store = await load('appconfig.json', { autoSave: false });
-    await store.set('booth_root', state.boothRoot);
-    await store.set('proxy', state.proxy);
-    await store.set('proxy_url', state.proxyUrl);
-    await store.set('cookie', state.cookie);
-    await store.save();
-  } catch {
-    // 非 Tauri 环境静默
   }
 }
 
@@ -58,17 +54,42 @@ export const useAppConfigStore = create<AppConfigState>((set, get) => ({
   setCookie: (v) => set({ cookie: v }),
 
   save: async () => {
-    await saveConfig(get());
-  },
-
-  hydrate: async () => {
-    const cfg = await loadConfig();
-    if (!cfg) return;
-    set({
-      boothRoot: cfg.boothRoot ?? '',
-      proxy: cfg.proxy ?? true,
-      proxyUrl: cfg.proxyUrl ?? '',
-      cookie: cfg.cookie ?? '',
+    const s = get();
+    await invoke('save_app_config', {
+      boothRoot: s.boothRoot,
+      proxy: s.proxy,
+      proxyUrl: s.proxyUrl,
+      cookie: s.cookie,
     });
+  },
+  hydrate: async () => {
+    try {
+      const cfg = await invoke<TomlSettings>('load_app_config');
+      const empty = !cfg.boothRoot && !cfg.proxyUrl && !cfg.cookie;
+      if (!empty) {
+        set({
+          boothRoot: cfg.boothRoot ?? '',
+          proxy: cfg.proxy ?? true,
+          proxyUrl: cfg.proxyUrl ?? '',
+          cookie: cfg.cookie ?? '',
+        });
+        return;
+      }
+    } catch {
+      // 非 Tauri 或命令未就绪
+    }
+    const legacy = await loadLegacyStore();
+    if (!legacy) return;
+    set({
+      boothRoot: legacy.boothRoot ?? '',
+      proxy: legacy.proxy ?? true,
+      proxyUrl: legacy.proxyUrl ?? '',
+      cookie: legacy.cookie ?? '',
+    });
+    try {
+      await get().save();
+    } catch {
+      // 迁移失败下次再试
+    }
   },
 }));

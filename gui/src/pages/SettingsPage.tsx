@@ -139,7 +139,15 @@ export function SettingsPage() {
       />
 
       <Divider />
-      <AccentButton onClick={() => void save()}>保存设置</AccentButton>
+      <AccentButton
+        onClick={() => {
+          void save().catch((e) => {
+            window.alert(`保存失败：${e}`);
+          });
+        }}
+      >
+        保存设置
+      </AccentButton>
 
       <Divider />
       <SupportSection />

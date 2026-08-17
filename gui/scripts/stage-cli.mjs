@@ -4,7 +4,10 @@ import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const root = resolve(scriptDir, "..", "..");
-const names = ["booth.exe", "booth-mcp.exe", "booth-shell.exe"];
+const isWin = process.platform === "win32";
+const names = isWin
+  ? ["booth.exe", "booth-mcp.exe", "booth-shell.exe"]
+  : ["booth", "booth-mcp"];
 
 const candidates = [];
 const collectRelease = (dir) => {
@@ -37,10 +40,19 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-const boothSrc = picked.get("booth.exe")[0];
-const boothMcpSrc = picked.get("booth-mcp.exe")[0];
-const boothShellSrc = picked.get("booth-shell.exe")[0];
+const boothKey = isWin ? "booth.exe" : "booth";
+const mcpKey = isWin ? "booth-mcp.exe" : "booth-mcp";
+const boothSrc = picked.get(boothKey)[0];
+const boothMcpSrc = picked.get(mcpKey)[0];
+const boothShellSrc = isWin ? picked.get("booth-shell.exe")[0] : "";
 const projectOut = dirname(boothSrc);
+
+if (!isWin) {
+  console.log("[stage-cli] 非 Windows：跳过 MSI/NSIS 片段，CLI 已定位");
+  console.log(`[stage-cli] booth -> ${boothSrc}`);
+  console.log(`[stage-cli] booth-mcp -> ${boothMcpSrc}`);
+  process.exit(0);
+}
 
 const xmlEsc = (s) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");

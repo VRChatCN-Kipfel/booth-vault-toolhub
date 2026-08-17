@@ -142,15 +142,19 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # Linux / macOS 门控：engine 层三平台跑测试（非主目标，失败不阻塞）
+  # Linux / macOS：engine 层测试。macOS 现为正式门禁；Linux 仍不阻塞合并。
   portable:
     needs: encoding
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            allow_fail: true
+          - os: macos-latest
+            allow_fail: false
     runs-on: ${{ matrix.os }}
-    continue-on-error: true
+    continue-on-error: ${{ matrix.allow_fail }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -163,3 +167,6 @@ jobs:
         run: cargo clippy -p engine --all-targets --all-features -- -D warnings
       - name: Test (engine)
         run: cargo test -p engine
+      - name: Test (shell_mac)
+        if: runner.os == 'macOS'
+        run: cargo test -p shell_mac
