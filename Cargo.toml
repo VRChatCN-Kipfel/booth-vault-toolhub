@@ -2,8 +2,8 @@
 resolver = "2"
 members = [
     "engine",
-    "shell_win",
-    "shell_mac",
+    "shell/win",
+    "shell/mac",
     "booth-shell",
     "booth-mcp",
     "gui/src-tauri",

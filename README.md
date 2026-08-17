@@ -45,19 +45,23 @@ BOOTH 素材统一管理工具 —— VRChat / XR 创作者的 BOOTH 资产全�
 │   └──────────────┬───────────────┘           │
 │                  ▼                           │
 │   ┌──────────────────────────────┐           │
-│   │      shell_win crate          │ Windows 文件夹图标三件套 │
-│   └──────────────────────────────┘           │
+│   │     booth-shell (CLI 入口)     │ 文件夹图标 set/reset/audit │
+│   └──────┬───────────────┬───────┘           │
+│          ▼               ▼                   │
+│   ┌──────────────┐  ┌──────────────┐         │
+│   │  shell/win    │  │  shell/mac   │        │
+│   └──────────────┘  └──────────────┘         │
 └────────────────────────────────────────────┘
 ```
 
-| crate | 职责 | 平台 |
-|---|---|---|
-| `engine` | 纯函数层 + 网络 + 归档 + 巡检，三端共享单一事实源 | 三平台 |
-| `shell_win` | 属性位 / desktop.ini / ICO / SHChangeNotify（图标三件套） | Windows only |
-| `shell_mac` | 封面正方形化 + Finder 自定义文件夹图标 | macOS only |
-| `booth-shell` | 文件夹图标 CLI 通用入口（set/reset/audit），分发 shell_win/shell_mac | 三平台 |
-| `booth-mcp` | MCP stdio server，暴露四工具 | 三平台 |
-| `gui` | Tauri v2 + React 19 桌面应用 | 三平台 |
+| crate | 目录 | 职责 | 平台 |
+|---|---|---|---|
+| `engine` | `engine/` | 纯函数层 + 网络 + 归档 + 巡检，三端共享单一事实源 | 三平台 |
+| `shell-win` | `shell/win/` | 属性位 / desktop.ini / ICO / SHChangeNotify（图标三件套） | Windows only |
+| `shell-mac` | `shell/mac/` | 封面正方形化 + Finder 自定义文件夹图标 | macOS only |
+| `booth-shell` | `booth-shell/` | 文件夹图标 CLI 通用入口（set/reset/audit），按平台分发 shell-win / shell-mac | 三平台 |
+| `booth-mcp` | `booth-mcp/` | MCP stdio server，暴露四工具 | 三平台 |
+| `gui` | `gui/` | Tauri v2 + React 19 桌面应用 | 三平台 |
 
 ## 快速开始
 

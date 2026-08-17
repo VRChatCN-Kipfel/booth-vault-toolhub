@@ -1,5 +1,5 @@
 [package]
-name = "shell_win"
+name = "shell-win"
 description = "Windows Shell 专属模块：文件夹图标三件套、属性位、SHChangeNotify（仅 Windows）"
 version.workspace = true
 edition.workspace = true
