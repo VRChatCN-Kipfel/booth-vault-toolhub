@@ -68,16 +68,28 @@ export function SettingsPage() {
   const [checking, setChecking] = useState(false);
   const [updMsg, setUpdMsg] = useState('');
   const [updUrl, setUpdUrl] = useState('');
+  const [relTitle, setRelTitle] = useState('');
+  const [relBody, setRelBody] = useState('');
+
+  function htmlToText(html: string): string {
+    const div = document.createElement('div');
+    div.innerHTML = html;
+    return (div.textContent || '').replace(/\s+/g, ' ').trim();
+  }
 
   async function checkUpdate() {
     setChecking(true);
     setUpdMsg('检查中…');
     setUpdUrl('');
+    setRelTitle('');
+    setRelBody('');
     const res = await invoke<{
       has_update: boolean;
       local_version: string;
       remote_version: string;
       url: string;
+      release_title: string | null;
+      release_body: string | null;
       error: string | null;
     }>('update_check', { useProxy: proxy }).catch((e) => {
       setUpdMsg(String(e));
@@ -90,6 +102,8 @@ export function SettingsPage() {
       } else if (res.has_update) {
         setUpdMsg(`发现新版本 ${res.remote_version}（当前 ${res.local_version}）`);
         setUpdUrl(res.url);
+        if (res.release_title) setRelTitle(res.release_title);
+        if (res.release_body) setRelBody(htmlToText(res.release_body));
       } else {
         setUpdMsg(`已是最新版本 ${res.local_version}`);
       }
@@ -191,6 +205,23 @@ export function SettingsPage() {
           </a>
         )}
       </Row>
+      {(relTitle || relBody) && (
+        <div
+          style={{
+            border: '1px solid var(--bvt-border2)',
+            borderRadius: 8,
+            padding: '8px 12px',
+            fontSize: 13,
+            lineHeight: 1.7,
+            color: 'var(--bvt-text)',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+        >
+          {relTitle && <div style={{ fontWeight: 600, marginBottom: 4 }}>{relTitle}</div>}
+          {relBody && <div>{relBody}</div>}
+        </div>
+      )}
 
       <Divider />
       <AccentButton onClick={() => void save()}>保存设置</AccentButton>

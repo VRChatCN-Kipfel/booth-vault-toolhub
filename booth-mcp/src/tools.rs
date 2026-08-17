@@ -146,6 +146,8 @@ struct UpdateCheckResult {
     local_version: String,
     remote_version: String,
     url: String,
+    release_title: Option<String>,
+    release_body: Option<String>,
     error: Option<String>,
 }
 
@@ -424,6 +426,8 @@ impl BoothServer {
             local_version: info.local_version,
             remote_version: info.remote_version,
             url: info.url,
+            release_title: info.release_title,
+            release_body: info.release_body,
             error: info.error,
         };
         let text = serde_json::to_string_pretty(&result).unwrap_or_default();
