@@ -342,7 +342,13 @@ impl BoothServer {
                 }
                 continue;
             }
-            match process_search_file(&client, path, &base, params.id.as_deref(), cookie.as_deref()) {
+            match process_search_file(
+                &client,
+                path,
+                &base,
+                params.id.as_deref(),
+                cookie.as_deref(),
+            ) {
                 Ok(Some(id)) => matched.push(id),
                 Ok(None) => {}
                 Err(e) => failures.push(format!("{path_str}: {e}")),
