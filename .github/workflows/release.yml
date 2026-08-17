@@ -24,9 +24,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "要发布的 tag（如 v1.0.0）"
-        required: false
-        default: "v0.1.0"
+        description: "要发布的 tag（必填，如 v1.0.0）"
+        required: true
       prerelease:
         description: "标记为预发布"
         type: boolean
@@ -128,6 +127,36 @@ jobs:
              binaries/target/${{ matrix.rust_target }}/release/booth-mcp.exe \
              binaries/target/${{ matrix.rust_target }}/release/booth-shell.exe \
              target/${{ matrix.rust_target }}/release/
+
+      # 注入打包版本号：release 打包的 GUI 从仓库 checkout（默认 0.0.0），
+      # 必须用发布 tag（version.txt，workflow_dispatch 用输入 tag）注入 Cargo.toml，
+      # 否则 GUI 装包版本与 tag 脱节（问题 3）。三二进制已由 CI 注入过版本，故只改 GUI 侧。
+      # 与 ci.yml 注入规则不同：release 恒为正式 tag（无分支场景）。
+      # 非发布运行（version.txt 空）：不注入，保持 0.0.0（Nightly 构建），仍产出测试包。
+      - name: Inject bundle version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_file="$PWD/binaries/version.txt"
+          REF=""
+          if [ -f "$version_file" ] && [ -s "$version_file" ]; then
+            REF=$(cat "$version_file")
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            REF="${{ github.event.inputs.tag }}"
+          fi
+          if [ -z "$REF" ]; then
+            echo "无发布 tag（日常构建），跳过版本注入，保持 Nightly Build"
+            echo "BUILD_SOURCE=branch" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # 支持带 v 或不带 v 的 tag
+          version="${REF#v}"
+          echo "injecting bundle version: $version"
+          sed -i -E "s/^version = \".*\"/version = \"${version}\"/" Cargo.toml
+          grep -n '^version' Cargo.toml | head -3
+          # 正式发布构建来源为 tag（真实版本比较）
+          echo "BUILD_SOURCE=tag" >> "$GITHUB_ENV"
 
       # 构建 GUI bundle（MSI/NSIS；arm64 仅 NSIS）
       - name: Build GUI bundle
@@ -267,7 +296,7 @@ jobs:
             REF="${{ github.event.inputs.tag }}"
             SHOULD_RELEASE="true"
           fi
-          if [ -z "$REF" ]; then REF="v0.1.0"; fi
+          # 不再硬编码 v0.1.0 兜底：无 tag 时保持不发布（避免撞现有 tag 的假 Release）。
           IS_PRERELEASE="false"
           case "$REF" in
             *-*) IS_PRERELEASE="true" ;;
