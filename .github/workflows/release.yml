@@ -170,10 +170,14 @@ jobs:
       - name: Build GUI bundle (Windows)
         if: matrix.platform == 'windows'
         working-directory: gui
+        env:
+          BOOTH_TARGET: ${{ matrix.rust_target }}
         run: npm run tauri build -- --target ${{ matrix.rust_target }}
       - name: Build GUI bundle (macOS)
         if: matrix.platform == 'macos'
         working-directory: gui
+        env:
+          BOOTH_TARGET: ${{ matrix.rust_target }}
         run: npm run tauri build -- --target ${{ matrix.rust_target }} --bundles dmg --no-sign
 
       # verify bundle 产物（Windows：bundle/ 整体；macOS：bundle/dmg/）

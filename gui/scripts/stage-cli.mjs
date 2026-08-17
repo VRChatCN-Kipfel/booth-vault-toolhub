@@ -9,15 +9,22 @@ const names = isWin
   ? ["booth.exe", "booth-mcp.exe", "booth-shell.exe"]
   : ["booth", "booth-mcp"];
 
+// 打包目标 triple（如 aarch64-apple-darwin）。CI 经环境变量显式传入，
+// 命中则精确锁定 target/<triple>/release/ 下的产物，不赌 mtime；本地未传则回退到遍历定位。
+const targetTriple = process.env.BOOTH_TARGET;
 const candidates = [];
 const collectRelease = (dir) => {
   const release = join(dir, "release");
   if (existsSync(release)) candidates.push(release);
 };
-collectRelease(join(root, "target"));
-if (existsSync(join(root, "target"))) {
-  for (const entry of readdirSync(join(root, "target"), { withFileTypes: true })) {
-    if (entry.isDirectory()) collectRelease(join(root, "target", entry.name));
+if (targetTriple) {
+  collectRelease(join(root, "target", targetTriple));
+} else {
+  collectRelease(join(root, "target"));
+  if (existsSync(join(root, "target"))) {
+    for (const entry of readdirSync(join(root, "target"), { withFileTypes: true })) {
+      if (entry.isDirectory()) collectRelease(join(root, "target", entry.name));
+    }
   }
 }
 
