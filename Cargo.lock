@@ -4517,6 +4517,7 @@ name = "shell_win"
 version = "0.1.0"
 dependencies = [
  "image",
+ "shell_mac",
  "windows 0.62.2",
 ]
 
