@@ -91,6 +91,15 @@ cd gui && npm run tauri dev # GUI 开发
 - 网络代理为**配置项**，不得硬编码个人代理地址。优先级：配置文件 `proxy` > `HTTPS_PROXY`（无缺省回退）> reqwest 系统默认（Windows 读系统代理注册表）。
 - 自更新检查（`update_check`）多通道契约：**Atom feed（`releases.atom`）为主**（无 API 配额限流，成熟库 feed-rs 解析），HTML 重定向 + API 作兜底。所有通道显式超时（20s），防单入口挂起；代理/直连 client 去重（`use_proxy=false` 时只发一次）。失败区分「网络不可达」与「仓库无 Release」两种 error 文案。内置 gh-proxy 类镜像（`MIRRORS`）**仅用于下载阶段**，查版本阶段不发起镜像请求（实测镜像对 feed 全 403）。
 
+### 版本注入契约（CI/发布线）
+
+- 仓库默认版本 `0.0.0`（本地开发占位）；`update::local_version()` 对 `0.0.0` 显示为 `Nightly Build`。
+- **CI 编译前注入**（`ci.yml`）：tag 触发用 tag 版本（去 `v`）；非 tag 用最近 tag + `-{shorthash}` 或分支名清洗（`/`→`-`、非 ASCII/连续 `-` 压缩） + `-{shorthash}`。非 tag 同时设 `BUILD_SOURCE=branch`（`engine/build.rs` 写 `BOOTH_BUILD_SOURCE`），`update::cmp_version()` 据此恒按 `0.0.0` 比较，分支构建恒提示正式版可更新（防分支数字误判已最新）。
+- **release 打包前注入**（`release.yml`）：用 `version.txt`（CI tag 触发写入）或 `workflow_dispatch` 输入 tag 注入根 Cargo.toml，`BUILD_SOURCE=tag`（真实版本比较）。
+- 版本号必须合法 semver（Cargo/Tauri 强校验，实测拒绝中文、`/`、反斜杠）；非 ASCII 分支名只保留 ASCII 清洗后片段。
+- `tauri.conf.json` 不设 `version` 字段（fallback 到 Cargo.toml，一处注入全链生效）。
+- **禁止**硬编码 `v0.1.0` 兜底 tag；无 tag 时不创建 Release。
+
 ## 警告事项（血泪坑，防回归）
 
 ### Windows Shell / 图标
