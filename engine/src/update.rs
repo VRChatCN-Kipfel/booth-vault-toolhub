@@ -1,12 +1,17 @@
-//! 工具自更新检查：拉取 GitHub latest release，比版本号，提示用户。
+//! 工具自更新检查：拉取 GitHub 最新 release，比版本号，提示用户。
 //!
 //! 移植自 Python booth-keeper v1.3.2 `pages/updater.py` 的健壮性逻辑：
-//!   - HTML 重定向法：GET `/releases/latest` 解析 302 `Location` 取 tag，
-//!     不消耗 GitHub API 配额（无 token 限流 60/h）。
-//!   - API 兜底：`/releases/latest` JSON（可能被限流 403）。
-//!   - 403/429 退避：API 通道走 `http::get` 指数退避。
+//!   - **Atom 法（主通道）**：GET `/releases.atom` 解析首个 `<entry>` 里的 release
+//!     link（`.../releases/tag/{tag}`）取 tag。静态 feed，**不消耗 API 配额**
+//!     （无 token 限流），走 `github.com` 而非 `api.github.com`（无 403 风险）。
+//!   - **HTML 重定向法（兜底）**：GET `/releases/latest` 解析 302 `Location` 取 tag。
+//!   - **API 法（兜底）**：`/releases/latest` JSON（可能被限流 403）。
 //!   - 代理失败直连重试：配置/环境代理不可达时自动改直连。
+//!   - 所有通道显式超时，防单个入口挂起拖死检查。
 //!   - UA 伪装成浏览器（复用 `session::default_headers`），规避风控。
+//!
+//! 镜像站（gh-proxy 类）实测对 feed 路径全 403，仅对资产下载有效，故仅为
+//! 下载阶段预留（见 `MIRRORS`），当前查版本阶段不发起镜像请求。
 //!
 //! 单一事实源：CLI / MCP / GUI 三端薄封装，业务逻辑全在 engine。
 
@@ -14,19 +19,40 @@ use fancy_regex::Regex;
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use serde::Serialize;
+use std::time::Duration;
 
 use crate::config::{load_config, resolve_proxy};
 use crate::http;
 use crate::session::default_headers;
 
+/// 每个网络通道的显式超时（防入口挂起，tcp/整体耗时上限）。
+const CHANNEL_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// 工具所属 GitHub 仓库（自更新检查目标）。
 pub const REPO_OWNER: &str = "VRChatCN-Kipfel";
 pub const REPO_NAME: &str = "booth-vault-toolhub";
+
+/// 内置公开镜像表（gh-proxy 类）。
+///
+/// 实测仅对 GitHub 资产/下载路径有效（feed 页面全 403），因此只用于未来
+/// 「下载新版安装包」阶段，不在当前查版本阶段发起请求。地址为公开镜像，
+/// 非个人代理；AGENTS.md 禁止硬编码个人代理地址，此为公开服务集群。
+pub const MIRRORS: &[&str] = &[
+    "https://ghproxy.net",
+    "https://gh-proxy.com",
+    "https://ghfast.top",
+];
 
 /// 本地工具版本（workspace 版本，三端一致）。
 pub fn local_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
+
+/// 单个通道抓取函数签名：返回 `(tag, reachable)`。
+///
+/// `reachable=true` 表示 HTTP 层已连通（无论是否解析到 tag），供调用方区分
+/// 「网络可达但仓库无 Release」与「网络不可达」。
+type Fetcher = fn(&Client) -> (Option<String>, bool);
 
 /// 更新检查结果。
 #[derive(Debug, Clone, Serialize)]
@@ -65,17 +91,24 @@ fn releases_latest_url() -> String {
     format!("{}/latest", releases_url())
 }
 
+/// 拼接 Atom feed（主通道）URL。
+fn releases_atom_url() -> String {
+    format!("https://github.com/{REPO_OWNER}/{REPO_NAME}/releases.atom")
+}
+
 /// 拼接 API latest release URL。
 fn api_latest_url() -> String {
     format!("https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest")
 }
 
-/// 构建 GitHub 专用 client：禁用重定向（捕获 302 Location）+ 浏览器 UA + 可选代理。
+/// 构建 GitHub 专用 client：禁用重定向（捕获 302 Location）+ 浏览器 UA + 可选代理 + 显式超时。
 ///
 /// 复用 `session::default_headers` 的 UA 与 `resolve_proxy` 的代理裁决（禁硬编码）。
+/// `timeout` 保证单个入口挂起时不拖死更新检查。
 fn github_client(proxy: Option<String>) -> Client {
     let mut builder = Client::builder()
         .redirect(Policy::none())
+        .timeout(CHANNEL_TIMEOUT)
         .default_headers(default_headers());
     if let Some(p) = proxy
         && let Ok(pr) = reqwest::Proxy::all(&p)
@@ -85,48 +118,69 @@ fn github_client(proxy: Option<String>) -> Client {
     builder.build().expect("update: reqwest client build")
 }
 
-/// 解析版本号 `'1.0.1'` → `[1,0,1]`；兼容 `v1.0.1` / `1.0.1-rc`。
-pub fn parse_version(ver: &str) -> Vec<u32> {
-    let re = Regex::new(r"v?(\d+(?:\.\d+)*)").expect("valid regex");
-    match re.captures(ver) {
-        Ok(Some(c)) => c
-            .get(1)
-            .map(|m| {
-                m.as_str()
-                    .split('.')
-                    .filter_map(|x| x.parse::<u32>().ok())
-                    .collect()
-            })
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    }
-}
-
-/// 远端版本是否严格新于本地（`remote > local`，补零等价）。
-fn is_newer(local: &[u32], remote: &[u32]) -> bool {
-    if remote.is_empty() {
-        return false;
-    }
-    let n = local.len().max(remote.len());
-    for i in 0..n {
-        let l = local.get(i).copied().unwrap_or(0);
-        let r = remote.get(i).copied().unwrap_or(0);
-        if r != l {
-            return r > l;
+/// 从 Atom feed 文本提取最新 tag（纯函数，供测试）。
+///
+/// 用 `feed-rs` 严格解析：取首个 `<entry>`，在其 alternate 链接（或 id/title）
+/// 里找 `/releases/tag/{tag}`。成熟库处理命名空间/实体/畸形输入，免手写正则。
+fn parse_atom_latest(feed_text: &str) -> Option<String> {
+    let feed = feed_rs::parser::parse(feed_text.as_bytes()).ok()?;
+    let entry = feed.entries.into_iter().next()?;
+    // 优先从 release 链接提取（最可靠）；无则退到 id（`tag:...:releases/tag/v2.0.0`）。
+    for link in entry.links {
+        if let Some(href) = extract_tag_from_url(&link.href) {
+            return Some(href);
         }
     }
-    false
+    extract_tag_from_url(&entry.id)
+}
+
+/// 从含 `/releases/tag/{tag}` 的 URL/`id` 提取 tag；不含则 None。
+fn extract_tag_from_url(url: &str) -> Option<String> {
+    let re = Regex::new(r"/releases/tag/([\w.\-]+)/?$").expect("valid regex");
+    if let Ok(Some(c)) = re.captures(url)
+        && let Some(m) = c.get(1)
+    {
+        return Some(m.as_str().to_string());
+    }
+    None
+}
+
+/// Atom 法（主通道）：解析 `/releases.atom` 首个 `<entry>` 的 release link 取 tag。
+///
+/// 静态 feed 不消耗 API 配额，`github.com` 路径无 403 限流。
+/// 返回 `(tag, reachable)`：`reachable=true` 表示 HTTP 已连通（无论是否解析到 tag），
+/// 供调用方区分「网络可达但无 release」与「网络不可达」。
+fn fetch_atom_tag(client: &Client) -> (Option<String>, bool) {
+    let resp = match client
+        .get(releases_atom_url())
+        .headers(default_headers())
+        .send()
+    {
+        Ok(r) => r,
+        Err(_) => return (None, false),
+    };
+    if !resp.status().is_success() {
+        return (None, true);
+    }
+    let text = match resp.text() {
+        Ok(t) => t,
+        Err(_) => return (None, true),
+    };
+    (parse_atom_latest(&text), true)
 }
 
 /// HTML 重定向法：GET `/releases/latest`（302）→ `Location` 取 tag。
 ///
-/// 部分网络直连 200 返回页面，从页面里抓 tag；全部失败返回 None。
-fn fetch_html_tag(client: &Client) -> Option<String> {
-    let resp = client
+/// 部分网络直连 200 返回页面，从页面里抓 tag；返回 `(tag, reachable)`。
+fn fetch_html_tag(client: &Client) -> (Option<String>, bool) {
+    let resp = match client
         .get(releases_latest_url())
         .headers(default_headers())
         .send()
-        .ok()?;
+    {
+        Ok(r) => r,
+        Err(_) => return (None, false),
+    };
     if resp.status().as_u16() == 302
         && let Some(loc) = resp.headers().get(reqwest::header::LOCATION)
         && let Ok(loc) = loc.to_str()
@@ -135,7 +189,7 @@ fn fetch_html_tag(client: &Client) -> Option<String> {
         if let Ok(Some(c)) = re.captures(loc)
             && let Some(m) = c.get(1)
         {
-            return Some(m.as_str().to_string());
+            return (Some(m.as_str().to_string()), true);
         }
     }
     // 直连 200：从页面 HTML 抓 tag
@@ -146,29 +200,43 @@ fn fetch_html_tag(client: &Client) -> Option<String> {
         if let Ok(Some(c)) = re.captures(&text)
             && let Some(m) = c.get(1)
         {
-            return Some(m.as_str().to_string());
+            return (Some(m.as_str().to_string()), true);
         }
     }
-    None
+    (None, true)
 }
 
 /// API 法（可能被限流 403）：解析 JSON `tag_name`。
 ///
 /// 走 `http::get` 享受 403/429 指数退避兜底（不消耗配额失败时有意义）。
-fn fetch_api_tag(client: &Client) -> Option<String> {
-    let resp = http::get(client, &api_latest_url(), default_headers()).ok()?;
+/// 返回 `(tag, reachable)`。
+fn fetch_api_tag(client: &Client) -> (Option<String>, bool) {
+    let resp = match http::get(client, &api_latest_url(), default_headers()) {
+        Ok(r) => r,
+        Err(_) => return (None, false),
+    };
     if !resp.status().is_success() {
-        return None;
+        return (None, true);
     }
-    let json = resp.json::<serde_json::Value>().ok()?;
-    json.get("tag_name")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+    let json = match resp.json::<serde_json::Value>() {
+        Ok(j) => j,
+        Err(_) => return (None, true),
+    };
+    (
+        json.get("tag_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        true,
+    )
 }
 
-/// 主检查：HTML 重定向（主）→ API（兜底）→ 代理失败直连重试。
+/// 主检查：Atom（主，无配额）→ HTML 重定向（兜底）→ API（兜底）→ 代理失败直连重试。
 ///
 /// `use_proxy=true` 时优先走配置/环境代理；若代理通道全部失败，自动改直连重试。
+/// 区分两种失败：
+///   - 所有通道 HTTP 层都无法连通（传输/连接失败）→ 网络问题。
+///   - 至少一个通道连通但解析不到 tag → 仓库尚无 Release 或 tag 格式不匹配。
+///
 /// 全部失败返回 `error`，不抛异常。
 pub fn check_update(use_proxy: bool) -> UpdateInfo {
     let config = load_config();
@@ -181,37 +249,43 @@ pub fn check_update(use_proxy: bool) -> UpdateInfo {
     let proxied = github_client(proxy.clone());
     let direct = github_client(None);
 
-    // 通道 1：HTML 重定向法（无配额）
-    if let Some(tag) = fetch_html_tag(&proxied) {
-        return build_info(tag, None);
-    }
-    // 通道 2：API（可能限流 403）
-    if let Some(tag) = fetch_api_tag(&proxied) {
-        return build_info(tag, None);
-    }
-    // 通道 3：代理失败 → 直连重试
+    // 依次尝试候选 client（代理优先、直连兜底），避免重复调同一 client。
+    // `proxied` 在 `use_proxy=false` 时与 `direct` 同为无代理 client，去重后只发一次。
+    let mut clients = Vec::new();
+    clients.push(&proxied);
     if proxy.is_some() {
-        if let Some(tag) = fetch_html_tag(&direct) {
-            return build_info(tag, None);
-        }
-        if let Some(tag) = fetch_api_tag(&direct) {
-            return build_info(tag, None);
+        clients.push(&direct);
+    }
+
+    // 每通道按 Atom → HTML → API 顺序尝试，任一命中即返回（无 API 配额）。
+    let chan_candidates: Vec<Fetcher> = vec![fetch_atom_tag, fetch_html_tag, fetch_api_tag];
+    let mut any_reachable = false;
+    for run in &chan_candidates {
+        for c in &clients {
+            let (tag, reachable) = run(c);
+            any_reachable |= reachable;
+            if let Some(tag) = tag {
+                return build_info(tag, None);
+            }
         }
     }
 
+    let error = if any_reachable {
+        Some("仓库暂无公开 Release，无法获取最新版本".to_string())
+    } else {
+        Some("网络失败或无法访问 GitHub".to_string())
+    };
     UpdateInfo {
-        error: Some("网络失败或无法访问 GitHub".to_string()),
+        error,
         ..Default::default()
     }
 }
 
-/// 用远端 tag 组装结果（比版本号）。
+/// 用远端 tag 组装结果（比版本号，复用 `crate::version` 单一实现）。
 fn build_info(remote_tag: String, error: Option<String>) -> UpdateInfo {
     let local = local_version();
-    let remote_v = parse_version(&remote_tag);
-    let local_v = parse_version(&local);
     UpdateInfo {
-        has_update: is_newer(&local_v, &remote_v),
+        has_update: crate::version::ver_gt(&remote_tag, &local),
         local_version: local,
         remote_version: remote_tag,
         url: releases_url(),
@@ -224,29 +298,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_version_basic() {
-        assert_eq!(parse_version("1.0.1"), vec![1, 0, 1]);
-        assert_eq!(parse_version("v1.3.2"), vec![1, 3, 2]);
-        assert_eq!(parse_version("1.0.1-rc"), vec![1, 0, 1]);
-        assert_eq!(parse_version("garbage"), Vec::<u32>::new());
-    }
-
-    #[test]
-    fn is_newer_compares() {
-        assert!(is_newer(&[1, 3, 1], &[1, 4, 0]));
-        assert!(is_newer(&[1, 3, 2], &[1, 3, 3]));
-        assert!(!is_newer(&[1, 4, 0], &[1, 4, 0]));
-        assert!(!is_newer(&[2, 0, 0], &[1, 9, 9]));
-        // 补零等价：1.0 == 1.0.0
-        assert!(!is_newer(&[1, 0], &[1, 0, 0]));
-        assert!(is_newer(&[1, 0], &[1, 0, 1]));
-        assert!(!is_newer(&[1, 0, 0], &[]));
-    }
-
-    #[test]
     fn info_default_has_no_error() {
         let i = UpdateInfo::default();
         assert!(i.error.is_none());
         assert_eq!(i.local_version, local_version());
+    }
+
+    #[test]
+    fn atom_parses_first_entry_tag() {
+        let feed = r#"<?xml version="1.0"?>
+<feed>
+  <entry>
+    <id>tag:github.com,2008:Repository/1/v2.0.0</id>
+    <link rel="alternate" type="text/html" href="https://github.com/o/r/releases/tag/v2.0.0"/>
+    <title>v2.0.0: update</title>
+  </entry>
+  <entry>
+    <link rel="alternate" type="text/html" href="https://github.com/o/r/releases/tag/v1.0.0"/>
+  </entry>
+</feed>"#;
+        assert_eq!(parse_atom_latest(feed).as_deref(), Some("v2.0.0"));
+    }
+
+    #[test]
+    fn atom_parses_prefixed_tag() {
+        let feed = r#"<feed><entry>
+<link rel="alternate" href="https://github.com/o/r/releases/tag/tauri-cef-v3.0.0-alpha.21"/>
+</entry></feed>"#;
+        assert_eq!(
+            parse_atom_latest(feed).as_deref(),
+            Some("tauri-cef-v3.0.0-alpha.21")
+        );
+    }
+
+    #[test]
+    fn atom_returns_none_on_empty_or_no_entry() {
+        assert_eq!(parse_atom_latest(""), None);
+        assert_eq!(parse_atom_latest("<feed></feed>"), None);
+        assert_eq!(
+            parse_atom_latest("<entry><title>no link</title></entry>"),
+            None
+        );
+    }
+
+    #[test]
+    fn mirrors_only_for_download() {
+        // 镜像表存在且非空（为下载阶段预留）；查版本阶段不发起镜像请求。
+        assert!(!MIRRORS.is_empty());
     }
 }
