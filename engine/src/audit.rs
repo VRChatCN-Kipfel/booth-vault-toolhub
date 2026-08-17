@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::clean::extract_version_tag;
+use crate::version;
 
 /// HIDDEN 属性位。
 const ATTR_HIDDEN: u32 = 0x02;
@@ -414,55 +415,7 @@ fn sorted_dirs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-/// 版本号元组：取第一个数字段（`\d+(\.\d+)*`）拆成整数元组（如 `Ver_2.00` → [2, 0]）。
-fn ver_tuple(tag: &str) -> Vec<u64> {
-    let b = tag.as_bytes();
-    let mut i = 0;
-    while i < b.len() && !b[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i == b.len() {
-        return Vec::new();
-    }
-    let mut parts = Vec::new();
-    while i < b.len() {
-        if !b[i].is_ascii_digit() {
-            break;
-        }
-        let start = i;
-        while i < b.len() && b[i].is_ascii_digit() {
-            i += 1;
-        }
-        if let Ok(n) = tag[start..i].parse::<u64>() {
-            parts.push(n);
-        }
-        if i + 1 < b.len() && b[i] == b'.' && b[i + 1].is_ascii_digit() {
-            i += 1;
-            continue;
-        }
-        break;
-    }
-    parts
-}
-
-/// `a` 是否严格大于 `b`（按版本号数字逐段比较，缺段补 0）。
-///
-/// 任一侧无版本号返回 false。
-pub fn ver_gt(a: &str, b: &str) -> bool {
-    let ta = ver_tuple(a);
-    let tb = ver_tuple(b);
-    if ta.is_empty() || tb.is_empty() {
-        return false;
-    }
-    for k in 0..ta.len().max(tb.len()) {
-        let x = ta.get(k).copied().unwrap_or(0);
-        let y = tb.get(k).copied().unwrap_or(0);
-        if x != y {
-            return x > y;
-        }
-    }
-    false
-}
+pub use version::ver_gt;
 
 /// 版本巡检结果：本地版本落后于官方版本的商品。
 #[derive(Debug, Clone, PartialEq, Eq)]

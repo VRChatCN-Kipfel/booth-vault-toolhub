@@ -6,6 +6,8 @@ import styled from 'styled-components';
 import { Minus, Square, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { FONTS } from '../theme/themes';
+import { useUpdateStore } from '../store/updateStore';
+import { useUiStore } from '../store/uiStore';
 
 const Bar = styled.div`
   height: 34px;
@@ -25,6 +27,28 @@ const Title = styled.div`
   letter-spacing: 0.18em;
   color: var(--bvt-text3);
   font-family: ${FONTS.serif};
+`;
+
+const Meta = styled.button`
+  -webkit-app-region: no-drag;
+  margin-right: 8px;
+  border: none;
+  background: transparent;
+  color: var(--bvt-text3);
+  font-family: ${FONTS.serif};
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  &:hover { color: var(--bvt-accent); }
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--bvt-accent);
+  }
 `;
 
 const Controls = styled.div`
@@ -51,10 +75,21 @@ const isMac =
   typeof navigator !== 'undefined' && /Mac|Macintosh/.test(navigator.userAgent);
 
 export function Titlebar() {
+  const info = useUpdateStore((s) => s.info);
+  const goTo = useUiStore((s) => s.goTo);
+  const ver = info?.local_version;
   return (
     <Bar data-tauri-drag-region style={isMac ? { paddingLeft: 78 } : undefined}>
       <Title data-tauri-drag-region>Booth Vault Toolhub</Title>
-      {!isMac && <WinControls />}
+      <div style={{ display: 'flex', alignItems: 'center' }}>
+        {ver && (
+          <Meta type="button" onClick={() => goTo('settings')} title="软件更新">
+            {info?.has_update && <span className="dot" />}
+            {info?.has_update ? `有新版本 ${info.remote_version}` : ver}
+          </Meta>
+        )}
+        {!isMac && <WinControls />}
+      </div>
     </Bar>
   );
 }

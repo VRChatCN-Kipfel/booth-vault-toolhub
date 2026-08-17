@@ -147,6 +147,8 @@ struct UpdateCheckResult {
     remote_version: String,
     url: String,
     error: Option<String>,
+    release_title: Option<String>,
+    release_body: Option<String>,
 }
 
 // ── 服务 ─────────────────────────────────────────────────────────
@@ -420,7 +422,7 @@ impl BoothServer {
 
     /// 检查工具自身是否有新版本（GitHub Releases）。
     #[tool(
-        description = "检查 booth-vault-toolhub 工具自身是否有新版本：拉取 GitHub Releases 最新 tag 与本地版本比较，返回是否有更新、最新版本号与下载链接。优先用 HTML 重定向法（不消耗 API 配额）。"
+        description = "检查 booth-vault-toolhub 自身是否有新版本。主通道 GitHub releases.atom（不占 API 配额），失败再走 HTML / API。"
     )]
     async fn update_check(
         &self,
@@ -434,6 +436,8 @@ impl BoothServer {
             remote_version: info.remote_version,
             url: info.url,
             error: info.error,
+            release_title: info.release_title,
+            release_body: info.release_body,
         };
         let text = serde_json::to_string_pretty(&result).unwrap_or_default();
         CallToolResult::success(vec![ContentBlock::text(text)])

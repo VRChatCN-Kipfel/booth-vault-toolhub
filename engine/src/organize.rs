@@ -114,7 +114,11 @@ pub fn missing_free_files(dest_dir: &Path, item: &ItemJson) -> Vec<(String, Stri
     for (url, fname) in free_downloads(item) {
         let dest = dest_dir.join(sanitize(&fname, 120));
         let remote_ver = extract_version_tag(&fname);
-        if !remote_ver.is_empty() && local_vers.contains(&remote_ver) {
+        if !remote_ver.is_empty()
+            && local_vers
+                .iter()
+                .any(|v| crate::version::ver_eq(v, &remote_ver))
+        {
             continue;
         }
         if valid_local_file(&dest) {

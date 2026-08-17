@@ -12,8 +12,10 @@ import { SupportSection } from '../components/SupportSection';
 import { PageTitle } from '../components/PageTitle';
 import { useThemeStore, resolveMode } from '../store/themeStore';
 import { useAppConfigStore } from '../store/appConfigStore';
+import { useUpdateStore } from '../store/updateStore';
 import { motifBgSrc, THEME_HINTS, THEME_NAMES, THEME_ORDER, THEMES } from '../theme/themes';
 import { brandMark } from '../theme/chrome';
+import { openUrl } from '@tauri-apps/plugin-opener';
 
 const ThemeGrid = styled.div`
   display: grid;
@@ -81,6 +83,29 @@ const Divider = styled.div`
   margin: 4px 0;
 `;
 
+const VersionCard = styled.div`
+  border: 1px solid var(--bvt-border);
+  border-top: 2px solid var(--bvt-accent);
+  border-radius: var(--bvt-radius, 0px);
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--bvt-surface) 88%, transparent);
+  .ver {
+    font-family: 'Noto Serif CJK SC','Songti SC',serif;
+    font-size: 18px;
+    letter-spacing: 0.12em;
+  }
+  .sub { color: var(--bvt-text2); font-size: 12px; margin-top: 4px; }
+  .notes {
+    margin-top: 10px;
+    color: var(--bvt-text2);
+    font-size: 12px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    max-height: 140px;
+    overflow: auto;
+  }
+`;
+
 const CARD_RADIUS: Record<string, string> = {
   zhuyin: '0px',
   liujin: '8px',
@@ -94,6 +119,7 @@ export function SettingsPage() {
     proxy, setProxy, proxyUrl, setProxyUrl,
     cookie, setCookie, save,
   } = useAppConfigStore();
+  const { checking, info, check } = useUpdateStore();
 
   const resolved = resolveMode(mode, systemTheme);
 
@@ -198,6 +224,33 @@ export function SettingsPage() {
         style={{ width: '100%' }}
         placeholder="留空即可，仅在受限时填写"
       />
+
+      <Divider />
+      <Label>软件版本</Label>
+      <VersionCard>
+        <div className="ver">{info?.local_version || '…'}</div>
+        <div className="sub">
+          {checking && '正在查询 GitHub Releases…'}
+          {!checking && info?.error && `查不到：${info.error}`}
+          {!checking && info && !info.error && info.has_update && (
+            <>有新版本 {info.remote_version}{info.release_title ? ` · ${info.release_title}` : ''}</>
+          )}
+          {!checking && info && !info.error && !info.has_update && '已是最新'}
+        </div>
+        {info?.release_body && info.has_update && (
+          <div className="notes">{info.release_body}</div>
+        )}
+        <Row style={{ marginTop: 10 }}>
+          <SecondaryButton onClick={() => void check(proxy)} disabled={checking}>
+            {checking ? '检查中…' : '检查更新'}
+          </SecondaryButton>
+          {info?.url && (
+            <SecondaryButton onClick={() => void openUrl(info.url)}>
+              打开发布页
+            </SecondaryButton>
+          )}
+        </Row>
+      </VersionCard>
 
       <Divider />
       <AccentButton

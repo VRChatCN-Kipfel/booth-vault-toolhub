@@ -4,6 +4,7 @@
 
 import styled from 'styled-components';
 import { useUiStore } from '../store/uiStore';
+import { useUpdateStore } from '../store/updateStore';
 
 const Bar = styled.div`
   height: 26px;
@@ -19,9 +20,32 @@ const Bar = styled.div`
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  width: 100%;
+`;
+
+const Hint = styled.button`
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--bvt-accent);
+  font: inherit;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  flex: none;
 `;
 
 export function StatusBar() {
   const status = useUiStore((s) => s.status);
-  return <Bar>{status || '\u00A0'}</Bar>;
+  const goTo = useUiStore((s) => s.goTo);
+  const info = useUpdateStore((s) => s.info);
+  return (
+    <Bar>
+      <span>{status || '\u00A0'}</span>
+      {info?.has_update && (
+        <Hint type="button" onClick={() => goTo('settings')}>
+          {info.remote_version} 可更新
+        </Hint>
+      )}
+    </Bar>
+  );
 }

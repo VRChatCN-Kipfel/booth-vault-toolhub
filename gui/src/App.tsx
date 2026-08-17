@@ -6,6 +6,8 @@ import { useEffect, useState, type CSSProperties } from 'react';
 import styled, { ThemeProvider } from 'styled-components';
 import { useThemeStore, resolveMode } from './store/themeStore';
 import { useAppConfigStore } from './store/appConfigStore';
+import { useUpdateStore } from './store/updateStore';
+import { useUiStore } from './store/uiStore';
 import { useSystemTheme } from './hooks/useSystemTheme';
 import { motifBgSrc, THEMES } from './theme/themes';
 import { GlobalStyle, paletteToVars } from './theme/global';
@@ -91,7 +93,10 @@ const PageWrap = styled.div`
 
 function App() {
   const { theme, mode, systemTheme, animSpeed, setSystemTheme, hydrate: hydrateTheme } = useThemeStore();
-  const { hydrate: hydrateConfig } = useAppConfigStore();
+  const { hydrate: hydrateConfig, proxy } = useAppConfigStore();
+  const checkUpdate = useUpdateStore((s) => s.check);
+  const pendingPage = useUiStore((s) => s.pendingPage);
+  const consumePage = useUiStore((s) => s.consumePage);
   const [page, setPage] = useState('links');
   const sysTheme = useSystemTheme();
 
@@ -99,6 +104,16 @@ function App() {
     void hydrateTheme();
     void hydrateConfig();
   }, [hydrateTheme, hydrateConfig]);
+
+  useEffect(() => {
+    void checkUpdate(proxy);
+  }, [checkUpdate, proxy]);
+
+  useEffect(() => {
+    if (!pendingPage) return;
+    setPage(pendingPage);
+    consumePage();
+  }, [pendingPage, consumePage]);
 
   // 系统明暗变化 → 写入 store（仅 mode=system 时消费）。
   useEffect(() => {

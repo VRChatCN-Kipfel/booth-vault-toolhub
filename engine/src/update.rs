@@ -1,46 +1,44 @@
-//! 工具自更新检查：拉取 GitHub latest release，比版本号，提示用户。
+//! 工具自更新：Atom 主通道（无 API 配额）→ HTML latest → API。
 //!
-//! 移植自 Python booth-keeper v1.3.2 `pages/updater.py` 的健壮性逻辑：
-//!   - HTML 重定向法：GET `/releases/latest` 解析 302 `Location` 取 tag，
-//!     不消耗 GitHub API 配额（无 token 限流 60/h）。
-//!   - API 兜底：`/releases/latest` JSON（可能被限流 403）。
-//!   - 403/429 退避：API 通道走 `http::get` 指数退避。
-//!   - 代理失败直连重试：配置/环境代理不可达时自动改直连。
-//!   - UA 伪装成浏览器（复用 `session::default_headers`），规避风控。
-//!
-//! 单一事实源：CLI / MCP / GUI 三端薄封装，业务逻辑全在 engine。
+//! 只问三件事：本地是哪一版、远端最新是哪一版、要不要打开发布页。
+//! GitHub `releases.atom` 形状固定，不引入 feed 解析库。
+
+use std::time::Duration;
 
 use fancy_regex::Regex;
 use reqwest::blocking::Client;
-use reqwest::redirect::Policy;
 use serde::Serialize;
 
 use crate::config::{load_config, resolve_proxy};
 use crate::http;
 use crate::session::default_headers;
+use crate::version::ver_gt;
 
-/// 工具所属 GitHub 仓库（自更新检查目标）。
+const CHANNEL_TIMEOUT: Duration = Duration::from_secs(12);
+
 pub const REPO_OWNER: &str = "VRChatCN-Kipfel";
 pub const REPO_NAME: &str = "booth-vault-toolhub";
 
-/// 本地工具版本（workspace 版本，三端一致）。
 pub fn local_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// 更新检查结果。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReleaseSnapshot {
+    pub tag: String,
+    pub title: Option<String>,
+    pub body: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdateInfo {
-    /// 是否存在新版本。
     pub has_update: bool,
-    /// 本地版本号（如 "0.1.0"）。
     pub local_version: String,
-    /// 远端最新版本号（获取失败时为空串）。
     pub remote_version: String,
-    /// 最新 release 页面（去下载用）。
     pub url: String,
-    /// 错误信息；成功为 None。
     pub error: Option<String>,
+    pub release_title: Option<String>,
+    pub release_body: Option<String>,
 }
 
 impl Default for UpdateInfo {
@@ -51,31 +49,31 @@ impl Default for UpdateInfo {
             remote_version: String::new(),
             url: releases_url(),
             error: None,
+            release_title: None,
+            release_body: None,
         }
     }
 }
 
-/// 拼接 releases 页面 URL。
 fn releases_url() -> String {
     format!("https://github.com/{REPO_OWNER}/{REPO_NAME}/releases")
 }
 
-/// 拼接 `/releases/latest`（HTML 重定向入口）URL。
 fn releases_latest_url() -> String {
     format!("{}/latest", releases_url())
 }
 
-/// 拼接 API latest release URL。
+fn releases_atom_url() -> String {
+    format!("https://github.com/{REPO_OWNER}/{REPO_NAME}/releases.atom")
+}
+
 fn api_latest_url() -> String {
     format!("https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest")
 }
 
-/// 构建 GitHub 专用 client：禁用重定向（捕获 302 Location）+ 浏览器 UA + 可选代理。
-///
-/// 复用 `session::default_headers` 的 UA 与 `resolve_proxy` 的代理裁决（禁硬编码）。
 fn github_client(proxy: Option<String>) -> Client {
     let mut builder = Client::builder()
-        .redirect(Policy::none())
+        .timeout(CHANNEL_TIMEOUT)
         .default_headers(default_headers());
     if let Some(p) = proxy
         && let Ok(pr) = reqwest::Proxy::all(&p)
@@ -85,91 +83,183 @@ fn github_client(proxy: Option<String>) -> Client {
     builder.build().expect("update: reqwest client build")
 }
 
-/// 解析版本号 `'1.0.1'` → `[1,0,1]`；兼容 `v1.0.1` / `1.0.1-rc`。
-pub fn parse_version(ver: &str) -> Vec<u32> {
-    let re = Regex::new(r"v?(\d+(?:\.\d+)*)").expect("valid regex");
-    match re.captures(ver) {
-        Ok(Some(c)) => c
-            .get(1)
-            .map(|m| {
-                m.as_str()
-                    .split('.')
-                    .filter_map(|x| x.parse::<u32>().ok())
-                    .collect()
-            })
-            .unwrap_or_default(),
-        _ => Vec::new(),
+fn extract_tag_from_url(url: &str) -> Option<String> {
+    let re = Regex::new(r#"/releases/tag/([^/?#"' \s]+)"#).expect("valid regex");
+    re.captures(url)
+        .ok()
+        .flatten()
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+}
+
+/// 从 GitHub releases.atom 取最新一条（首个 entry）。
+pub fn parse_atom_latest(feed: &str) -> Option<ReleaseSnapshot> {
+    let start = feed.find("<entry>")?;
+    let rest = &feed[start..];
+    let end = rest.find("</entry>")?;
+    let entry = &rest[..=end + "</entry>".len() - 1];
+    let tag = extract_tag_from_url(entry)?;
+    let title = xml_tag_text(entry, "title");
+    let body = xml_tag_text(entry, "content");
+    Some(ReleaseSnapshot { tag, title, body })
+}
+
+fn xml_tag_text(hay: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let i = hay.find(&open)?;
+    let after = &hay[i + open.len()..];
+    let gt = after.find('>')?;
+    let inner = &after[gt + 1..];
+    let j = inner.find(&close)?;
+    let raw = inner[..j].trim();
+    if raw.is_empty() {
+        None
+    } else {
+        Some(raw.to_string())
     }
 }
 
-/// 远端版本是否严格新于本地（`remote > local`，补零等价）。
-fn is_newer(local: &[u32], remote: &[u32]) -> bool {
-    if remote.is_empty() {
-        return false;
-    }
-    let n = local.len().max(remote.len());
-    for i in 0..n {
-        let l = local.get(i).copied().unwrap_or(0);
-        let r = remote.get(i).copied().unwrap_or(0);
-        if r != l {
-            return r > l;
+/// GitHub release notes 常见标签 → 可读文本。
+pub fn html_to_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let bytes = html.as_bytes();
+    let mut i = 0;
+    let mut pending_nl = false;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            if let Some(end) = html[i..].find('>') {
+                let tag = html[i + 1..i + end].trim().to_ascii_lowercase();
+                let name = tag
+                    .trim_start_matches('/')
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("");
+                if matches!(
+                    name,
+                    "p" | "div" | "br" | "li" | "ul" | "ol" | "h1" | "h2" | "h3" | "pre"
+                ) {
+                    if !pending_nl && !out.is_empty() {
+                        out.push('\n');
+                    }
+                    pending_nl = true;
+                    if name == "li" && !tag.starts_with('/') {
+                        out.push_str("- ");
+                        pending_nl = false;
+                    }
+                }
+                i += end + 1;
+                continue;
+            }
+            break;
+        }
+        pending_nl = false;
+        let ch = html[i..].chars().next().unwrap();
+        if html[i..].starts_with("&amp;") {
+            out.push('&');
+            i += 5;
+        } else if html[i..].starts_with("&lt;") {
+            out.push('<');
+            i += 4;
+        } else if html[i..].starts_with("&gt;") {
+            out.push('>');
+            i += 4;
+        } else if html[i..].starts_with("&quot;") {
+            out.push('"');
+            i += 6;
+        } else if html[i..].starts_with("&#39;") || html[i..].starts_with("&apos;") {
+            out.push('\'');
+            i += if html[i..].starts_with("&#39;") { 5 } else { 6 };
+        } else if html[i..].starts_with("&nbsp;") {
+            out.push(' ');
+            i += 6;
+        } else {
+            out.push(ch);
+            i += ch.len_utf8();
         }
     }
-    false
+    out.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-/// HTML 重定向法：GET `/releases/latest`（302）→ `Location` 取 tag。
-///
-/// 部分网络直连 200 返回页面，从页面里抓 tag；全部失败返回 None。
-fn fetch_html_tag(client: &Client) -> Option<String> {
-    let resp = client
-        .get(releases_latest_url())
-        .headers(default_headers())
-        .send()
-        .ok()?;
-    if resp.status().as_u16() == 302
-        && let Some(loc) = resp.headers().get(reqwest::header::LOCATION)
-        && let Ok(loc) = loc.to_str()
-    {
-        let re = Regex::new(r"/releases/tag/([^/]+)/?$").expect("valid regex");
-        if let Ok(Some(c)) = re.captures(loc)
-            && let Some(m) = c.get(1)
-        {
-            return Some(m.as_str().to_string());
-        }
+fn fetch_atom(client: &Client) -> Option<ReleaseSnapshot> {
+    let resp = client.get(releases_atom_url()).send().ok()?;
+    if !resp.status().is_success() {
+        return None;
     }
-    // 直连 200：从页面 HTML 抓 tag
+    let text = resp.text().ok()?;
+    parse_atom_latest(&text)
+}
+
+fn fetch_html(client: &Client) -> Option<ReleaseSnapshot> {
+    let resp = client.get(releases_latest_url()).send().ok()?;
+    if let Some(tag) = extract_tag_from_url(resp.url().as_str()) {
+        return Some(ReleaseSnapshot {
+            tag,
+            title: None,
+            body: None,
+        });
+    }
     if resp.status().is_success()
         && let Ok(text) = resp.text()
+        && let Some(tag) = extract_tag_from_url(&text)
     {
-        let re = Regex::new(r"/releases/tag/(v?[\d.]+)").expect("valid regex");
-        if let Ok(Some(c)) = re.captures(&text)
-            && let Some(m) = c.get(1)
-        {
-            return Some(m.as_str().to_string());
-        }
+        return Some(ReleaseSnapshot {
+            tag,
+            title: None,
+            body: None,
+        });
     }
     None
 }
 
-/// API 法（可能被限流 403）：解析 JSON `tag_name`。
-///
-/// 走 `http::get` 享受 403/429 指数退避兜底（不消耗配额失败时有意义）。
-fn fetch_api_tag(client: &Client) -> Option<String> {
+fn fetch_api(client: &Client) -> Option<ReleaseSnapshot> {
     let resp = http::get(client, &api_latest_url(), default_headers()).ok()?;
     if !resp.status().is_success() {
         return None;
     }
     let json = resp.json::<serde_json::Value>().ok()?;
-    json.get("tag_name")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+    let tag = json.get("tag_name")?.as_str()?.to_string();
+    Some(ReleaseSnapshot {
+        tag,
+        title: json
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        body: json
+            .get("body")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    })
 }
 
-/// 主检查：HTML 重定向（主）→ API（兜底）→ 代理失败直连重试。
-///
-/// `use_proxy=true` 时优先走配置/环境代理；若代理通道全部失败，自动改直连重试。
-/// 全部失败返回 `error`，不抛异常。
+fn probe(client: &Client) -> Option<ReleaseSnapshot> {
+    fetch_atom(client)
+        .or_else(|| fetch_html(client))
+        .or_else(|| fetch_api(client))
+}
+
+fn build_info(snap: ReleaseSnapshot) -> UpdateInfo {
+    let local = local_version();
+    let body = snap
+        .body
+        .as_deref()
+        .map(html_to_text)
+        .filter(|s| !s.is_empty());
+    UpdateInfo {
+        has_update: ver_gt(&snap.tag, &local),
+        local_version: local,
+        remote_version: snap.tag,
+        url: releases_url(),
+        error: None,
+        release_title: snap.title.filter(|s| !s.is_empty()),
+        release_body: body,
+    }
+}
+
+/// `use_proxy=true` 走配置/环境代理；该通道全失败再直连一次。
 pub fn check_update(use_proxy: bool) -> UpdateInfo {
     let config = load_config();
     let proxy = if use_proxy {
@@ -177,45 +267,19 @@ pub fn check_update(use_proxy: bool) -> UpdateInfo {
     } else {
         None
     };
-    // 复用 client：代理与直连各 1 个，避免每次调用建 4 个 reqwest Client。
     let proxied = github_client(proxy.clone());
-    let direct = github_client(None);
-
-    // 通道 1：HTML 重定向法（无配额）
-    if let Some(tag) = fetch_html_tag(&proxied) {
-        return build_info(tag, None);
+    if let Some(snap) = probe(&proxied) {
+        return build_info(snap);
     }
-    // 通道 2：API（可能限流 403）
-    if let Some(tag) = fetch_api_tag(&proxied) {
-        return build_info(tag, None);
-    }
-    // 通道 3：代理失败 → 直连重试
     if proxy.is_some() {
-        if let Some(tag) = fetch_html_tag(&direct) {
-            return build_info(tag, None);
-        }
-        if let Some(tag) = fetch_api_tag(&direct) {
-            return build_info(tag, None);
+        let direct = github_client(None);
+        if let Some(snap) = probe(&direct) {
+            return build_info(snap);
         }
     }
-
     UpdateInfo {
         error: Some("网络失败或无法访问 GitHub".to_string()),
         ..Default::default()
-    }
-}
-
-/// 用远端 tag 组装结果（比版本号）。
-fn build_info(remote_tag: String, error: Option<String>) -> UpdateInfo {
-    let local = local_version();
-    let remote_v = parse_version(&remote_tag);
-    let local_v = parse_version(&local);
-    UpdateInfo {
-        has_update: is_newer(&local_v, &remote_v),
-        local_version: local,
-        remote_version: remote_tag,
-        url: releases_url(),
-        error,
     }
 }
 
@@ -224,23 +288,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_version_basic() {
-        assert_eq!(parse_version("1.0.1"), vec![1, 0, 1]);
-        assert_eq!(parse_version("v1.3.2"), vec![1, 3, 2]);
-        assert_eq!(parse_version("1.0.1-rc"), vec![1, 0, 1]);
-        assert_eq!(parse_version("garbage"), Vec::<u32>::new());
+    fn parse_atom_github_shape() {
+        let feed = r#"<?xml version="1.0"?>
+<feed>
+  <entry>
+    <id>tag:github.com,2008:Repository/1/releases/9</id>
+    <link rel="alternate" type="text/html" href="https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/releases/tag/v1.4.0"/>
+    <title>v1.4.0</title>
+    <content type="html">&lt;p&gt;fix proxy&lt;/p&gt;&lt;ul&gt;&lt;li&gt;a&lt;/li&gt;&lt;/ul&gt;</content>
+  </entry>
+</feed>"#;
+        let snap = parse_atom_latest(feed).unwrap();
+        assert_eq!(snap.tag, "v1.4.0");
+        assert_eq!(snap.title.as_deref(), Some("v1.4.0"));
+        assert!(snap.body.as_deref().unwrap().contains("fix proxy"));
     }
 
     #[test]
-    fn is_newer_compares() {
-        assert!(is_newer(&[1, 3, 1], &[1, 4, 0]));
-        assert!(is_newer(&[1, 3, 2], &[1, 3, 3]));
-        assert!(!is_newer(&[1, 4, 0], &[1, 4, 0]));
-        assert!(!is_newer(&[2, 0, 0], &[1, 9, 9]));
-        // 补零等价：1.0 == 1.0.0
-        assert!(!is_newer(&[1, 0], &[1, 0, 0]));
-        assert!(is_newer(&[1, 0], &[1, 0, 1]));
-        assert!(!is_newer(&[1, 0, 0], &[]));
+    fn html_to_text_list() {
+        let t = html_to_text("<p>hello</p><ul><li>one</li><li>two</li></ul>");
+        assert!(t.contains("hello"));
+        assert!(t.contains("- one"));
+        assert!(t.contains("- two"));
     }
 
     #[test]

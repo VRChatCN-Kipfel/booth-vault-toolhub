@@ -6,17 +6,21 @@
 import { create } from 'zustand';
 
 interface UiState {
-  /** 状态栏消息。 */
   status: string;
-  /** 任务中状态（如"巡检中…"）。 */
   busy: boolean;
+  pendingPage: string | null;
   setStatus: (msg: string) => void;
   setBusy: (b: boolean) => void;
+  goTo: (page: string) => void;
+  consumePage: () => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
   status: '',
   busy: false,
+  pendingPage: null,
   setStatus: (msg) => set({ status: msg }),
   setBusy: (b) => set({ busy: b }),
+  goTo: (page) => set({ pendingPage: page }),
+  consumePage: () => set({ pendingPage: null }),
 }));

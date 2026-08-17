@@ -661,6 +661,8 @@ fn cmd_update_check(use_proxy: bool, json: bool) -> u8 {
             "remote_version": info.remote_version,
             "url": info.url,
             "error": info.error,
+            "release_title": info.release_title,
+            "release_body": info.release_body,
         });
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else if let Some(err) = &info.error {
@@ -670,6 +672,12 @@ fn cmd_update_check(use_proxy: bool, json: bool) -> u8 {
             "发现新版本: {} → {}  下载: {}",
             info.local_version, info.remote_version, info.url
         );
+        if let Some(title) = &info.release_title {
+            println!("{title}");
+        }
+        if let Some(body) = &info.release_body {
+            println!("{body}");
+        }
     } else {
         println!("已是最新版本: {}", info.local_version);
     }
