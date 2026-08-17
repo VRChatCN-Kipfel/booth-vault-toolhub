@@ -50,6 +50,12 @@
         "languages": ["English", "SimpChinese"],
         "displayLanguageSelector": true
       }
+    },
+    "macOS": {
+      "files": {
+        "MacOS/booth": "binaries/booth",
+        "MacOS/booth-mcp": "binaries/booth-mcp"
+      }
     }
   }
 }

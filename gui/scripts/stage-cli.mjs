@@ -48,9 +48,13 @@ const boothShellSrc = isWin ? picked.get("booth-shell.exe")[0] : "";
 const projectOut = dirname(boothSrc);
 
 if (!isWin) {
-  console.log("[stage-cli] 非 Windows：跳过 MSI/NSIS 片段，CLI 已定位");
-  console.log(`[stage-cli] booth -> ${boothSrc}`);
-  console.log(`[stage-cli] booth-mcp -> ${boothMcpSrc}`);
+  const macCliDir = join(scriptDir, "..", "src-tauri", "binaries");
+  mkdirSync(macCliDir, { recursive: true });
+  cpSync(boothSrc, join(macCliDir, "booth"));
+  cpSync(boothMcpSrc, join(macCliDir, "booth-mcp"));
+  console.log("[stage-cli] booth -> " + boothSrc);
+  console.log("[stage-cli] booth-mcp -> " + boothMcpSrc);
+  console.log("[stage-cli] macOS: CLI 已复制到 " + macCliDir + "（经 bundle.macOS.files 进 dmg）");
   process.exit(0);
 }
 
