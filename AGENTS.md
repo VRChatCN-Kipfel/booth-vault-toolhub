@@ -89,6 +89,7 @@ cd gui && npm run tauri dev # GUI 开发
 - 限速 0.5~0.8s，GUI/CLI/MCP 三端统一，不得绕过（防 BOOTH 风控）。
 - 统一 CLI 必须提供结构化输出（`--json`）与语义化退出码（0 成功/1 有失败/2 致命），MCP 依赖它判断成败。
 - 网络代理为**配置项**，不得硬编码个人代理地址。优先级：配置文件 `proxy` > `HTTPS_PROXY`（无缺省回退）> reqwest 系统默认（Windows 读系统代理注册表）。
+- 自更新检查（`update_check`）多通道契约：**Atom feed（`releases.atom`）为主**（无 API 配额限流，成熟库 feed-rs 解析），HTML 重定向 + API 作兜底。所有通道显式超时（20s），防单入口挂起；代理/直连 client 去重（`use_proxy=false` 时只发一次）。失败区分「网络不可达」与「仓库无 Release」两种 error 文案。内置 gh-proxy 类镜像（`MIRRORS`）**仅用于下载阶段**，查版本阶段不发起镜像请求（实测镜像对 feed 全 403）。
 
 ## 警告事项（血泪坑，防回归）
 
