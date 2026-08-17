@@ -79,11 +79,22 @@ fn cmp_version() -> String {
     }
 }
 
-/// 单个通道抓取函数签名：返回 `(tag, reachable)`。
+/// 单个通道抓取函数签名：返回 `(快照, reachable)`。
 ///
-/// `reachable=true` 表示 HTTP 层已连通（无论是否解析到 tag），供调用方区分
+/// `reachable=true` 表示 HTTP 层已连通（无论是否解析到 release），供调用方区分
 /// 「网络可达但仓库无 Release」与「网络不可达」。
-type Fetcher = fn(&Client) -> (Option<String>, bool);
+type Fetcher = fn(&Client) -> (Option<ReleaseSnapshot>, bool);
+
+/// 远端最新 release 快照（tag + 详情）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ReleaseSnapshot {
+    /// 版本 tag（如 "v1.2.3" 或 "1.2.3"）。
+    pub tag: String,
+    /// release 标题（Atom entry title 或 API `name`）。
+    pub title: Option<String>,
+    /// release 正文（HTML，Atom content 或 API `body`）。
+    pub body: Option<String>,
+}
 
 /// 更新检查结果。
 #[derive(Debug, Clone, Serialize)]
@@ -98,6 +109,10 @@ pub struct UpdateInfo {
     pub url: String,
     /// 错误信息；成功为 None。
     pub error: Option<String>,
+    /// 远端 release 标题（可选，仅主通道能取到时提供）。
+    pub release_title: Option<String>,
+    /// 远端 release 正文（HTML，可选）。
+    pub release_body: Option<String>,
 }
 
 impl Default for UpdateInfo {
@@ -108,6 +123,8 @@ impl Default for UpdateInfo {
             remote_version: String::new(),
             url: releases_url(),
             error: None,
+            release_title: None,
+            release_body: None,
         }
     }
 }
@@ -149,20 +166,104 @@ fn github_client(proxy: Option<String>) -> Client {
     builder.build().expect("update: reqwest client build")
 }
 
-/// 从 Atom feed 文本提取最新 tag（纯函数，供测试）。
+/// 从 Atom feed 文本提取最新 release 快照（纯函数，供测试）。
 ///
-/// 用 `feed-rs` 严格解析：取首个 `<entry>`，在其 alternate 链接（或 id/title）
-/// 里找 `/releases/tag/{tag}`。成熟库处理命名空间/实体/畸形输入，免手写正则。
-fn parse_atom_latest(feed_text: &str) -> Option<String> {
+/// 用 `feed-rs` 严格解析：取首个 `<entry>`，tag 从 alternate 链接（或 id）提取，
+/// title/content 取 entry 的标题与正文（HTML）。成熟库处理命名空间/实体/畸形输入。
+fn parse_atom_latest(feed_text: &str) -> Option<ReleaseSnapshot> {
     let feed = feed_rs::parser::parse(feed_text.as_bytes()).ok()?;
     let entry = feed.entries.into_iter().next()?;
-    // 优先从 release 链接提取（最可靠）；无则退到 id（`tag:...:releases/tag/v2.0.0`）。
-    for link in entry.links {
-        if let Some(href) = extract_tag_from_url(&link.href) {
-            return Some(href);
+    let tag = {
+        // 优先从 release 链接提取（最可靠）；无则退到 id（`tag:...:releases/tag/v2.0.0`）。
+        let mut tag = None;
+        for link in entry.links {
+            if let Some(href) = extract_tag_from_url(&link.href) {
+                tag = Some(href);
+                break;
+            }
+        }
+        tag.or_else(|| extract_tag_from_url(&entry.id))?
+    };
+    Some(ReleaseSnapshot {
+        tag,
+        title: entry.title.map(|t| t.content),
+        body: entry.content.and_then(|c| c.body),
+    })
+}
+
+/// HTML → 可读纯文本（去除标签、解码常见实体、折叠空白）。
+///
+/// 供 CLI/GUI 展示 release 正文；仅处理 GitHub release notes 常见的简单 HTML
+/// （`<li>`/`<p>`/`<a>`/`<code>` 等），不追求完整 HTML 语义。
+pub fn html_to_text(html: &str) -> String {
+    // 显式处理块级标签（换行/列表项加 `- `），行内标签（code/a/strong）随后由去标签步骤
+    // 直接删除，不打乱文本。
+    let spaced = html
+        // 相邻列表项边界：一次换成 `\n- `（避免 `</li>\n<li>` 产生空行且保留 dash）
+        .replace("</li><li>", "\n- ")
+        .replace("</li>\n<li>", "\n- ")
+        .replace("</li>\n <li>", "\n- ")
+        .replace("<li>", "\n- ")
+        .replace("<li ", "\n- ")
+        .replace("</li>", "\n")
+        // 块级闭合标签相邻时只留一个换行（如 `</p></li>`）
+        .replace("</p></li>", "\n")
+        .replace("</p>\n</li>", "\n")
+        .replace("</p>", "\n")
+        .replace("</ul>", "\n")
+        .replace("</ol>", "\n")
+        .replace("</pre>", "\n")
+        .replace("</div>", "\n")
+        .replace("</h1>", "\n")
+        .replace("</h2>", "\n")
+        .replace("</h3>", "\n")
+        .replace("</h4>", "\n")
+        .replace("<br>", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br />", "\n");
+    // 去标签（行内标签在此删除，不留空白行）
+    let re = Regex::new(r"<[^>]*>").expect("valid regex");
+    let cleaned = re.replace_all(&spaced, "").into_owned();
+    // 折叠连续空行（含 `</ul>\n<p>` 产生的段落分隔），至多保留一个空行。
+    let re_blank = Regex::new(r"\n{3,}").expect("valid regex");
+    let cleaned = re_blank.replace_all(&cleaned, "\n\n").into_owned();
+    // 解码常见实体
+    let decoded = cleaned
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ");
+    // 折叠空白：行首尾 trim、合并连续空行、孤立 `-` 前缀并入下一行。
+    let mut out = String::new();
+    let mut prev_blank = false;
+    let mut pending_dash = false;
+    for line in decoded.lines() {
+        let l = line.trim();
+        if l == "-" {
+            // GitHub 嵌套 `<li>\n<p>`：`- ` 独占一行，并入下一行。
+            pending_dash = true;
+            continue;
+        }
+        let l = if pending_dash {
+            pending_dash = false;
+            format!("- {l}")
+        } else {
+            l.to_string()
+        };
+        if l.is_empty() {
+            if !prev_blank {
+                out.push('\n');
+            }
+            prev_blank = true;
+        } else {
+            out.push_str(&l);
+            out.push('\n');
+            prev_blank = false;
         }
     }
-    extract_tag_from_url(&entry.id)
+    out.trim().to_string()
 }
 
 /// 从含 `/releases/tag/{tag}` 的 URL/`id` 提取 tag；不含则 None。
@@ -176,12 +277,12 @@ fn extract_tag_from_url(url: &str) -> Option<String> {
     None
 }
 
-/// Atom 法（主通道）：解析 `/releases.atom` 首个 `<entry>` 的 release link 取 tag。
+/// Atom 法（主通道）：解析 `/releases.atom` 首个 `<entry>` 的 release 快照。
 ///
 /// 静态 feed 不消耗 API 配额，`github.com` 路径无 403 限流。
-/// 返回 `(tag, reachable)`：`reachable=true` 表示 HTTP 已连通（无论是否解析到 tag），
-/// 供调用方区分「网络可达但无 release」与「网络不可达」。
-fn fetch_atom_tag(client: &Client) -> (Option<String>, bool) {
+/// 返回 `(快照, reachable)`：`reachable=true` 表示 HTTP 已连通（无论是否解析到 tag），
+/// 供调用方区分「网络可达但无 release」与「网络不可达」。该通道能取到 title/content。
+fn fetch_atom_tag(client: &Client) -> (Option<ReleaseSnapshot>, bool) {
     let resp = match client
         .get(releases_atom_url())
         .headers(default_headers())
@@ -202,8 +303,9 @@ fn fetch_atom_tag(client: &Client) -> (Option<String>, bool) {
 
 /// HTML 重定向法：GET `/releases/latest`（302）→ `Location` 取 tag。
 ///
-/// 部分网络直连 200 返回页面，从页面里抓 tag；返回 `(tag, reachable)`。
-fn fetch_html_tag(client: &Client) -> (Option<String>, bool) {
+/// 部分网络直连 200 返回页面，从页面里抓 tag；返回 `(快照, reachable)`。
+/// 该通道仅能取 tag，无 title/content。
+fn fetch_html_tag(client: &Client) -> (Option<ReleaseSnapshot>, bool) {
     let resp = match client
         .get(releases_latest_url())
         .headers(default_headers())
@@ -220,7 +322,14 @@ fn fetch_html_tag(client: &Client) -> (Option<String>, bool) {
         if let Ok(Some(c)) = re.captures(loc)
             && let Some(m) = c.get(1)
         {
-            return (Some(m.as_str().to_string()), true);
+            return (
+                Some(ReleaseSnapshot {
+                    tag: m.as_str().to_string(),
+                    title: None,
+                    body: None,
+                }),
+                true,
+            );
         }
     }
     // 直连 200：从页面 HTML 抓 tag
@@ -231,17 +340,24 @@ fn fetch_html_tag(client: &Client) -> (Option<String>, bool) {
         if let Ok(Some(c)) = re.captures(&text)
             && let Some(m) = c.get(1)
         {
-            return (Some(m.as_str().to_string()), true);
+            return (
+                Some(ReleaseSnapshot {
+                    tag: m.as_str().to_string(),
+                    title: None,
+                    body: None,
+                }),
+                true,
+            );
         }
     }
     (None, true)
 }
 
-/// API 法（可能被限流 403）：解析 JSON `tag_name`。
+/// API 法（可能被限流 403）：解析 JSON `tag_name` / `name` / `body`。
 ///
 /// 走 `http::get` 享受 403/429 指数退避兜底（不消耗配额失败时有意义）。
-/// 返回 `(tag, reachable)`。
-fn fetch_api_tag(client: &Client) -> (Option<String>, bool) {
+/// 返回 `(快照, reachable)`。该通道能取到 API 的 title/body。
+fn fetch_api_tag(client: &Client) -> (Option<ReleaseSnapshot>, bool) {
     let resp = match http::get(client, &api_latest_url(), default_headers()) {
         Ok(r) => r,
         Err(_) => return (None, false),
@@ -253,12 +369,22 @@ fn fetch_api_tag(client: &Client) -> (Option<String>, bool) {
         Ok(j) => j,
         Err(_) => return (None, true),
     };
-    (
-        json.get("tag_name")
+    let tag = json
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let snapshot = tag.map(|tag| ReleaseSnapshot {
+        title: json
+            .get("name")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        true,
-    )
+        body: json
+            .get("body")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        tag,
+    });
+    (snapshot, true)
 }
 
 /// 主检查：Atom（主，无配额）→ HTML 重定向（兜底）→ API（兜底）→ 代理失败直连重试。
@@ -293,10 +419,10 @@ pub fn check_update(use_proxy: bool) -> UpdateInfo {
     let mut any_reachable = false;
     for run in &chan_candidates {
         for c in &clients {
-            let (tag, reachable) = run(c);
+            let (snapshot, reachable) = run(c);
             any_reachable |= reachable;
-            if let Some(tag) = tag {
-                return build_info(tag, None);
+            if let Some(snapshot) = snapshot {
+                return build_info(snapshot, None);
             }
         }
     }
@@ -312,14 +438,16 @@ pub fn check_update(use_proxy: bool) -> UpdateInfo {
     }
 }
 
-/// 用远端 tag 组装结果（比版本号，复用 `crate::version` 单一实现）。
-fn build_info(remote_tag: String, error: Option<String>) -> UpdateInfo {
+/// 用远端 release 快照组装结果（比版本号，复用 `crate::version` 单一实现）。
+fn build_info(snapshot: ReleaseSnapshot, error: Option<String>) -> UpdateInfo {
     UpdateInfo {
-        has_update: crate::version::ver_gt(&remote_tag, &cmp_version()),
+        has_update: crate::version::ver_gt(&snapshot.tag, &cmp_version()),
         local_version: local_version(),
-        remote_version: remote_tag,
+        remote_version: snapshot.tag,
         url: releases_url(),
         error,
+        release_title: snapshot.title,
+        release_body: snapshot.body,
     }
 }
 
@@ -358,12 +486,17 @@ mod tests {
     <id>tag:github.com,2008:Repository/1/v2.0.0</id>
     <link rel="alternate" type="text/html" href="https://github.com/o/r/releases/tag/v2.0.0"/>
     <title>v2.0.0: update</title>
+    <content type="html">&lt;ul&gt;&lt;li&gt;fix bug A&lt;/li&gt;&lt;/ul&gt;</content>
   </entry>
   <entry>
     <link rel="alternate" type="text/html" href="https://github.com/o/r/releases/tag/v1.0.0"/>
   </entry>
 </feed>"#;
-        assert_eq!(parse_atom_latest(feed).as_deref(), Some("v2.0.0"));
+        let s = parse_atom_latest(feed).expect("should parse");
+        assert_eq!(s.tag, "v2.0.0");
+        assert_eq!(s.title.as_deref(), Some("v2.0.0: update"));
+        // feed-rs 解码 XML 实体后，content.body 为原始 HTML。
+        assert_eq!(s.body.as_deref(), Some("<ul><li>fix bug A</li></ul>"));
     }
 
     #[test]
@@ -371,10 +504,10 @@ mod tests {
         let feed = r#"<feed><entry>
 <link rel="alternate" href="https://github.com/o/r/releases/tag/tauri-cef-v3.0.0-alpha.21"/>
 </entry></feed>"#;
-        assert_eq!(
-            parse_atom_latest(feed).as_deref(),
-            Some("tauri-cef-v3.0.0-alpha.21")
-        );
+        let s = parse_atom_latest(feed).expect("should parse");
+        assert_eq!(s.tag, "tauri-cef-v3.0.0-alpha.21");
+        assert_eq!(s.title, None);
+        assert_eq!(s.body, None);
     }
 
     #[test]
@@ -385,6 +518,38 @@ mod tests {
             parse_atom_latest("<entry><title>no link</title></entry>"),
             None
         );
+    }
+
+    #[test]
+    fn html_to_text_strips_tags_and_entities() {
+        let html = "<ul><li>fix <code>bug</code></li><li>add &amp; feature</li></ul>";
+        let out = html_to_text(html);
+        assert_eq!(out, "- fix bug\n- add & feature");
+    }
+
+    #[test]
+    fn html_to_text_handles_empty_and_plain() {
+        assert_eq!(html_to_text(""), "");
+        assert_eq!(html_to_text("  \n  "), "");
+        assert_eq!(
+            html_to_text("plain text with &amp; entity"),
+            "plain text with & entity"
+        );
+    }
+
+    #[test]
+    fn html_to_text_github_style_nested_li() {
+        // GitHub release notes 常见嵌套：<li> 内再含 <p>，换行标签。
+        // 列表项之间紧凑（无空行），列表与后续段落间保留一个空行（markdown 语义）。
+        let html = "<ul>\n<li>\n<p>windows fix</p>\n</li>\n</ul>\n<p>only let the parent</p>";
+        let out = html_to_text(html);
+        assert_eq!(out, "- windows fix\n\nonly let the parent");
+    }
+
+    #[test]
+    fn html_to_text_multiple_items_no_inner_blank() {
+        let html = "<ul><li>one</li><li>two</li><li>three</li></ul>";
+        assert_eq!(html_to_text(html), "- one\n- two\n- three");
     }
 
     #[test]
