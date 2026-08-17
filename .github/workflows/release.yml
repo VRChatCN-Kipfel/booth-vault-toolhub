@@ -151,8 +151,7 @@ jobs:
              binaries/target/${{ matrix.rust_target }}/release/booth-shell.exe \
              target/${{ matrix.rust_target }}/release/
 
-      # ---- macOS：把 CI booth/mcp 放回 release target（macOS 无 booth-shell）----
-      # TODO: macOS 的 tauri 打包（dmg / .app）在此实现，目前仅安置中间产物。
+      # ---- macOS：把 CI booth/mcp 放回 release target（macOS 无 booth-shell；打包含在 Build bundle）----
       - name: Stage booth binaries (macOS)
         if: matrix.platform == 'macos'
         shell: bash
@@ -162,15 +161,23 @@ jobs:
              binaries/booth-mcp \
              target/${{ matrix.rust_target }}/release/
 
-      # 构建 GUI bundle（Windows：MSI/NSIS，arm64 仅 NSIS；macOS：见 TODO）
-      - name: Build GUI bundle
+      # 构建 GUI bundle：
+      #   Windows：MSI/NSIS（arm64 仅 NSIS）。
+      #   macOS：仅 dmg，--no-sign 跳过签名（调研决策：暂不做签名/公证，先出骨架；
+      #           arm64 纯 unsigned 的 dmg 在 Apple Silicon 上会被判"已损坏"，后者待定）。
+      #   --bundles dmg 收紧产物，避免多产中间 .app 目录。
+      # 传 --target host 目标，产物统一落 target/{rust_target}/release/bundle/（与 Windows 对称）。
+      - name: Build GUI bundle (Windows)
         if: matrix.platform == 'windows'
         working-directory: gui
         run: npm run tauri build -- --target ${{ matrix.rust_target }}
+      - name: Build GUI bundle (macOS)
+        if: matrix.platform == 'macos'
+        working-directory: gui
+        run: npm run tauri build -- --target ${{ matrix.rust_target }} --bundles dmg --no-sign
 
-      # verify bundle 产物（Windows）
+      # verify bundle 产物（Windows：bundle/ 整体；macOS：bundle/dmg/）
       - name: Verify bundle output
-        if: matrix.platform == 'windows'
         shell: bash
         run: |
           if [ ! -d "target/${{ matrix.rust_target }}/release/bundle" ]; then
@@ -258,9 +265,15 @@ jobs:
           path: dist/full/**
           if-no-files-found: warn
           retention-days: 30
-      # TODO: macOS 上传（dmg / .app）。待 tauri 打包实现后：
-      #   name: booth-vault-toolhub-packages-${{ matrix.arch }}-dmg
-      #   path: target/${{ matrix.rust_target }}/release/bundle/dmg/**
+      # macOS：上传 dmg 安装包（unsigned，见 Build GUI bundle (macOS) 注释）
+      - name: Upload dmg installer
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: booth-vault-toolhub-packages-${{ matrix.arch }}-dmg
+          path: target/${{ matrix.rust_target }}/release/bundle/dmg/**
+          if-no-files-found: error
+          retention-days: 30
 
       # 上传发布元数据（version marker）供聚合 job 判断。仅 Windows 产物带 version.txt。
       - name: Upload release metadata
@@ -365,4 +378,5 @@ jobs:
             packages/**/*.exe
             packages/**/*-lite.zip
             packages/**/*-full.zip
+            packages/**/*.dmg
             binaries/**/*
