@@ -90,6 +90,12 @@ export const GlobalStyle = createGlobalStyle`
     -webkit-font-smoothing: antialiased;
     user-select: none;
     overflow: hidden;
+    isolation: isolate;
+  }
+  #root {
+    position: relative;
+    z-index: 1;
+    height: 100%;
   }
   /* 全局颜色过渡：主题/明暗切换时背景/文字/边框/按钮平滑渐变（时长随动画倍速缩放） */
   body, button, input, textarea, div, span, label, li, h1, h2, h3, select {
@@ -115,7 +121,7 @@ export const GlobalStyle = createGlobalStyle`
     --bvt-title-track: 0.1em;
   }
 
-  /* 宣纸 / 金笺 / 绢本纤维 */
+  /* 宣纸纤维只垫在内容后面，不能盖住界面 */
   html[data-theme='zhuyin'] body::before,
   html[data-theme='liujin'] body::before,
   html[data-theme='guwen'] body::before {
@@ -123,15 +129,10 @@ export const GlobalStyle = createGlobalStyle`
     pointer-events: none;
     position: fixed;
     inset: 0;
-    z-index: 0;
-    opacity: 0.35;
-    mix-blend-mode: multiply;
+    z-index: -1;
+    opacity: 0.22;
     background-image:
-      repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(80, 50, 20, 0.03) 3px),
+      repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(80, 50, 20, 0.035) 3px),
       repeating-linear-gradient(90deg, transparent, transparent 3px, rgba(80, 50, 20, 0.02) 4px);
-  }
-  html[data-mode='dark'] body::before {
-    mix-blend-mode: soft-light;
-    opacity: 0.18;
   }
 `;
