@@ -44,8 +44,39 @@ pub const MIRRORS: &[&str] = &[
 ];
 
 /// 本地工具版本（workspace 版本，三端一致）。
+///
+/// 仓库默认版本为 `0.0.0`（本地/未注入的 Nightly 构建），显示为 `Nightly Build`；
+/// CI 已注入 tag/分支版本时（如 `1.2.3-f3ab2c1`）原样返回。
 pub fn local_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
+    display_version(env!("CARGO_PKG_VERSION"))
+}
+
+/// 原始 Cargo 版本 → 显示版本映射（纯函数，供测试与本地版本展示）。
+///
+/// `0.0.0` 占位映射为 `Nightly Build`；其余版本原样返回。
+pub fn display_version(raw: &str) -> String {
+    if raw == "0.0.0" {
+        "Nightly Build".to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
+/// 比较用本地版本（供 `ver_gt` 与远端 tag 数值比较）。
+///
+/// 区分构建来源：
+///   - `BOOTH_BUILD_SOURCE=branch`（CI 分支注入）：版本串里的数字段（如 `master-deadbee` 的
+///     `1234`）会与 release tag 撞档被误判，故比较时恒按 `0.0.0` 视为待更新。
+///   - 其余（tag 直发 / 本地占位 `0.0.0`）：用真实 Cargo 版本比较。
+///
+/// 不能直接用 `local_version()`（`Nightly Build` 非数字，`parse_version` 得空元组，
+/// 会导致 `ver_gt` 恒 false）。
+fn cmp_version() -> String {
+    if option_env!("BOOTH_BUILD_SOURCE") == Some("branch") {
+        "0.0.0".to_string()
+    } else {
+        env!("CARGO_PKG_VERSION").to_string()
+    }
 }
 
 /// 单个通道抓取函数签名：返回 `(tag, reachable)`。
@@ -283,10 +314,9 @@ pub fn check_update(use_proxy: bool) -> UpdateInfo {
 
 /// 用远端 tag 组装结果（比版本号，复用 `crate::version` 单一实现）。
 fn build_info(remote_tag: String, error: Option<String>) -> UpdateInfo {
-    let local = local_version();
     UpdateInfo {
-        has_update: crate::version::ver_gt(&remote_tag, &local),
-        local_version: local,
+        has_update: crate::version::ver_gt(&remote_tag, &cmp_version()),
+        local_version: local_version(),
         remote_version: remote_tag,
         url: releases_url(),
         error,
@@ -302,6 +332,22 @@ mod tests {
         let i = UpdateInfo::default();
         assert!(i.error.is_none());
         assert_eq!(i.local_version, local_version());
+    }
+
+    #[test]
+    fn display_version_maps_placeholder() {
+        assert_eq!(display_version("0.0.0"), "Nightly Build");
+        assert_eq!(display_version("1.2.3"), "1.2.3");
+        assert_eq!(display_version("1.0.0-f3ab2c1"), "1.0.0-f3ab2c1");
+    }
+
+    #[test]
+    fn dev_placeholder_always_updatable() {
+        // 占位 0.0.0 时，任意正式版远端 tag 都被判为可更新。
+        assert!(crate::version::ver_gt("v0.0.1", "0.0.0"));
+        assert!(crate::version::ver_gt("v1.0.0", "0.0.0"));
+        // 注入版（1.2.3）高于远端时才不再提示。
+        assert!(!crate::version::ver_gt("v1.0.0", "1.2.3-f3ab2c1"));
     }
 
     #[test]

@@ -487,7 +487,7 @@ dependencies = [
 
 [[package]]
 name = "booth-mcp"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "engine",
@@ -1339,7 +1339,7 @@ checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 
 [[package]]
 name = "engine"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "clap",
  "cookie_store",
@@ -1999,7 +1999,7 @@ dependencies = [
 
 [[package]]
 name = "gui"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "engine",
  "reqwest",
@@ -4536,7 +4536,7 @@ dependencies = [
 
 [[package]]
 name = "shell_win"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "image",
  "windows 0.62.2",
