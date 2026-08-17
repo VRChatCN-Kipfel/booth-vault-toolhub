@@ -169,13 +169,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Check formatting
         run: cargo fmt --check
-      # shell_win 依赖已按 target.'cfg(windows)' 门控，macOS 可完整编译检查（含 booth-shell 的 shell_mac 分支）
+      # shell_win/shell_mac 依赖已按 target 门控，macOS 可完整编译检查（含 booth-shell 的 shell_mac 分支）
       - name: Clippy (workspace)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test (workspace)
         run: cargo test --workspace
 
-      # 编译 macOS booth 二进制（booth + booth-mcp；booth-shell 跨平台随 workspace 编译，但仅 Windows 分发）
+      # 编译 macOS booth 二进制（booth + booth-mcp；booth-shell 跨平台独立 crate，仅 Windows 分发）
       - name: Build booth binaries
         shell: bash
         run: |

@@ -4,6 +4,7 @@ members = [
     "engine",
     "shell_win",
     "shell_mac",
+    "booth-shell",
     "booth-mcp",
     "gui/src-tauri",
 ]

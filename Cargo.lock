@@ -500,6 +500,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "booth-shell"
+version = "0.1.0"
+dependencies = [
+ "shell_mac",
+ "shell_win",
+]
+
+[[package]]
 name = "brotli"
 version = "8.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4517,7 +4525,6 @@ name = "shell_win"
 version = "0.1.0"
 dependencies = [
  "image",
- "shell_mac",
  "windows 0.62.2",
 ]
 

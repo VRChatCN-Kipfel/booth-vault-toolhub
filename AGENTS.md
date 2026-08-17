@@ -13,6 +13,7 @@ booth-vault-toolhub/
 ├── engine/                ← 核心引擎 crate（三端共享单一事实源）
 ├── shell_win/             ← Windows Shell 图标三件套 crate（仅 Windows）
 ├── shell_mac/             ← macOS Finder 文件夹图标 crate（仅 macOS）
+├── booth-shell/           ← 文件夹图标 CLI 通用入口（Windows → shell_win，macOS → shell_mac）
 ├── booth-mcp/             ← MCP stdio server crate
 ├── gui/                   ← Tauri v2 + React 19 桌面应用
 └── skills/booth/          ← Agent 技能包（SKILL.md + MCP 配置）
@@ -28,7 +29,7 @@ booth-vault-toolhub/
 
 - 引擎与界面分离：业务逻辑只进 `engine`，绝不埋进 GUI 进程。
 - CLI 是 agent 能力的"官道"：只要 CLI 在，SKILL.md 技能、agent 调用方式原样保留。
-- 平台门控：Windows 专属逻辑收敛在 `shell_win`；macOS Finder 图标在 `shell_mac`（`#[cfg(target_os = "macos")]`）；Linux 无文件夹图标。
+- 平台门控：Windows 专属逻辑收敛在 `shell_win`；macOS Finder 图标在 `shell_mac`（`#[cfg(target_os = "macos")]`）；`booth-shell` 是跨平台通用入口，按平台分发；Linux 无文件夹图标。
 
 ```
 ┌────────────────────────────────────────────┐
@@ -40,8 +41,12 @@ booth-vault-toolhub/
 │   └──────────────┬───────────────┘           │
 │                  ▼                           │
 │   ┌──────────────────────────────┐           │
-│   │      shell_win crate          │          │
-│   └──────────────────────────────┘           │
+│   │     booth-shell (CLI 入口)     │          │
+│   └──────┬───────────────┬───────┘           │
+│          ▼               ▼                   │
+│   ┌──────────────┐  ┌──────────────┐         │
+│   │  shell_win    │  │  shell_mac   │        │
+│   └──────────────┘  └──────────────┘         │
 └────────────────────────────────────────────┘
 ```
 
