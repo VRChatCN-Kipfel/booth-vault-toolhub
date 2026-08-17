@@ -1,6 +1,5 @@
 /**
  * 设置页：主题三选 + 明暗 + 归档根目录 + 代理 + Cookie + 保存。
- * 对齐原版 settings_page.py。
  */
 
 import styled from 'styled-components';
@@ -13,34 +12,50 @@ import { SupportSection } from '../components/SupportSection';
 import { PageTitle } from '../components/PageTitle';
 import { useThemeStore, resolveMode } from '../store/themeStore';
 import { useAppConfigStore } from '../store/appConfigStore';
-import { THEME_NAMES, THEME_ORDER, THEMES } from '../theme/themes';
+import { motifBgSrc, THEME_HINTS, THEME_NAMES, THEME_ORDER, THEMES } from '../theme/themes';
+import { brandMark } from '../theme/chrome';
 
 const ThemeGrid = styled.div`
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  gap: 12px;
 `;
 
-const ThemeCard = styled.button<{ $active: boolean; $accent: string }>`
+const ThemeCard = styled.button<{ $active: boolean; $bg: string; $border: string; $radius: string; $motif: string }>`
   text-align: left;
-  padding: 12px 12px 10px;
-  border: 1px solid ${({ $active, $accent }) => ($active ? $accent : 'var(--bvt-border)')};
-  background: ${({ $active }) => ($active ? 'var(--bvt-sel-bg)' : 'var(--bvt-surface)')};
-  color: ${({ $active }) => ($active ? 'var(--bvt-sel-text)' : 'var(--bvt-text)')};
-  border-radius: var(--bvt-radius, 2px);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid ${({ $active, $border }) => ($active ? 'var(--bvt-accent)' : $border)};
+  background-color: ${({ $bg }) => $bg};
+  background-image: linear-gradient(${({ $bg }) => $bg}cc, ${({ $bg }) => $bg}e6), url(${({ $motif }) => $motif});
+  background-size: cover;
+  background-position: center;
+  border-radius: ${({ $radius }) => $radius};
   cursor: pointer;
   font-family: inherit;
+  box-shadow: ${({ $active }) =>
+    $active ? '0 0 0 1px var(--bvt-accent), inset 0 0 0 1px color-mix(in srgb, var(--bvt-accent) 30%, transparent)' : 'none'};
+`;
+
+const CardHead = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 8px;
+  .mark { width: 28px; height: 28px; flex: none; }
+  .mark svg { width: 100%; height: 100%; display: block; }
   .name {
     font-family: 'Noto Serif CJK SC','Songti SC',serif;
     font-size: 16px;
     letter-spacing: 0.16em;
   }
-  .hint { font-size: 11px; color: var(--bvt-text3); margin-top: 4px; letter-spacing: 0.04em; }
-  .swatch {
-    margin-top: 8px;
-    height: 6px;
-    background: ${({ $accent }) => $accent};
-  }
+  .hint { font-size: 11px; margin-top: 3px; letter-spacing: 0.04em; }
+`;
+
+const Swatches = styled.div`
+  display: grid;
+  grid-template-columns: 1.4fr 0.8fr 0.6fr;
+  height: 10px;
 `;
 
 const Row = styled.div`
@@ -66,6 +81,12 @@ const Divider = styled.div`
   margin: 4px 0;
 `;
 
+const CARD_RADIUS: Record<string, string> = {
+  zhuyin: '0px',
+  liujin: '8px',
+  guwen: '4px',
+};
+
 export function SettingsPage() {
   const { theme, mode, systemTheme, setTheme, setMode } = useThemeStore();
   const {
@@ -88,21 +109,38 @@ export function SettingsPage() {
 
       <Label>主题</Label>
       <ThemeGrid>
-        {THEME_ORDER.map((t) => (
-          <ThemeCard
-            key={t}
-            type="button"
-            $active={theme === t}
-            $accent={THEMES[t][resolved].accent}
-            onClick={() => setTheme(t)}
-          >
-            <div className="name">{THEME_NAMES[t]}</div>
-            <div className="hint">
-              {t === 'zhuyin' ? '印泥 · 方折' : t === 'liujin' ? '金缮 · 青海波' : '云雷 · 叶脉'}
-            </div>
-            <div className="swatch" />
-          </ThemeCard>
-        ))}
+        {THEME_ORDER.map((t) => {
+          const pal = THEMES[t][resolved];
+          const active = theme === t;
+          return (
+            <ThemeCard
+              key={t}
+              type="button"
+              $active={active}
+              $bg={pal.surface}
+              $border={pal.border}
+              $radius={CARD_RADIUS[t]}
+              $motif={motifBgSrc(t, resolved)}
+              onClick={() => setTheme(t)}
+            >
+              <CardHead>
+                <span
+                  className="mark"
+                  dangerouslySetInnerHTML={{ __html: brandMark(t, pal.accent) }}
+                />
+                <div>
+                  <div className="name" style={{ color: pal.text }}>{THEME_NAMES[t]}</div>
+                  <div className="hint" style={{ color: pal.text3 }}>{THEME_HINTS[t]}</div>
+                </div>
+              </CardHead>
+              <Swatches>
+                <div style={{ background: pal.bg }} />
+                <div style={{ background: pal.accent }} />
+                <div style={{ background: pal.btnFill }} />
+              </Swatches>
+            </ThemeCard>
+          );
+        })}
       </ThemeGrid>
 
       <Divider />
@@ -120,7 +158,6 @@ export function SettingsPage() {
 
       <Divider />
 
-      <Label>动画速度</Label>
       <SpeedSlider />
 
       <Divider />

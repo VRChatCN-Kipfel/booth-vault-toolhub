@@ -15,7 +15,7 @@ const Wrapper = styled.div`
 `;
 
 const Title = styled.h2`
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 600;
   color: var(--bvt-text);
   font-family: ${({ theme }) => themeTitleFont(theme.theme)};

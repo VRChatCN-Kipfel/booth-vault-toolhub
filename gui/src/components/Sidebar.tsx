@@ -1,23 +1,16 @@
 /**
- * 侧栏：固定 196px，母题底纹 + 品牌 + 导航 + 主题/明暗切换。
+ * 侧栏：固定 208px，母题底纹 + 品牌 + 导航 + 主题/明暗切换。
  */
 
 import styled from 'styled-components';
 import { useThemeStore, resolveMode } from '../store/themeStore';
-import { THEME_NAMES, THEMES } from '../theme/themes';
-import { sidebarMotif } from '../theme/motifs';
+import { FONTS, motifSidebarSrc, THEME_NAMES, THEMES } from '../theme/themes';
 import { brandMark } from '../theme/chrome';
 import { ModeToggle } from './ModeToggle';
 
-const MOTIF_KIND: Record<string, string> = {
-  zhuyin: 'zhuyin',
-  liujin: 'gold',
-  guwen: 'guwen',
-};
-
 const SidebarWrap = styled.div`
-  width: 196px;
-  min-width: 196px;
+  width: 208px;
+  min-width: 208px;
   background: var(--bvt-surface2);
   border-right: 1px solid var(--bvt-border);
   display: flex;
@@ -26,13 +19,17 @@ const SidebarWrap = styled.div`
   overflow: hidden;
 `;
 
-/** 母题底纹层（垫底，事件穿透）。 */
-const MotifLayer = styled.div`
+const MotifLayer = styled.div<{ $src: string }>`
   position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  svg { width: 100%; height: 100%; }
+  background-image: url(${({ $src }) => $src});
+  background-size: cover;
+  background-position: center right;
+  opacity: ${({ theme }) => (theme.mode === 'dark' ? 0.28 : 0.22)};
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, black 55%);
+  mask-image: linear-gradient(to right, transparent 0%, black 55%);
 `;
 
 const Content = styled.div`
@@ -44,15 +41,15 @@ const Content = styled.div`
 `;
 
 const Brand = styled.div`
-  padding: 20px 14px 14px;
+  padding: 22px 16px 16px;
   display: flex;
   align-items: center;
   gap: 10px;
 `;
 
 const Seal = styled.div`
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   flex-shrink: 0;
   svg { width: 100%; height: 100%; display: block; }
 `;
@@ -60,23 +57,22 @@ const Seal = styled.div`
 const BrandText = styled.div`
   display: flex;
   flex-direction: column;
-  line-height: 1.2;
+  line-height: 1.15;
   min-width: 0;
   .zh {
-    font-size: 15px;
+    font-size: 16px;
     font-weight: 600;
     color: var(--bvt-text);
-    font-family: 'Noto Serif CJK SC','Songti SC','STSong',serif;
-    letter-spacing: 0.16em;
+    font-family: ${FONTS.serif};
+    letter-spacing: var(--bvt-title-track, 0.16em);
   }
-  .en { font-size: 10px; color: var(--bvt-text3); letter-spacing: 0.04em; margin-top: 3px; }
+  .en { font-size: 10px; color: var(--bvt-text3); letter-spacing: 0.06em; margin-top: 4px; }
 `;
 
-/** 导航项尺寸常量（滑块与项对齐）。 */
-const NAV_ITEM_H = 38;
+const NAV_ITEM_H = 40;
 const NAV_ITEM_GAP = 4;
 const NAV_PAD_Y = 8;
-const NAV_PAD_X = 8;
+const NAV_PAD_X = 10;
 
 const Nav = styled.nav`
   flex: 1;
@@ -84,7 +80,6 @@ const Nav = styled.nav`
   position: relative;
 `;
 
-/** 选中滑块：按 active 索引 translateY 平滑滑动。 */
 const NavSlider = styled.div<{ $index: number }>`
   position: absolute;
   left: ${NAV_PAD_X}px;
@@ -92,7 +87,8 @@ const NavSlider = styled.div<{ $index: number }>`
   top: ${NAV_PAD_Y}px;
   height: ${NAV_ITEM_H}px;
   background: var(--bvt-sel-bg);
-  border-left: 2px solid var(--bvt-accent);
+  border-left: 3px solid var(--bvt-accent);
+  border-radius: var(--bvt-radius, 0px);
   transform: translateY(${({ $index }) => $index * (NAV_ITEM_H + NAV_ITEM_GAP)}px);
   transition: transform calc(0.32s / var(--bvt-anim)) cubic-bezier(0.4, 0, 0.2, 1);
   z-index: 0;
@@ -112,20 +108,20 @@ const NavItem = styled.button<{ active: boolean }>`
   border: none;
   font-family: inherit;
   font-size: 14px;
+  letter-spacing: 0.04em;
   cursor: pointer;
   ${({ active }) => (active ? 'font-weight: 600;' : '')}
-  /* hover：active 项文字不变；未选中项文字提亮 accent */
   &:hover {
     color: ${({ active }) => (active ? 'var(--bvt-sel-text)' : 'var(--bvt-accent)')};
   }
 `;
 
 const SidebarFooter = styled.div`
-  padding: 10px 12px 14px;
+  padding: 12px 12px 16px;
   border-top: 1px solid var(--bvt-border2);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 `;
 
 const GhostAction = styled.button`
@@ -139,9 +135,9 @@ const GhostAction = styled.button`
   font-size: 13px;
   cursor: pointer;
   padding: 6px 8px;
-  /* hover 不压背景（母题干扰），改为文字提亮 accent */
   &:hover { color: var(--bvt-accent); background: transparent; }
-  svg { width: 16px; height: 16px; }
+  .mark { width: 16px; height: 16px; flex: none; }
+  .mark svg { width: 100%; height: 100%; display: block; }
 `;
 
 export interface NavItemDef {
@@ -161,11 +157,10 @@ export function Sidebar({
   const { theme, mode, systemTheme, cycleTheme } = useThemeStore();
   const resolved = resolveMode(mode, systemTheme);
   const pal = THEMES[theme][resolved];
-  const motifKind = MOTIF_KIND[theme];
 
   return (
     <SidebarWrap>
-      <MotifLayer dangerouslySetInnerHTML={{ __html: sidebarMotif(motifKind as never, pal.accent) }} />
+      <MotifLayer $src={motifSidebarSrc(theme, resolved)} />
       <Content>
         <Brand>
           <Seal dangerouslySetInnerHTML={{ __html: brandMark(theme, pal.accent) }} />
@@ -188,7 +183,11 @@ export function Sidebar({
         </Nav>
         <SidebarFooter>
           <GhostAction onClick={cycleTheme}>
-            <span>主題 · {THEME_NAMES[theme]}</span>
+            <span
+              className="mark"
+              dangerouslySetInnerHTML={{ __html: brandMark(theme, pal.accent) }}
+            />
+            <span>主题 · {THEME_NAMES[theme]}</span>
           </GhostAction>
           <ModeToggle />
         </SidebarFooter>

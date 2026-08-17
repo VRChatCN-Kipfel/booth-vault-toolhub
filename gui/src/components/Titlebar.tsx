@@ -5,6 +5,7 @@
 import styled from 'styled-components';
 import { Minus, Square, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { FONTS } from '../theme/themes';
 
 const Bar = styled.div`
   height: 34px;
@@ -13,16 +14,17 @@ const Bar = styled.div`
   justify-content: space-between;
   background: var(--bvt-surface2);
   border-bottom: 1px solid var(--bvt-border2);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--bvt-accent) 22%, transparent);
   -webkit-app-region: drag;
   user-select: none;
 `;
 
 const Title = styled.div`
-  padding-left: 12px;
+  padding-left: 14px;
   font-size: 11px;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.18em;
   color: var(--bvt-text3);
-  font-family: 'Noto Serif CJK SC','Songti SC',serif;
+  font-family: ${FONTS.serif};
 `;
 
 const Controls = styled.div`

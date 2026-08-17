@@ -14,6 +14,7 @@ import { useAppConfigStore } from '../store/appConfigStore';
 import { runTask } from '../lib/task';
 import { useThemeStore, resolveMode } from '../store/themeStore';
 import { THEMES } from '../theme/themes';
+import { dropTile } from '../theme/motifs';
 
 interface QueueItem {
   id: string;
@@ -21,34 +22,17 @@ interface QueueItem {
   status: 'ok' | 'warn' | 'err' | 'run' | 'wait';
 }
 
-/** 麻叶纹（对齐 theme.py:352-371 asa_no_ha，28×28 平铺）。 */
-function asaNoHa(color: string, op: number): string {
-  const paths = [
-    'M6 26 L6 8 L10 4',
-    'M6 8 L14 16',
-    'M14 16 L22 8',
-    'M22 8 L22 26',
-    'M8 14 L18 24',
-    'M12 6 L12 26',
-  ];
-  const body = paths
-    .map(
-      (d) =>
-        `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.2" stroke-opacity="${op}"/>`,
-    )
-    .join('');
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28">` +
-    body +
-    `</svg>`
-  );
-}
+const DROP_KIND: Record<string, 'zhuyin' | 'gold' | 'guwen'> = {
+  zhuyin: 'zhuyin',
+  liujin: 'gold',
+  guwen: 'guwen',
+};
 
 /** 麻叶纹拖入区（垫底纹样 + 高亮）。 */
 const DropZone = styled.div<{ dragging: boolean }>`
   height: 180px;
-  border: ${({ dragging }) => (dragging ? '2px solid var(--bvt-accent)' : '2px dashed var(--bvt-border)')};
-  background: ${({ dragging }) => (dragging ? 'var(--bvt-accent-light)' : 'var(--bvt-surface)')};
+  border: ${({ dragging }) => (dragging ? '2px solid var(--bvt-accent)' : '2px dashed var(--bvt-accent)')};
+  background: ${({ dragging }) => (dragging ? 'var(--bvt-accent-light)' : 'var(--bvt-input-bg)')};
   display: flex;
   align-items: center;
   justify-content: center;
@@ -56,7 +40,7 @@ const DropZone = styled.div<{ dragging: boolean }>`
   gap: 10px;
   color: var(--bvt-text2);
   transition: all 0.2s;
-  border-radius: 2px;
+  border-radius: var(--bvt-radius, 0px);
   font-size: 14px;
   position: relative;
   .hint { font-size: 12px; color: var(--bvt-text3); }
@@ -188,7 +172,10 @@ export function DragDropPage() {
       <PageTitle title="拖拽分类" />
       <Lead>文件名带 7 位商品 ID 的压缩包，拖进来归档。</Lead>
       <DropZone dragging={dragging}>
-        <Motif dangerouslySetInnerHTML={{ __html: asaNoHa(pal.accent, dragging ? 0.32 : 0.18) }} />
+        <Motif
+          style={{ opacity: dragging ? 0.42 : 0.22 }}
+          dangerouslySetInnerHTML={{ __html: dropTile(DROP_KIND[theme], pal.accent) }}
+        />
         <div>拖入 BOOTH 压缩包文件</div>
         <div className="hint">文件名需含 7 位商品 ID（如 1234567_xxx.zip），支持多选</div>
       </DropZone>

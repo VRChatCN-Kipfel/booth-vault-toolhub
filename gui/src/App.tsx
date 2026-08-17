@@ -7,9 +7,9 @@ import styled, { ThemeProvider } from 'styled-components';
 import { useThemeStore, resolveMode } from './store/themeStore';
 import { useAppConfigStore } from './store/appConfigStore';
 import { useSystemTheme } from './hooks/useSystemTheme';
-import { THEMES } from './theme/themes';
+import { motifBgSrc, THEMES } from './theme/themes';
 import { GlobalStyle, paletteToVars } from './theme/global';
-import { motifBg } from './theme/motifs';
+import { contentFrame } from './theme/chrome';
 import { Sidebar, type NavItemDef } from './components/Sidebar';
 import { Titlebar } from './components/Titlebar';
 import { StatusBar } from './components/StatusBar';
@@ -27,12 +27,6 @@ const NAV_ITEMS: NavItemDef[] = [
   { key: 'audit', label: '目录巡检' },
   { key: 'settings', label: '设置' },
 ];
-
-const MOTIF_KIND: Record<string, string> = {
-  zhuyin: 'zhuyin',
-  liujin: 'gold',
-  guwen: 'guwen',
-};
 
 const ROOT_STYLE: CSSProperties = {
   display: 'flex',
@@ -56,12 +50,15 @@ const ContentWrap = styled.div`
   overflow: hidden;
 `;
 
-const ContentBg = styled.div`
+const ContentBg = styled.div<{ $src: string }>`
   position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  svg { width: 100%; height: 100%; }
+  background-image: url(${({ $src }) => $src});
+  background-size: cover;
+  background-position: center;
+  opacity: ${({ theme }) => (theme.mode === 'dark' ? 0.34 : 0.32)};
 `;
 
 const Content = styled.div`
@@ -73,10 +70,10 @@ const Content = styled.div`
   flex-direction: column;
   overflow: hidden;
   margin: 10px 12px 8px;
-  background: color-mix(in srgb, var(--bvt-surface) 78%, transparent);
+  background: color-mix(in srgb, var(--bvt-surface) 96%, transparent);
   border: 1px solid var(--bvt-border);
-  border-radius: var(--bvt-radius, 2px);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bvt-accent) 12%, transparent);
+  border-radius: var(--bvt-radius, 0px);
+  box-shadow: ${({ theme }) => contentFrame(theme.theme)};
 `;
 
 /** 页面容器（key 变化重挂载 → 触发淡入动画）。 */
@@ -96,7 +93,6 @@ function App() {
   const { theme, mode, systemTheme, animSpeed, setSystemTheme, hydrate: hydrateTheme } = useThemeStore();
   const { hydrate: hydrateConfig } = useAppConfigStore();
   const [page, setPage] = useState('links');
-  const [vars, setVars] = useState<Record<string, string>>({});
   const sysTheme = useSystemTheme();
 
   useEffect(() => {
@@ -112,27 +108,26 @@ function App() {
   // 解析实际渲染模式（system → 跟随系统）。
   const resolved = resolveMode(mode, systemTheme);
 
-  // 主题色板 → CSS variables。
   useEffect(() => {
-    setVars(paletteToVars(THEMES[theme][resolved]));
-    document.documentElement.dataset.theme = theme;
-    document.documentElement.dataset.mode = resolved;
-  }, [theme, resolved]);
-
-  const pal = THEMES[theme][resolved];
-  const bgSvg = motifBg(MOTIF_KIND[theme] as never, pal.accentDeep, resolved === 'light');
+    const root = document.documentElement;
+    const next = paletteToVars(THEMES[theme][resolved]);
+    for (const [k, v] of Object.entries(next)) {
+      root.style.setProperty(k, v);
+    }
+    root.style.setProperty('--bvt-anim', String(animSpeed));
+    root.dataset.theme = theme;
+    root.dataset.mode = resolved;
+  }, [theme, resolved, animSpeed]);
 
   return (
     <ThemeProvider theme={{ theme, mode: resolved }}>
       <GlobalStyle />
       <div style={ROOT_STYLE}>
-        {/* CSS variables 注入到 :root（颜色过渡由 GlobalStyle 通用规则承担，动画倍速全局生效） */}
-        <style>{`:root { ${Object.entries(vars).map(([k, v]) => `${k}: ${v};`).join(' ')} --bvt-anim: ${animSpeed}; }`}</style>
         <Titlebar />
         <div style={BODY_STYLE}>
           <Sidebar items={NAV_ITEMS} active={page} onNavigate={setPage} />
           <ContentWrap>
-            <ContentBg dangerouslySetInnerHTML={{ __html: bgSvg }} />
+            <ContentBg $src={motifBgSrc(theme, resolved)} />
             <Content>
               <PageWrap key={page}>
                 {page === 'links' && <LinksPage />}

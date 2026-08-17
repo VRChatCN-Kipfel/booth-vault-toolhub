@@ -7,7 +7,6 @@ import { createGlobalStyle } from 'styled-components';
 import type { ThemePalette } from './themes';
 import { FONTS } from './themes';
 
-/** hex #RRGGBB → rgba(r,g,b,a)。 */
 function hexToRgba(hex: string, alpha: number): string {
   const h = hex.replace('#', '');
   const r = parseInt(h.slice(0, 2), 16);
@@ -16,7 +15,6 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-/** 把调色板展开为 CSS variables（--bvt-* 前缀）。 */
 export function paletteToVars(pal: ThemePalette): Record<string, string> {
   return {
     '--bvt-bg': pal.bg,
@@ -29,15 +27,16 @@ export function paletteToVars(pal: ThemePalette): Record<string, string> {
     '--bvt-border2': pal.border2,
     '--bvt-hover': pal.hover,
     '--bvt-input-bg': pal.inputBg,
-    // 半透明变体：面板/输入框毛玻璃背景，透出柔化后的母题脉络。
-    '--bvt-surface2-70': hexToRgba(pal.surface2, 0.7),
-    '--bvt-input-bg-70': hexToRgba(pal.inputBg, 0.7),
+    '--bvt-surface2-70': hexToRgba(pal.surface2, 0.72),
+    '--bvt-input-bg-70': hexToRgba(pal.inputBg, 0.78),
     '--bvt-accent': pal.accent,
     '--bvt-accent-deep': pal.accentDeep,
     '--bvt-accent-light': pal.accentLight,
     '--bvt-btn-fill': pal.btnFill,
     '--bvt-btn-fill-hover': pal.btnFillHover,
     '--bvt-btn-fill-press': pal.btnFillPress,
+    '--bvt-on-accent': pal.onAccent,
+    '--bvt-on-btn': pal.onBtn,
     '--bvt-success': pal.success,
     '--bvt-success-l': pal.successL,
     '--bvt-warn': pal.warn,
@@ -50,35 +49,38 @@ export function paletteToVars(pal: ThemePalette): Record<string, string> {
 }
 
 export const GlobalStyle = createGlobalStyle`
-  /* 兜底默认色板（zhuyin light）：App.tsx 运行时注入 :root 会覆盖同名变量；此处字面声明供静态分析解析 var() */
   :root {
-    --bvt-bg: #FAF6EE;
-    --bvt-surface: #FFFDF8;
-    --bvt-surface2: #F3ECDD;
-    --bvt-text: #2A2622;
-    --bvt-text2: #6B6256;
-    --bvt-text3: #9A9183;
-    --bvt-border: #D9CFBE;
-    --bvt-border2: #E8E0D2;
-    --bvt-hover: #EFE7D8;
-    --bvt-input-bg: #FCFAF4;
-    --bvt-surface2-70: rgba(243, 236, 221, 0.7);
-    --bvt-input-bg-70: rgba(252, 250, 244, 0.7);
-    --bvt-accent: #B83A2E;
-    --bvt-accent-deep: #8F2C22;
-    --bvt-accent-light: #F5DCD6;
-    --bvt-btn-fill: #B83A2E;
-    --bvt-btn-fill-hover: #8F2C22;
-    --bvt-btn-fill-press: #8F2C22;
-    --bvt-success: #2A5F4F;
-    --bvt-success-l: #D6E3D9;
-    --bvt-warn: #8C6A2A;
-    --bvt-warn-l: #ECDFB6;
-    --bvt-danger: #9E2B20;
-    --bvt-danger-l: #F5DCD6;
-    --bvt-sel-bg: #F5DCD6;
-    --bvt-sel-text: #8F2C22;
+    --bvt-bg: #F3E6CF;
+    --bvt-surface: #FBF3E4;
+    --bvt-surface2: #E6D3B4;
+    --bvt-text: #1A1410;
+    --bvt-text2: #5A4E42;
+    --bvt-text3: #8A7B6A;
+    --bvt-border: #C4A97A;
+    --bvt-border2: #DCC9A4;
+    --bvt-hover: #EBD9B8;
+    --bvt-input-bg: #FDF6E8;
+    --bvt-surface2-70: rgba(230, 211, 180, 0.72);
+    --bvt-input-bg-70: rgba(253, 246, 232, 0.78);
+    --bvt-accent: #C41A14;
+    --bvt-accent-deep: #8A100C;
+    --bvt-accent-light: #F4C4BC;
+    --bvt-btn-fill: #C41A14;
+    --bvt-btn-fill-hover: #8A100C;
+    --bvt-btn-fill-press: #6E0C0A;
+    --bvt-on-accent: #FFF8F2;
+    --bvt-on-btn: #FFF8F2;
+    --bvt-success: #2A5644;
+    --bvt-success-l: #D4E4D8;
+    --bvt-warn: #9A6A18;
+    --bvt-warn-l: #F0E0B4;
+    --bvt-danger: #A11410;
+    --bvt-danger-l: #F4C4BC;
+    --bvt-sel-bg: #F0C8C0;
+    --bvt-sel-text: #8A100C;
     --bvt-anim: 1;
+    --bvt-radius: 0px;
+    --bvt-title-track: 0.22em;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
@@ -97,11 +99,9 @@ export const GlobalStyle = createGlobalStyle`
     z-index: 1;
     height: 100%;
   }
-  /* 全局颜色过渡：主题/明暗切换时背景/文字/边框/按钮平滑渐变（时长随动画倍速缩放） */
   body, button, input, textarea, div, span, label, li, h1, h2, h3, select {
     transition: background-color calc(0.35s / var(--bvt-anim)) ease, color calc(0.35s / var(--bvt-anim)) ease, border-color calc(0.35s / var(--bvt-anim)) ease;
   }
-  /* 滚动条 */
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--bvt-border); border-radius: 5px; }
@@ -109,30 +109,44 @@ export const GlobalStyle = createGlobalStyle`
   input, textarea, select { font-family: ${FONTS.sans}; }
 
   html[data-theme='zhuyin'] {
-    --bvt-radius: 1px;
-    --bvt-title-track: 0.18em;
+    --bvt-radius: 0px;
+    --bvt-title-track: 0.22em;
   }
   html[data-theme='liujin'] {
-    --bvt-radius: 4px;
-    --bvt-title-track: 0.12em;
+    --bvt-radius: 8px;
+    --bvt-title-track: 0.14em;
   }
   html[data-theme='guwen'] {
-    --bvt-radius: 3px;
-    --bvt-title-track: 0.1em;
+    --bvt-radius: 4px;
+    --bvt-title-track: 0.08em;
   }
 
-  /* 宣纸纤维只垫在内容后面，不能盖住界面 */
-  html[data-theme='zhuyin'] body::before,
-  html[data-theme='liujin'] body::before,
-  html[data-theme='guwen'] body::before {
+  /* 底纹只垫在内容后面，禁止 mix-blend-mode，避免洗白整窗 */
+  html[data-theme] body::before {
     content: '';
     pointer-events: none;
     position: fixed;
     inset: 0;
     z-index: -1;
+  }
+  html[data-theme='zhuyin'] body::before {
+    opacity: 0.28;
+    background-image:
+      repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(80, 42, 18, 0.04) 3px),
+      repeating-linear-gradient(90deg, transparent, transparent 3px, rgba(80, 42, 18, 0.025) 4px);
+  }
+  html[data-theme='liujin'] body::before {
+    opacity: 0.34;
+    background-image:
+      radial-gradient(circle at 18% 22%, rgba(201, 160, 24, 0.16) 0 1px, transparent 2px),
+      radial-gradient(circle at 72% 64%, rgba(201, 160, 24, 0.12) 0 1px, transparent 2px),
+      repeating-linear-gradient(118deg, transparent, transparent 11px, rgba(201, 160, 24, 0.045) 12px);
+    background-size: 120px 120px, 160px 160px, 100% 100%;
+  }
+  html[data-theme='guwen'] body::before {
     opacity: 0.22;
     background-image:
-      repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(80, 50, 20, 0.035) 3px),
-      repeating-linear-gradient(90deg, transparent, transparent 3px, rgba(80, 50, 20, 0.02) 4px);
+      repeating-linear-gradient(45deg, transparent, transparent 13px, rgba(46, 92, 66, 0.06) 14px),
+      repeating-linear-gradient(-45deg, transparent, transparent 21px, rgba(46, 92, 66, 0.04) 22px);
   }
 `;

@@ -1,13 +1,9 @@
 /**
- * SVG 母题生成器：三主题侧栏纹样 + 根背景脉络。
- *
- * 算法参数 1:1 复刻自 booth-keeper theme.py 的 _seigaiha_layer /
- * _motif_sidebar / _motif_bg_* 系列。
+ * SVG 母题：三主题各自成套，不再共用同一组藤蔓路径换色。
  */
 
 import type { MotifKind } from './themes';
 
-/** 青海波层（鎏金侧栏专有，theme.py:310-334）。 */
 export function seigaihaLayer(color: string): string {
   const a = 0.16;
   const r = 22;
@@ -18,7 +14,6 @@ export function seigaihaLayer(color: string): string {
     const off = (row % 2) * r;
     let x = off - r;
     while (x < 72 + r) {
-      // 3 层同心半圆（k=3,2,1）
       const layers: Array<[number, number, number]> = [
         [r, a, 0.9],
         [(r * 2) / 3, a * 0.7, 0.6],
@@ -40,122 +35,88 @@ export function seigaihaLayer(color: string): string {
   return paths.join('');
 }
 
-/** 鎏金侧栏纹样（金线脉络 + 青海波，theme.py:68-88）。 */
 function goldSidebar(color: string): string {
   const parts: string[] = [];
-  // 主脉络
   parts.push(
-    `<path d="M30 0 C12 80,48 160,30 250 C12 340,48 430,30 520 C16 600,46 660,30 720" fill="none" stroke="${color}" stroke-width="1.6" stroke-opacity="0.72"/>`,
+    `<path d="M28 0 C10 90,50 170,26 260 C8 350,52 440,28 530 C12 610,48 670,30 720" fill="none" stroke="${color}" stroke-width="1.7" stroke-opacity="0.74"/>`,
+    `<path d="M48 0 C62 100,28 180,50 280 C66 370,32 460,52 570 C64 650,42 700,54 720" fill="none" stroke="${color}" stroke-width="1.1" stroke-opacity="0.48"/>`,
   );
-  // 副脉络
-  parts.push(
-    `<path d="M44 0 C60 90,30 170,46 270 C62 360,34 450,48 560 C60 640,40 690,52 720" fill="none" stroke="${color}" stroke-width="1.1" stroke-opacity="0.5"/>`,
-  );
-  // 细金网络 5 条
   const thin = [
-    'M30 120 C40 150,48 170,60 190',
-    'M30 250 C20 280,14 300,4 320',
-    'M30 400 C40 430,50 455,60 480',
-    'M30 520 C20 550,12 570,0 590',
-    'M44 270 C52 300,58 330,64 360',
+    'M28 110 C40 150,50 170,64 192',
+    'M28 248 C16 282,10 304,2 328',
+    'M28 404 C42 436,54 460,66 486',
+    'M28 528 C16 558,8 578,0 598',
+    'M50 276 C58 310,64 342,70 368',
   ];
   for (const d of thin) {
-    parts.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="0.5" stroke-opacity="0.24"/>`);
+    parts.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="0.5" stroke-opacity="0.26"/>`);
   }
-  // 分支 7 条
-  const branch = [
-    'M30 90 C50 104,62 116,72 134',
-    'M30 200 C10 216,2 232,0 252',
-    'M30 330 C50 344,64 356,72 372',
-    'M30 450 C10 466,4 482,0 500',
-    'M30 620 C50 634,64 646,72 662',
-    'M44 180 C58 200,66 220,72 240',
-    'M44 360 C30 380,20 400,14 420',
-  ];
-  for (const d of branch) {
-    parts.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="1" stroke-opacity="0.5"/>`);
+  for (const [cx, cy, rad] of [
+    [28, 88, 2.5],
+    [28, 248, 2.5],
+    [28, 404, 2.5],
+    [28, 568, 2.5],
+    [50, 276, 1.8],
+    [52, 570, 1.8],
+  ] as Array<[number, number, number]>) {
+    parts.push(`<circle cx="${cx}" cy="${cy}" r="${rad}" fill="${color}" fill-opacity="0.86"/>`);
   }
-  // 节点圆
-  for (const [cx, cy, rad, op] of [
-    [30, 90, 2.4, 0.85],
-    [30, 250, 2.4, 0.85],
-    [30, 400, 2.4, 0.85],
-    [30, 560, 2.4, 0.85],
-    [46, 270, 1.8, 0.85],
-    [48, 560, 1.8, 0.85],
-  ] as Array<[number, number, number, number]>) {
-    parts.push(
-      `<circle cx="${cx}" cy="${cy}" r="${rad}" fill="${color}" fill-opacity="${op}"/>`,
-    );
-  }
-  // 青海波叠加
   parts.push(seigaihaLayer(color));
   return parts.join('');
 }
 
-/** 朱印侧栏纹样（回字纹 + 印章，theme.py:89-105）。 */
 function zhuyinSidebar(color: string): string {
   const parts: string[] = [];
-  // 回字纹竖列 11 个
-  for (let y = 20; y < 700; y += 64) {
+  for (let y = 16; y < 700; y += 60) {
     parts.push(
-      `<path d="M14 ${y} H58 V${y + 44} H22 V${y + 10} H50 V${y + 34} H30" fill="none" stroke="${color}" stroke-width="1.4" stroke-opacity="0.8"/>`,
+      `<path d="M12 ${y} H60 V${y + 42} H20 V${y + 8} H52 V${y + 34} H28 V${y + 16} H44" fill="none" stroke="${color}" stroke-width="1.35" stroke-opacity="0.78"/>`,
     );
   }
-  // 主脉
   parts.push(
-    `<path d="M36 0 C22 90,50 180,36 280 C24 380,52 470,36 560 C26 640,48 690,36 720" fill="none" stroke="${color}" stroke-width="1.4" stroke-opacity="0.55"/>`,
-  );
-  // 印章方结
-  parts.push(
-    `<rect x="24" y="330" width="24" height="24" fill="none" stroke="${color}" stroke-width="1.6" stroke-opacity="0.7"/>`,
-    `<rect x="28" y="334" width="16" height="16" fill="none" stroke="${color}" stroke-width="1" stroke-opacity="0.4"/>`,
-    `<rect x="31" y="341" width="10" height="10" fill="${color}" fill-opacity="0.85"/>`,
+    `<rect x="20" y="318" width="32" height="32" fill="none" stroke="${color}" stroke-width="1.8" stroke-opacity="0.82"/>`,
+    `<rect x="25" y="323" width="22" height="22" fill="none" stroke="${color}" stroke-width="1" stroke-opacity="0.45"/>`,
+    `<rect x="29" y="331" width="14" height="14" fill="${color}" fill-opacity="0.88"/>`,
   );
   return parts.join('');
 }
 
-/** 古纹侧栏纹样（云雷纹 + 叶脉，theme.py:106-125）。 */
 function guwenSidebar(color: string): string {
   const parts: string[] = [];
-  // 云雷纹回旋 5 个
   for (const [sx, sy] of [
-    [20, 120],
-    [52, 240],
-    [18, 410],
-    [50, 540],
-    [24, 660],
+    [18, 96],
+    [50, 188],
+    [16, 292],
+    [52, 396],
+    [20, 504],
+    [48, 608],
+    [22, 696],
   ]) {
     parts.push(
-      `<path d="M${sx} ${sy} a8 8 0 1 1 -8 -8 a4 4 0 1 0 4 4" fill="none" stroke="${color}" stroke-width="1.1" stroke-opacity="0.6"/>`,
+      `<path d="M${sx} ${sy} a9 9 0 1 1 -9 -9 a4.5 4.5 0 1 0 4.5 4.5" fill="none" stroke="${color}" stroke-width="1.15" stroke-opacity="0.62"/>`,
     );
   }
-  // 主茎
   parts.push(
-    `<path d="M8 720 C14 560,30 420,30 280 C30 160,44 80,62 0" fill="none" stroke="${color}" stroke-width="1.6" stroke-opacity="0.6"/>`,
+    `<path d="M10 720 C16 540,34 400,34 260 C34 140,50 70,64 0" fill="none" stroke="${color}" stroke-width="1.7" stroke-opacity="0.58"/>`,
   );
-  // 分支
   const branch = [
-    'M30 300 C16 320,8 340,4 360',
-    'M30 220 C44 240,54 256,60 280',
-    'M30 140 C16 160,8 180,4 200',
-    'M30 60 C44 80,54 100,62 130',
-    'M40 380 C28 400,22 420,20 445',
-    'M20 500 C34 520,44 540,52 560',
+    'M34 300 C18 322,8 346,4 372',
+    'M34 210 C50 232,60 254,66 280',
+    'M34 130 C18 152,8 176,4 202',
+    'M34 50 C50 72,60 98,66 128',
+    'M42 390 C28 414,20 438,18 468',
+    'M20 520 C36 544,48 568,56 596',
   ];
   for (const d of branch) {
-    parts.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="1" stroke-opacity="0.45"/>`);
+    parts.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="1" stroke-opacity="0.42"/>`);
   }
-  // 小叶填充
   parts.push(
-    `<path d="M62 180 C70 172,74 160,72 148 C64 150,58 158,56 168 Z" fill="${color}" fill-opacity="0.22"/>`,
-    `<path d="M30 300 C20 300,12 306,8 316 C16 322,24 322,30 316 Z" fill="${color}" fill-opacity="0.22"/>`,
-    `<path d="M40 380 C48 378,54 384,56 394 C48 400,40 398,36 390 Z" fill="${color}" fill-opacity="0.22"/>`,
+    `<path d="M64 168 C72 158,76 144,74 130 C64 134,56 144,54 156 Z" fill="${color}" fill-opacity="0.24"/>`,
+    `<path d="M34 300 C22 300,12 308,8 320 C18 328,28 328,34 320 Z" fill="${color}" fill-opacity="0.24"/>`,
+    `<path d="M42 390 C52 386,60 394,62 406 C52 414,42 410,38 400 Z" fill="${color}" fill-opacity="0.24"/>`,
   );
   return parts.join('');
 }
 
-/** 侧栏竖幅纹样（72×720）。 */
 export function sidebarMotif(kind: MotifKind, color: string): string {
   let body = '';
   switch (kind) {
@@ -176,7 +137,6 @@ export function sidebarMotif(kind: MotifKind, color: string): string {
   );
 }
 
-/** 根背景脉络：按主题分派（theme.py:282-294）。 */
 export function motifBg(kind: MotifKind, color: string, light: boolean): string {
   switch (kind) {
     case 'gold':
@@ -188,44 +148,37 @@ export function motifBg(kind: MotifKind, color: string, light: boolean): string 
   }
 }
 
-/** 鎏金金缮脉络根背景（theme.py:167-199）。 */
 function goldBg(color: string, light: boolean): string {
-  const s = light ? 4.2 : 3.4;
-  const mainOp = (0.13 * s).toFixed(3);
-  const thinOp = (0.07 * s).toFixed(3);
-  const nodeOp = (0.16 * s).toFixed(3);
-  const mainW = light ? 1.2 : 1.0;
-  const thinW = light ? 0.6 : 0.5;
+  const s = light ? 1 : 0.78;
   const parts: string[] = [];
-  const mains = [
-    'M90 -5 C220 120,150 240,300 330 C470 440,360 560,540 660 C640 720,700 760,760 785',
-    'M1210 -5 C1020 110,1140 250,980 360 C840 470,940 590,760 700 C680 760,620 800,560 830',
-    'M-5 300 C80 340,140 360,220 380 C340 410,440 470,520 560',
-    'M-5 560 C100 600,180 620,300 640 C420 660,520 720,620 800',
-  ];
-  for (const d of mains) {
-    parts.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="${mainW}" stroke-opacity="${mainOp}"/>`);
+  const r = 46;
+  let row = 0;
+  for (let y = 40; y < 800; y += r) {
+    const off = (row % 2) * r;
+    for (let x = off - r; x < 1240; x += r * 2) {
+      parts.push(
+        `<path d="M${x} ${y} A${r} ${r} 0 0 1 ${x + r * 2} ${y}" fill="none" stroke="${color}" stroke-width="0.8" stroke-opacity="${(0.11 * s).toFixed(3)}"/>`,
+        `<path d="M${x + r * 0.35} ${y} A${r * 0.65} ${r * 0.65} 0 0 1 ${x + r * 1.65} ${y}" fill="none" stroke="${color}" stroke-width="0.55" stroke-opacity="${(0.07 * s).toFixed(3)}"/>`,
+      );
+    }
+    row += 1;
   }
-  const thins = [
-    'M300 330 C360 300,420 280,500 250',
-    'M540 660 C600 630,660 610,720 590',
-    'M980 360 C900 330,840 310,780 300',
-    'M360 420 C420 400,480 390,560 380',
-    'M760 700 C680 720,600 730,520 740',
-    'M460 660 C400 680,340 690,280 700',
+  const cracks = [
+    'M40 80 C180 160,120 280,280 360 C460 460,340 580,560 680 C700 760,820 720,980 790',
+    'M1180 20 C980 140,1080 280,860 380 C680 490,760 620,520 720',
+    'M-10 420 C140 460,260 500,400 540 C560 590,700 680,840 760',
   ];
-  for (const d of thins) {
-    parts.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="${thinW}" stroke-opacity="${thinOp}"/>`);
+  for (const d of cracks) {
+    parts.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="1.25" stroke-opacity="${(0.2 * s).toFixed(3)}"/>`);
   }
   for (const [cx, cy] of [
-    [300, 330],
-    [540, 660],
-    [980, 360],
-    [360, 420],
-    [760, 700],
-    [460, 660],
+    [280, 360],
+    [560, 680],
+    [860, 380],
+    [400, 540],
+    [520, 720],
   ]) {
-    parts.push(`<circle cx="${cx}" cy="${cy}" r="2" fill="${color}" fill-opacity="${nodeOp}"/>`);
+    parts.push(`<circle cx="${cx}" cy="${cy}" r="2.2" fill="${color}" fill-opacity="${(0.28 * s).toFixed(3)}"/>`);
   }
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="780" viewBox="0 0 1200 780">` +
@@ -234,35 +187,74 @@ function goldBg(color: string, light: boolean): string {
   );
 }
 
-/** 朱印缠枝卷云根背景（theme.py:208-246）。 */
 function cinnabarBg(color: string, light: boolean): string {
-  const a = light ? 0.22 : 0.17;
-  const a2 = light ? 0.16 : 0.12;
+  const a = light ? 0.2 : 0.15;
   const parts: string[] = [];
-  const vines = [
-    'M90 -5 C220 120,150 240,300 330 C470 440,360 560,540 660 C640 720,700 760,760 785',
-    'M1210 -5 C1020 110,1140 250,980 360 C840 470,940 590,760 700',
-    'M-5 300 C80 340,140 360,220 380 C340 410,440 470,520 560',
-    'M-5 560 C100 600,180 620,300 640',
+  const corners: Array<[number, number, number, number]> = [
+    [16, 16, 1, 1],
+    [1184, 16, -1, 1],
+    [16, 764, 1, -1],
+    [1184, 764, -1, -1],
   ];
-  for (const d of vines) {
-    parts.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="1.8" stroke-opacity="${a}"/>`);
-  }
-  const clouds: Array<[number, number]> = [
-    [300, 330], [540, 660], [980, 360], [360, 420],
-    [760, 700], [460, 660], [820, 540], [240, 250],
-  ];
-  for (const [cx, cy] of clouds) {
+  for (const [x, y, sx, sy] of corners) {
     parts.push(
-      `<path d="M${cx} ${cy} a11 11 0 1 1 -11 -11 a5 5 0 1 0 5 5" fill="none" stroke="${color}" stroke-width="1.4" stroke-opacity="${a2}"/>`,
+      `<path d="M${x} ${y + 70 * sy} V${y} H${x + 70 * sx}" fill="none" stroke="${color}" stroke-width="1.6" stroke-opacity="${a}"/>`,
+      `<path d="M${x + 10 * sx} ${y + 54 * sy} V${y + 10 * sy} H${x + 54 * sx}" fill="none" stroke="${color}" stroke-width="1.1" stroke-opacity="${a * 0.7}"/>`,
     );
   }
+  const seals: Array<[number, number, number]> = [
+    [180, 120, 28],
+    [920, 90, 22],
+    [1080, 420, 34],
+    [240, 560, 24],
+    [640, 200, 18],
+    [780, 640, 26],
+    [420, 380, 20],
+  ];
+  for (const [x, y, s] of seals) {
+    parts.push(
+      `<rect x="${x}" y="${y}" width="${s}" height="${s}" fill="none" stroke="${color}" stroke-width="1.4" stroke-opacity="${a}"/>`,
+      `<rect x="${x + 4}" y="${y + 4}" width="${s - 8}" height="${s - 8}" fill="${color}" fill-opacity="${a * 0.35}"/>`,
+    );
+  }
+  parts.push(
+    `<rect x="1040" y="560" width="88" height="88" fill="none" stroke="${color}" stroke-width="2" stroke-opacity="${a * 0.85}"/>`,
+    `<rect x="1054" y="574" width="60" height="60" fill="none" stroke="${color}" stroke-width="1.1" stroke-opacity="${a * 0.5}"/>`,
+    `<rect x="1068" y="596" width="32" height="28" fill="${color}" fill-opacity="${a * 0.55}"/>`,
+  );
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800">` +
+    parts.join('') +
+    `</svg>`
+  );
+}
+
+function leafBg(color: string, light: boolean): string {
+  const a = light ? 0.22 : 0.16;
+  const parts: string[] = [];
+  for (let y = 40; y < 780; y += 120) {
+    for (let x = 40; x < 1180; x += 160) {
+      const ox = ((y / 120) % 2) * 80;
+      parts.push(
+        `<path d="M${x + ox} ${y} a10 10 0 1 1 -10 -10 a5 5 0 1 0 5 5" fill="none" stroke="${color}" stroke-width="1.05" stroke-opacity="${a}"/>`,
+      );
+    }
+  }
+  parts.push(
+    `<path d="M80 820 C160 520,260 360,360 200 C430 90,520 40,620 -10" fill="none" stroke="${color}" stroke-width="1.6" stroke-opacity="${a * 1.15}"/>`,
+    `<path d="M1180 40 C980 180,1040 340,820 460 C660 560,720 680,540 790" fill="none" stroke="${color}" stroke-width="1.4" stroke-opacity="${a}"/>`,
+  );
   const leaves: Array<[number, number]> = [
-    [240, 330], [500, 420], [740, 560], [420, 660], [880, 540], [300, 250],
+    [340, 220],
+    [520, 80],
+    [800, 470],
+    [560, 760],
+    [200, 540],
+    [980, 300],
   ];
   for (const [lx, ly] of leaves) {
     parts.push(
-      `<path d="M${lx} ${ly} q22 -12 30 8 q-8 14 -30 -8 Z" fill="${color}" fill-opacity="${a2}"/>`,
+      `<path d="M${lx} ${ly} q24 -14 32 8 q-8 16 -32 -8 Z" fill="${color}" fill-opacity="${a * 0.95}"/>`,
     );
   }
   return (
@@ -272,32 +264,23 @@ function cinnabarBg(color: string, light: boolean): string {
   );
 }
 
-/** 古纹青绿叶脉根背景（theme.py:249-279）。 */
-function leafBg(color: string, light: boolean): string {
-  const a = light ? 0.26 : 0.2;
-  const a2 = 0.22;
-  const parts: string[] = [];
-  const stems = [
-    'M90 -5 C220 120,150 240,300 330 C470 440,360 560,540 660',
-    'M1210 -5 C1020 110,1140 250,980 360',
-    'M-5 300 C80 340,140 360,220 380',
-    'M-5 560 C100 600,180 620,300 640',
-  ];
-  for (const d of stems) {
-    parts.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="1.8" stroke-opacity="${a}"/>`);
+export function dropTile(kind: MotifKind, color: string): string {
+  if (kind === 'zhuyin') {
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28">
+      <path d="M4 4 H24 V24 H4 Z" fill="none" stroke="${color}" stroke-width="1.2" stroke-opacity="0.7"/>
+      <path d="M8 8 H20 V20 H8 Z" fill="none" stroke="${color}" stroke-width="1" stroke-opacity="0.55"/>
+      <rect x="12" y="12" width="4" height="4" fill="${color}" fill-opacity="0.55"/>
+    </svg>`;
   }
-  const leaves: Array<[number, number]> = [
-    [240, 330], [500, 420], [740, 560], [420, 660],
-    [880, 540], [300, 250], [600, 720], [120, 380],
-  ];
-  for (const [lx, ly] of leaves) {
-    parts.push(
-      `<path d="M${lx} ${ly} q22 -12 30 8 q-8 14 -30 -8 Z" fill="${color}" fill-opacity="${a2}"/>`,
-    );
+  if (kind === 'gold') {
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28">
+      <path d="M2 22 A12 12 0 0 1 26 22" fill="none" stroke="${color}" stroke-width="1.1" stroke-opacity="0.55"/>
+      <path d="M6 22 A8 8 0 0 1 22 22" fill="none" stroke="${color}" stroke-width="0.9" stroke-opacity="0.4"/>
+      <path d="M10 22 A4 4 0 0 1 18 22" fill="none" stroke="${color}" stroke-width="0.8" stroke-opacity="0.35"/>
+    </svg>`;
   }
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800">` +
-    parts.join('') +
-    `</svg>`
-  );
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28">
+    <path d="M16 8 a6 6 0 1 1 -6 -6 a3 3 0 1 0 3 3" fill="none" stroke="${color}" stroke-width="1.1" stroke-opacity="0.55"/>
+    <path d="M8 22 C12 14,16 12,24 10" fill="none" stroke="${color}" stroke-width="1" stroke-opacity="0.4"/>
+  </svg>`;
 }
