@@ -18,6 +18,8 @@ path = "src/bin/booth_shell.rs"
 
 [dependencies]
 image = "0.25"
+
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_UI_Shell",
