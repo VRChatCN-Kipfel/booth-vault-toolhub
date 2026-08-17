@@ -6,7 +6,7 @@
 import { useRef, useState } from 'react';
 import styled from 'styled-components';
 import { invoke } from '@tauri-apps/api/core';
-import { AccentButton, SecondaryButton, TextArea, ObsPanel, ProgressBar, Badge, PanelLabel } from '../components/ui';
+import { AccentButton, SecondaryButton, TextArea, ObsPanel, ProgressBar, Badge, PanelLabel, PageShell, Lead } from '../components/ui';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
 import { runTask } from '../lib/task';
@@ -16,15 +16,6 @@ interface QueueItem {
   message: string;
   status: 'ok' | 'warn' | 'err' | 'run';
 }
-
-const Page = styled.div`
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  height: 100%;
-  overflow-y: auto;
-`;
 
 const Row = styled.div`
   display: flex;
@@ -134,8 +125,9 @@ export function LinksPage() {
   }
 
   return (
-    <Page>
+    <PageShell>
       <PageTitle title="批量链接" />
+      <Lead>把聊天记录或散链贴进来，按商品 ID 下载免费文件。</Lead>
       <TextArea
         rows={6}
         placeholder={'粘贴含 BOOTH 商品链接的文本（如聊天记录）…\n支持全 locale 链接：https://booth.pm/ja/items/1234567\n也支持裸 ID：1234567'}
@@ -170,6 +162,6 @@ export function LinksPage() {
           </div>
         )}
       </QueueList>
-    </Page>
+    </PageShell>
   );
 }

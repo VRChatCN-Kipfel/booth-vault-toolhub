@@ -69,7 +69,7 @@ const Dialog = styled.div`
   background: var(--bvt-surface);
   border: 1.5px solid var(--bvt-accent-deep);
   border-top: 3px solid var(--bvt-accent);
-  border-radius: 2px;
+  border-radius: ${({ theme }) => (theme.theme === 'liujin' ? '4px' : theme.theme === 'guwen' ? '3px' : '1px')};
   padding: 18px 22px;
   animation: bvtDialogIn calc(0.18s / var(--bvt-anim)) ease both;
   @keyframes bvtDialogIn {

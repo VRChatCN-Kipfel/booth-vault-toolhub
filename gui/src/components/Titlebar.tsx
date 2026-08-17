@@ -19,8 +19,10 @@ const Bar = styled.div`
 
 const Title = styled.div`
   padding-left: 12px;
-  font-size: 12px;
-  color: var(--bvt-text2);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--bvt-text3);
+  font-family: 'Noto Serif CJK SC','Songti SC',serif;
 `;
 
 const Controls = styled.div`

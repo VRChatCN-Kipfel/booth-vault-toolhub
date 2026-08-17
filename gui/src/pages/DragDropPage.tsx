@@ -7,7 +7,7 @@
 import { useEffect, useState } from 'react';
 import styled from 'styled-components';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { AccentButton, SecondaryButton, ObsPanel, ProgressBar, Badge, PanelLabel } from '../components/ui';
+import { AccentButton, SecondaryButton, ObsPanel, ProgressBar, Badge, PanelLabel, PageShell, Lead } from '../components/ui';
 import { confirmation } from '../components/Dialog';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
@@ -20,15 +20,6 @@ interface QueueItem {
   message: string;
   status: 'ok' | 'warn' | 'err' | 'run' | 'wait';
 }
-
-const Page = styled.div`
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  height: 100%;
-  overflow-y: auto;
-`;
 
 /** 麻叶纹（对齐 theme.py:352-371 asa_no_ha，28×28 平铺）。 */
 function asaNoHa(color: string, op: number): string {
@@ -193,8 +184,9 @@ export function DragDropPage() {
   }
 
   return (
-    <Page>
+    <PageShell>
       <PageTitle title="拖拽分类" />
+      <Lead>文件名带 7 位商品 ID 的压缩包，拖进来归档。</Lead>
       <DropZone dragging={dragging}>
         <Motif dangerouslySetInnerHTML={{ __html: asaNoHa(pal.accent, dragging ? 0.32 : 0.18) }} />
         <div>拖入 BOOTH 压缩包文件</div>
@@ -239,6 +231,6 @@ export function DragDropPage() {
           <div style={{ color: 'var(--bvt-text3)', padding: 8 }}>等待拖入文件…</div>
         )}
       </QueueList>
-    </Page>
+    </PageShell>
   );
 }

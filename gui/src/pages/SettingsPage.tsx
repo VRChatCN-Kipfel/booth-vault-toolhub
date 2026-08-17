@@ -6,7 +6,7 @@
 import styled from 'styled-components';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
-  AccentButton, SecondaryButton, Input, PanelLabel, SegSlider,
+  AccentButton, SecondaryButton, Input, PanelLabel, SegSlider, PageShell, Lead,
 } from '../components/ui';
 import { SpeedSlider } from '../components/SpeedSlider';
 import { SupportSection } from '../components/SupportSection';
@@ -15,19 +15,32 @@ import { useThemeStore, resolveMode } from '../store/themeStore';
 import { useAppConfigStore } from '../store/appConfigStore';
 import { THEME_NAMES, THEME_ORDER, THEMES } from '../theme/themes';
 
-const Page = styled.div`
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  height: 100%;
-  overflow-y: auto;
+const ThemeGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
 `;
 
-const SubTitle = styled.div`
-  color: var(--bvt-text2);
-  font-size: 13px;
-  margin-top: -8px;
+const ThemeCard = styled.button<{ $active: boolean; $accent: string }>`
+  text-align: left;
+  padding: 12px 12px 10px;
+  border: 1px solid ${({ $active, $accent }) => ($active ? $accent : 'var(--bvt-border)')};
+  background: ${({ $active }) => ($active ? 'var(--bvt-sel-bg)' : 'var(--bvt-surface)')};
+  color: ${({ $active }) => ($active ? 'var(--bvt-sel-text)' : 'var(--bvt-text)')};
+  border-radius: var(--bvt-radius, 2px);
+  cursor: pointer;
+  font-family: inherit;
+  .name {
+    font-family: 'Noto Serif CJK SC','Songti SC',serif;
+    font-size: 16px;
+    letter-spacing: 0.16em;
+  }
+  .hint { font-size: 11px; color: var(--bvt-text3); margin-top: 4px; letter-spacing: 0.04em; }
+  .swatch {
+    margin-top: 8px;
+    height: 6px;
+    background: ${({ $accent }) => $accent};
+  }
 `;
 
 const Row = styled.div`
@@ -69,17 +82,28 @@ export function SettingsPage() {
   }
 
   return (
-    <Page>
+    <PageShell>
       <PageTitle title="设置" />
-      <SubTitle>主题、归档路径与网络</SubTitle>
+      <Lead>主题先定调，路径和代理再填。</Lead>
 
-      <Label>主题（三选一，整套视觉意境切换）</Label>
-      <SegSlider
-        options={THEME_ORDER.map((t) => THEME_NAMES[t])}
-        value={THEME_ORDER.indexOf(theme)}
-        accent={THEMES[theme][resolved].accent}
-        onChange={(i) => setTheme(THEME_ORDER[i])}
-      />
+      <Label>主题</Label>
+      <ThemeGrid>
+        {THEME_ORDER.map((t) => (
+          <ThemeCard
+            key={t}
+            type="button"
+            $active={theme === t}
+            $accent={THEMES[t][resolved].accent}
+            onClick={() => setTheme(t)}
+          >
+            <div className="name">{THEME_NAMES[t]}</div>
+            <div className="hint">
+              {t === 'zhuyin' ? '印泥 · 方折' : t === 'liujin' ? '金缮 · 青海波' : '云雷 · 叶脉'}
+            </div>
+            <div className="swatch" />
+          </ThemeCard>
+        ))}
+      </ThemeGrid>
 
       <Divider />
 
@@ -151,6 +175,6 @@ export function SettingsPage() {
 
       <Divider />
       <SupportSection />
-    </Page>
+    </PageShell>
   );
 }

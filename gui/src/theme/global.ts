@@ -101,4 +101,37 @@ export const GlobalStyle = createGlobalStyle`
   ::-webkit-scrollbar-thumb { background: var(--bvt-border); border-radius: 5px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--bvt-text3); }
   input, textarea, select { font-family: ${FONTS.sans}; }
+
+  html[data-theme='zhuyin'] {
+    --bvt-radius: 1px;
+    --bvt-title-track: 0.18em;
+  }
+  html[data-theme='liujin'] {
+    --bvt-radius: 4px;
+    --bvt-title-track: 0.12em;
+  }
+  html[data-theme='guwen'] {
+    --bvt-radius: 3px;
+    --bvt-title-track: 0.1em;
+  }
+
+  /* 宣纸 / 金笺 / 绢本纤维 */
+  html[data-theme='zhuyin'] body::before,
+  html[data-theme='liujin'] body::before,
+  html[data-theme='guwen'] body::before {
+    content: '';
+    pointer-events: none;
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    opacity: 0.35;
+    mix-blend-mode: multiply;
+    background-image:
+      repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(80, 50, 20, 0.03) 3px),
+      repeating-linear-gradient(90deg, transparent, transparent 3px, rgba(80, 50, 20, 0.02) 4px);
+  }
+  html[data-mode='dark'] body::before {
+    mix-blend-mode: soft-light;
+    opacity: 0.18;
+  }
 `;

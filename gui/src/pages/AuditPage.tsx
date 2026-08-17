@@ -6,27 +6,12 @@
 import { useState } from 'react';
 import styled from 'styled-components';
 import {
-  AccentButton, SecondaryButton, ObsPanel, ProgressBar, Badge,
+  AccentButton, SecondaryButton, ObsPanel, ProgressBar, Badge, PageShell, Lead,
 } from '../components/ui';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
 import { useUiStore } from '../store/uiStore';
 import { runTask } from '../lib/task';
-
-const Page = styled.div`
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  height: 100%;
-  overflow-y: auto;
-`;
-
-const SubTitle = styled.div`
-  color: var(--bvt-text2);
-  font-size: 13px;
-  margin-top: -8px;
-`;
 
 const Row = styled.div`
   display: flex;
@@ -237,9 +222,9 @@ export function AuditPage() {
   }
 
   return (
-    <Page>
+    <PageShell>
       <PageTitle title="目录巡检" />
-      <SubTitle>巡检 BOOTH 库的三件套完整性与命名规范</SubTitle>
+      <Lead>封面、图标、目录名，一次扫完再决定修不修。</Lead>
 
       <Row>
         <AccentButton onClick={() => void runScan()} disabled={scanning || !boothRoot}>
@@ -299,6 +284,6 @@ export function AuditPage() {
           <ListRow key={i}>{line}</ListRow>
         ))}
       </VerList>
-    </Page>
+    </PageShell>
   );
 }

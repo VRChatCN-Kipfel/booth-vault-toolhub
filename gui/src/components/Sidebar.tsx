@@ -6,6 +6,7 @@ import styled from 'styled-components';
 import { useThemeStore, resolveMode } from '../store/themeStore';
 import { THEME_NAMES, THEMES } from '../theme/themes';
 import { sidebarMotif } from '../theme/motifs';
+import { brandMark } from '../theme/chrome';
 import { ModeToggle } from './ModeToggle';
 
 const MOTIF_KIND: Record<string, string> = {
@@ -43,24 +44,32 @@ const Content = styled.div`
 `;
 
 const Brand = styled.div`
-  padding: 18px 14px 12px;
+  padding: 20px 14px 14px;
   display: flex;
   align-items: center;
   gap: 10px;
 `;
 
 const Seal = styled.div`
-  width: 28px;
-  height: 28px;
-  svg { width: 100%; height: 100%; }
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  svg { width: 100%; height: 100%; display: block; }
 `;
 
 const BrandText = styled.div`
   display: flex;
   flex-direction: column;
-  line-height: 1.25;
-  .en { font-size: 14px; font-weight: 700; color: var(--bvt-text); letter-spacing: 0.5px; }
-  .zh { font-size: 11px; color: var(--bvt-text2); }
+  line-height: 1.2;
+  min-width: 0;
+  .zh {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--bvt-text);
+    font-family: 'Noto Serif CJK SC','Songti SC','STSong',serif;
+    letter-spacing: 0.16em;
+  }
+  .en { font-size: 10px; color: var(--bvt-text3); letter-spacing: 0.04em; margin-top: 3px; }
 `;
 
 /** 导航项尺寸常量（滑块与项对齐）。 */
@@ -154,24 +163,15 @@ export function Sidebar({
   const pal = THEMES[theme][resolved];
   const motifKind = MOTIF_KIND[theme];
 
-  // 印章（简化为方印）。
-  const sealSvg = (
-    <svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
-      <rect x="2" y="2" width="36" height="36" rx="3" fill="none" stroke={pal.accent} strokeWidth="2.4" />
-      <rect x="9" y="9" width="22" height="22" fill="none" stroke={pal.accent} strokeWidth="1.4" />
-      <rect x="16" y="16" width="8" height="8" fill={pal.accent} />
-    </svg>
-  );
-
   return (
     <SidebarWrap>
       <MotifLayer dangerouslySetInnerHTML={{ __html: sidebarMotif(motifKind as never, pal.accent) }} />
       <Content>
         <Brand>
-          <Seal>{sealSvg}</Seal>
+          <Seal dangerouslySetInnerHTML={{ __html: brandMark(theme, pal.accent) }} />
           <BrandText>
-            <span className="en">Booth Vault Toolhub</span>
-            <span className="zh">展位守护者</span>
+            <span className="zh">展位库</span>
+            <span className="en">Booth Vault</span>
           </BrandText>
         </Brand>
         <Nav>

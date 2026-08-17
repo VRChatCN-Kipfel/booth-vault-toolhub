@@ -1,20 +1,26 @@
 /**
- * 基础 UI 组件库（styled-components）。
- * 对齐 booth-keeper 的形状体系：直角 / 2px 微圆角 / flat 无阴影 / 1px 分隔线。
+ * 基础 UI：形制随主题变，色板走 CSS variables。
  */
 
 import styled from 'styled-components';
+import { themeRadius } from '../theme/chrome';
 
 export const AccentButton = styled.button`
   background: var(--bvt-btn-fill);
   color: #fafafa;
   border: 1px solid var(--bvt-accent-deep);
   border-top: 1px solid var(--bvt-accent-light);
-  border-radius: 2px;
-  padding: 8px 16px;
-  font-size: 14px;
+  border-radius: ${({ theme }) => themeRadius(theme.theme)};
+  padding: 8px 18px;
+  font-size: 13px;
+  letter-spacing: ${({ theme }) => (theme.theme === 'zhuyin' ? '0.12em' : '0.04em')};
   cursor: pointer;
-  font-family: inherit;
+  font-family: ${({ theme }) =>
+    theme.theme === 'zhuyin'
+      ? `'Noto Serif CJK SC','Songti SC',serif`
+      : 'inherit'};
+  box-shadow: ${({ theme }) =>
+    theme.theme === 'liujin' ? 'inset 0 1px 0 rgba(255,230,160,0.28)' : 'none'};
   &:hover { background: var(--bvt-btn-fill-hover); }
   &:active { background: var(--bvt-btn-fill-press); }
   &:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -24,12 +30,13 @@ export const SecondaryButton = styled.button`
   background: transparent;
   color: var(--bvt-accent);
   border: 1.5px solid var(--bvt-accent);
-  border-radius: 2px;
+  border-radius: ${({ theme }) => themeRadius(theme.theme)};
   padding: 7px 15px;
-  font-size: 14px;
+  font-size: 13px;
+  letter-spacing: 0.04em;
   cursor: pointer;
   font-family: inherit;
-  &:hover { background: var(--bvt-accent-light); }
+  &:hover { background: var(--bvt-accent-light); color: var(--bvt-accent-deep); }
   &:disabled { opacity: 0.5; cursor: not-allowed; }
 `;
 
@@ -48,7 +55,7 @@ export const GhostButton = styled.button`
 export const Card = styled.div`
   background: var(--bvt-surface);
   border: 1px solid var(--bvt-accent);
-  border-radius: 2px;
+  border-radius: ${({ theme }) => themeRadius(theme.theme)};
   padding: 14px;
 `;
 
@@ -57,14 +64,14 @@ export const Input = styled.input`
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
   color: var(--bvt-text);
-  border: 1.5px solid var(--bvt-accent-deep);
-  border-left: 4px solid var(--bvt-accent);
-  border-radius: 2px;
+  border: 1px solid var(--bvt-border);
+  border-left: 3px solid var(--bvt-accent);
+  border-radius: ${({ theme }) => themeRadius(theme.theme)};
   padding: 8px 10px;
   font-size: 13px;
   font-family: inherit;
   outline: none;
-  &:focus { border-color: var(--bvt-accent); }
+  &:focus { border-color: var(--bvt-accent); box-shadow: inset 0 0 0 1px var(--bvt-accent-light); }
   &::placeholder { color: var(--bvt-text3); }
 `;
 
@@ -73,26 +80,27 @@ export const TextArea = styled.textarea`
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
   color: var(--bvt-text);
-  border: 1.5px solid var(--bvt-accent-deep);
-  border-left: 4px solid var(--bvt-accent);
-  border-radius: 2px;
+  border: 1px solid var(--bvt-border);
+  border-left: 3px solid var(--bvt-accent);
+  border-radius: ${({ theme }) => themeRadius(theme.theme)};
   padding: 8px 10px;
   font-size: 13px;
   font-family: inherit;
   outline: none;
   resize: none;
-  &:focus { border-color: var(--bvt-accent); }
+  &:focus { border-color: var(--bvt-accent); box-shadow: inset 0 0 0 1px var(--bvt-accent-light); }
   &::placeholder { color: var(--bvt-text3); }
 `;
 
-/** 观测/队列面板（对齐 QListWidget#obs：surface2 底 + 顶部 2px accent 规）。 */
+/** 观测/队列面板：顶规随主题变（朱印印泥条、鎏金金线、古纹叶脉）。 */
 export const ObsPanel = styled.div`
   background: var(--bvt-surface2-70);
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
+  border: 1px solid var(--bvt-border2);
   border-top: 2px solid var(--bvt-accent);
   overflow-y: auto;
-  border-radius: 0;
+  border-radius: ${({ theme }) => themeRadius(theme.theme)};
   padding: 6px;
 `;
 
@@ -105,16 +113,32 @@ export const PanelLabel = styled.div`
 `;
 
 export const ProgressBar = styled.div`
-  height: 10px;
+  height: 8px;
   background: var(--bvt-surface2);
   border: 1px solid var(--bvt-border);
-  border-radius: 0;
+  border-radius: ${({ theme }) => themeRadius(theme.theme)};
   overflow: hidden;
   & > div {
     height: 100%;
     background: linear-gradient(to right, var(--bvt-accent-deep), var(--bvt-accent));
     transition: width 0.2s;
   }
+`;
+
+export const PageShell = styled.div`
+  padding: 20px 22px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  overflow-y: auto;
+`;
+
+export const Lead = styled.p`
+  margin: -6px 0 2px;
+  color: var(--bvt-text2);
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
 `;
 
 /** 徽章 5 态（ok/run/wait/warn/err）。 */

@@ -71,7 +71,12 @@ const Content = styled.div`
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
+  overflow: hidden;
+  margin: 10px 12px 8px;
+  background: color-mix(in srgb, var(--bvt-surface) 78%, transparent);
+  border: 1px solid var(--bvt-border);
+  border-radius: var(--bvt-radius, 2px);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bvt-accent) 12%, transparent);
 `;
 
 /** 页面容器（key 变化重挂载 → 触发淡入动画）。 */
@@ -110,6 +115,8 @@ function App() {
   // 主题色板 → CSS variables。
   useEffect(() => {
     setVars(paletteToVars(THEMES[theme][resolved]));
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.dataset.mode = resolved;
   }, [theme, resolved]);
 
   const pal = THEMES[theme][resolved];

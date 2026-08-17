@@ -4,7 +4,7 @@
 
 import { useState } from 'react';
 import styled from 'styled-components';
-import { AccentButton, SecondaryButton, TextArea, ObsPanel, ProgressBar, Badge, PanelLabel } from '../components/ui';
+import { AccentButton, SecondaryButton, TextArea, ObsPanel, ProgressBar, Badge, PanelLabel, PageShell, Lead } from '../components/ui';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
 import { runTask } from '../lib/task';
@@ -14,15 +14,6 @@ interface ResultItem {
   name: string;
   priceText: string;
 }
-
-const Page = styled.div`
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  height: 100%;
-  overflow-y: auto;
-`;
 
 const Row = styled.div`
   display: flex;
@@ -130,8 +121,9 @@ export function SearchPage() {
   }
 
   return (
-    <Page>
+    <PageShell>
       <PageTitle title="实验检索" />
+      <Lead>没有 ID 的文件，按名字去 BOOTH 上碰运气。</Lead>
       <TextArea
         rows={3}
         placeholder={'输入本地文件名 / 完整路径 / 关键词，或直接贴文件路径\n如：LunariaPaperFan.zip  或  D:\\BOOTH\\xxx.zip  或  Lunaria Paper Fan'}
@@ -184,6 +176,6 @@ export function SearchPage() {
           </div>
         </>
       )}
-    </Page>
+    </PageShell>
   );
 }
