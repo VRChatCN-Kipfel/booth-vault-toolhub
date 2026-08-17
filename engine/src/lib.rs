@@ -13,3 +13,4 @@ pub mod score;
 pub mod search;
 pub mod session;
 pub mod update;
+pub mod version;

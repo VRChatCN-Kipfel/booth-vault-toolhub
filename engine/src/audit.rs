@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::clean::extract_version_tag;
+use crate::version::ver_gt;
 
 /// HIDDEN 属性位。
 const ATTR_HIDDEN: u32 = 0x02;
@@ -319,55 +320,7 @@ fn sorted_dirs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-/// 版本号元组：取第一个数字段（`\d+(\.\d+)*`）拆成整数元组（如 `Ver_2.00` → [2, 0]）。
-fn ver_tuple(tag: &str) -> Vec<u64> {
-    let b = tag.as_bytes();
-    let mut i = 0;
-    while i < b.len() && !b[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i == b.len() {
-        return Vec::new();
-    }
-    let mut parts = Vec::new();
-    while i < b.len() {
-        if !b[i].is_ascii_digit() {
-            break;
-        }
-        let start = i;
-        while i < b.len() && b[i].is_ascii_digit() {
-            i += 1;
-        }
-        if let Ok(n) = tag[start..i].parse::<u64>() {
-            parts.push(n);
-        }
-        if i + 1 < b.len() && b[i] == b'.' && b[i + 1].is_ascii_digit() {
-            i += 1;
-            continue;
-        }
-        break;
-    }
-    parts
-}
-
-/// `a` 是否严格大于 `b`（按版本号数字逐段比较，缺段补 0）。
-///
-/// 任一侧无版本号返回 false。
-pub fn ver_gt(a: &str, b: &str) -> bool {
-    let ta = ver_tuple(a);
-    let tb = ver_tuple(b);
-    if ta.is_empty() || tb.is_empty() {
-        return false;
-    }
-    for k in 0..ta.len().max(tb.len()) {
-        let x = ta.get(k).copied().unwrap_or(0);
-        let y = tb.get(k).copied().unwrap_or(0);
-        if x != y {
-            return x > y;
-        }
-    }
-    false
-}
+// 版本号元组与比较见 crate::version（单一事实源）。
 
 /// 版本巡检结果：本地版本落后于官方版本的商品。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -389,13 +342,63 @@ pub fn version_audit(
     root: &Path,
     fetch: impl Fn(&str) -> Option<crate::fetch::ItemJson>,
 ) -> Vec<VersionInfo> {
+    version_audit_with_progress(
+        root,
+        |id| match fetch(id) {
+            Some(i) => Ok(i),
+            None => Err("未获取到官方信息".to_string()),
+        },
+        |_| true,
+    )
+}
+
+/// 版本巡检进度事件（供 GUI 流式场景复用核心判定逻辑）。
+#[derive(Debug)]
+pub enum VersionEvent<'a> {
+    /// 官方信息获取失败（GUI 记录日志用）。
+    FetchError { id: &'a str, error: String },
+    /// 单件版本比对结果（含是否可更新，供 GUI 决定是否高亮/累计）。
+    Compared {
+        dir: &'a ScannedDir,
+        official: &'a str,
+        updateable: bool,
+    },
+}
+
+/// 带进度回调的版本巡检。
+///
+/// 收敛 GUI 在进程外复刻的判定核心：`fetch` 负责联网取官方信息，`progress` 负责
+/// 消费每件进度（日志/插桩）。回调返回 `true` 继续、`false` 提前终止（协作式取消）。
+/// 判定逻辑（`extract_version_tag` + `ver_gt`）单点落此，GUI 不再重复实现。
+pub fn version_audit_with_progress<F, P>(root: &Path, fetch: F, mut progress: P) -> Vec<VersionInfo>
+where
+    F: Fn(&str) -> Result<crate::fetch::ItemJson, String>,
+    P: FnMut(VersionEvent<'_>) -> bool,
+{
     let mut out = Vec::new();
     for d in scan_library(root) {
-        let Some(item) = fetch(&d.id) else {
-            continue;
+        let item = match fetch(&d.id) {
+            Ok(i) => i,
+            Err(e) => {
+                if !progress(VersionEvent::FetchError {
+                    id: &d.id,
+                    error: e,
+                }) {
+                    break;
+                }
+                continue;
+            }
         };
         let official = extract_version_tag(&item.name);
-        if ver_gt(&official, &d.local_tag) {
+        let updateable = ver_gt(&official, &d.local_tag);
+        if !progress(VersionEvent::Compared {
+            dir: &d,
+            official: &official,
+            updateable,
+        }) {
+            break;
+        }
+        if updateable {
             out.push(VersionInfo {
                 id: d.id,
                 name: d.name,
@@ -866,42 +869,6 @@ mod tests {
     }
 
     #[test]
-    fn ver_gt_basic() {
-        assert!(ver_gt("1.0", "0.9"));
-        assert!(!ver_gt("0.9", "1.0"));
-        assert!(!ver_gt("1.0", "1.0"));
-        assert!(ver_gt("2.0", "1.9"));
-    }
-
-    #[test]
-    fn ver_gt_empty() {
-        assert!(!ver_gt("", "1.0"));
-        assert!(!ver_gt("1.0", ""));
-        assert!(!ver_gt("", ""));
-    }
-
-    #[test]
-    fn ver_gt_multi_segment() {
-        assert!(ver_gt("1.0.1", "1.0"));
-        assert!(!ver_gt("1.0", "1.0.1"));
-        assert!(!ver_gt("1.0.2", "1.0.10"));
-        assert!(ver_gt("1.0.10", "1.0.9"));
-    }
-
-    #[test]
-    fn ver_gt_padding_zero() {
-        assert!(ver_gt("1.5.1", "1.5"));
-        assert!(!ver_gt("1.5", "1.5.0"));
-        assert!(!ver_gt("Ver_2.00", "Ver_2"));
-    }
-
-    #[test]
-    fn ver_gt_first_number_segment() {
-        assert!(ver_gt("v3.0", "名前0.5"));
-        assert!(!ver_gt("名前0.5", "v3.0"));
-    }
-
-    #[test]
     fn version_audit_reports_updateable() {
         let base = tmpdir("va_update");
         make_id_dir(&base, "1111111_雪女v1");
@@ -942,6 +909,73 @@ mod tests {
         make_id_dir(&base, "5555555_脱机");
         let out = version_audit(&base, |_| None);
         assert!(out.is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn version_audit_with_progress_emits_and_collects() {
+        let base = tmpdir("vap_emit");
+        make_id_dir(&base, "1111111_雪女v1");
+        make_id_dir(&base, "2222222_メカv3");
+        let mut compared = Vec::new();
+        let out = version_audit_with_progress(
+            &base,
+            |id| match id {
+                "1111111" => Ok(json_item("雪女v2")),
+                "2222222" => Ok(json_item("メカv2")),
+                _ => Err("404".to_string()),
+            },
+            |evt| {
+                if let VersionEvent::Compared {
+                    dir,
+                    official,
+                    updateable,
+                } = evt
+                {
+                    compared.push((dir.id.clone(), official.to_string(), updateable));
+                }
+                true
+            },
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "1111111");
+        // Compared 事件按扫描顺序（id 排序）发出。
+        assert_eq!(
+            compared,
+            vec![
+                ("1111111".to_string(), "Ver_2".to_string(), true),
+                ("2222222".to_string(), "Ver_2".to_string(), false),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn version_audit_with_progress_abort_stops_loop() {
+        let base = tmpdir("vap_abort");
+        make_id_dir(&base, "1111111_雪女v1");
+        make_id_dir(&base, "2222222_メカv3");
+        let mut visited = Vec::new();
+        let out = version_audit_with_progress(
+            &base,
+            |id| match id {
+                "1111111" => Ok(json_item("雪女v2")),
+                "2222222" => Ok(json_item("メカv2")),
+                _ => Err("404".to_string()),
+            },
+            |evt| {
+                if let VersionEvent::Compared { dir, .. } = evt {
+                    visited.push(dir.id.clone());
+                    // 首个 Compared 即返回 false → 终止循环，后续项（2222222）不再处理。
+                    return dir.id != "1111111";
+                }
+                true
+            },
+        );
+        // 首个 dir 的 Compared 事件已投递，但其结果因 break 不计入 out。
+        assert_eq!(visited, vec!["1111111".to_string()]);
+        // 1111111 可更新但被终止打断，故 out 为空。
+        assert!(out.is_empty(), "out: {:?}", out);
         let _ = std::fs::remove_dir_all(&base);
     }
 

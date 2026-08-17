@@ -3,8 +3,10 @@
  * 对齐原版 settings_page.py。
  */
 
+import { useState } from 'react';
 import styled from 'styled-components';
 import { open } from '@tauri-apps/plugin-dialog';
+import { invoke } from '@tauri-apps/api/core';
 import {
   AccentButton, SecondaryButton, Input, PanelLabel, SegSlider,
 } from '../components/ui';
@@ -62,6 +64,52 @@ export function SettingsPage() {
   } = useAppConfigStore();
 
   const resolved = resolveMode(mode, systemTheme);
+
+  const [checking, setChecking] = useState(false);
+  const [updMsg, setUpdMsg] = useState('');
+  const [updUrl, setUpdUrl] = useState('');
+  const [relTitle, setRelTitle] = useState('');
+  const [relBody, setRelBody] = useState('');
+
+  function htmlToText(html: string): string {
+    const div = document.createElement('div');
+    div.innerHTML = html;
+    return (div.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+
+  async function checkUpdate() {
+    setChecking(true);
+    setUpdMsg('检查中…');
+    setUpdUrl('');
+    setRelTitle('');
+    setRelBody('');
+    const res = await invoke<{
+      has_update: boolean;
+      local_version: string;
+      remote_version: string;
+      url: string;
+      release_title: string | null;
+      release_body: string | null;
+      error: string | null;
+    }>('update_check', { useProxy: proxy }).catch((e) => {
+      setUpdMsg(String(e));
+      setChecking(false);
+      return null;
+    });
+    if (res) {
+      if (res.error) {
+        setUpdMsg(res.error);
+      } else if (res.has_update) {
+        setUpdMsg(`发现新版本 ${res.remote_version}（当前 ${res.local_version}）`);
+        setUpdUrl(res.url);
+        if (res.release_title) setRelTitle(res.release_title);
+        if (res.release_body) setRelBody(htmlToText(res.release_body));
+      } else {
+        setUpdMsg(`已是最新版本 ${res.local_version}`);
+      }
+      setChecking(false);
+    }
+  }
 
   async function pickRoot() {
     const dir = await open({ directory: true, title: '选择 BOOTH 归档根目录' });
@@ -137,6 +185,43 @@ export function SettingsPage() {
         style={{ width: '100%' }}
         placeholder="留空即可，仅在受限时填写"
       />
+
+      <Divider />
+
+      <Label>软件更新（检查工具自身新版本）</Label>
+      <Row>
+        <SecondaryButton onClick={() => void checkUpdate()} disabled={checking}>
+          {checking ? '检查中…' : '检查更新'}
+        </SecondaryButton>
+        <span style={{ color: 'var(--bvt-text2)', fontSize: 13 }}>{updMsg}</span>
+        {updUrl && (
+          <a
+            href={updUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: 'var(--bvt-accent)', fontSize: 13 }}
+          >
+            前往下载 →
+          </a>
+        )}
+      </Row>
+      {(relTitle || relBody) && (
+        <div
+          style={{
+            border: '1px solid var(--bvt-border2)',
+            borderRadius: 8,
+            padding: '8px 12px',
+            fontSize: 13,
+            lineHeight: 1.7,
+            color: 'var(--bvt-text)',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+        >
+          {relTitle && <div style={{ fontWeight: 600, marginBottom: 4 }}>{relTitle}</div>}
+          {relBody && <div>{relBody}</div>}
+        </div>
+      )}
 
       <Divider />
       <AccentButton onClick={() => void save()}>保存设置</AccentButton>

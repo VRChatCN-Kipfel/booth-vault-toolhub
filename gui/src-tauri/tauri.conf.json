@@ -2,7 +2,6 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "booth-vault-toolhub",
   "mainBinaryName": "booth-vault-toolhub",
-  "version": "0.1.0",
   "identifier": "com.boothvault.toolhub",
   "build": {
     "beforeDevCommand": "npm run dev",

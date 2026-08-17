@@ -36,8 +36,13 @@ pub enum ProgressEvent {
     Progress { done: usize, total: usize },
     /// 单项失败。
     ItemError { id: String, message: String },
-    /// 任务完成（含统计）。
-    Finished { done: usize, failed: usize },
+    /// 任务完成（含统计；`updateable` 供版本巡检类命令承载「可更新数」，其余命令为 0）。
+    Finished {
+        done: usize,
+        failed: usize,
+        #[serde(default)]
+        updateable: usize,
+    },
     /// 文本日志（用于 scan/fix 等详细输出）。
     #[allow(dead_code)] // audit 命令使用
     Log { line: String },
@@ -187,7 +192,11 @@ pub async fn download(
         if cancelled_now {
             let _ = on_event.send(ProgressEvent::Cancelled);
         } else {
-            let _ = on_event.send(ProgressEvent::Finished { done: d, failed: f });
+            let _ = on_event.send(ProgressEvent::Finished {
+                done: d,
+                failed: f,
+                updateable: 0,
+            });
         }
         (d, f)
     });
@@ -359,7 +368,11 @@ pub async fn organize(
         if cancelled_now {
             let _ = on_event.send(ProgressEvent::Cancelled);
         } else {
-            let _ = on_event.send(ProgressEvent::Finished { done: ok, failed });
+            let _ = on_event.send(ProgressEvent::Finished {
+                done: ok,
+                failed,
+                updateable: 0,
+            });
         }
         (ok, failed)
     });
@@ -469,6 +482,7 @@ pub async fn search(
             let _ = on_event.send(ProgressEvent::Finished {
                 done: matched,
                 failed,
+                updateable: 0,
             });
         }
         (matched, failed)
@@ -599,6 +613,7 @@ pub async fn audit(
     let _ = on_event.send(ProgressEvent::Finished {
         done: total,
         failed: missing,
+        updateable: 0,
     });
     unregister_task(&registry, &task_id);
     Ok(serde_json::json!({ "task_id": task_id, "total": total, "missing": missing }))
@@ -622,52 +637,63 @@ pub async fn version_audit(
     let client_c = client.clone();
     let flag = cancel_flag.clone();
     let handle = tauri::async_runtime::spawn_blocking(move || {
-        let dirs = engine::audit::scan_library(&base_path);
-        let total = dirs.len();
+        let total = engine::audit::scan_library(&base_path).len();
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let mut updateable = 0usize;
-        for d in &dirs {
-            if cancelled(&flag) {
-                break;
-            }
-            let item = match engine::fetch::fetch_item(&client_c, &d.id) {
-                Ok(i) => i,
-                Err(e) => {
-                    let _ = on_event.send(ProgressEvent::Log {
-                        line: format!("错误 {}: {e}", d.id),
-                    });
-                    continue;
+        let _ = engine::audit::version_audit_with_progress(
+            &base_path,
+            |id| engine::fetch::fetch_item(&client_c, id).map_err(|e| e.to_string()),
+            |evt| {
+                if cancelled(&flag) {
+                    return false;
                 }
-            };
-            let official = engine::clean::extract_version_tag(&item.name);
-            let _ = on_event.send(ProgressEvent::Log {
-                line: format!(
-                    "核对 {}: 本地 {} / 官方 {}",
-                    d.id,
-                    if d.local_tag.is_empty() {
-                        "-"
-                    } else {
-                        d.local_tag.as_str()
-                    },
-                    if official.is_empty() {
-                        "-"
-                    } else {
-                        official.as_str()
-                    },
-                ),
-            });
-            if engine::audit::ver_gt(&official, &d.local_tag) {
-                updateable += 1;
-                let _ = on_event.send(ProgressEvent::ItemDone {
-                    id: format!("{} · {}", d.id, d.name),
-                    message: format!("本地 {} → 官方 {} 可更新", d.local_tag, official),
-                    status: "ok".to_string(),
-                });
-            }
-        }
+                match evt {
+                    engine::audit::VersionEvent::FetchError { id, error } => {
+                        let _ = on_event.send(ProgressEvent::Log {
+                            line: format!("错误 {id}: {error}"),
+                        });
+                    }
+                    engine::audit::VersionEvent::Compared {
+                        dir,
+                        official,
+                        updateable: is_updateable,
+                    } => {
+                        let _ = on_event.send(ProgressEvent::Log {
+                            line: format!(
+                                "核对 {}: 本地 {} / 官方 {}",
+                                dir.id,
+                                if dir.local_tag.is_empty() {
+                                    "-".to_string()
+                                } else {
+                                    dir.local_tag.clone()
+                                },
+                                if official.is_empty() {
+                                    "-".to_string()
+                                } else {
+                                    official.to_string()
+                                },
+                            ),
+                        });
+                        if is_updateable {
+                            updateable += 1;
+                            let _ = on_event.send(ProgressEvent::ItemDone {
+                                id: format!("{} · {}", dir.id, dir.name),
+                                message: format!(
+                                    "本地 {} → 官方 {} 可更新",
+                                    dir.local_tag, official
+                                ),
+                                status: "ok".to_string(),
+                            });
+                        }
+                    }
+                }
+                true
+            },
+        );
         let _ = on_event.send(ProgressEvent::Finished {
             done: total,
-            failed: updateable,
+            failed: 0,
+            updateable,
         });
         (total, updateable)
     });
@@ -716,6 +742,7 @@ pub async fn mismatch_audit(
         let _ = on_event.send(ProgressEvent::Finished {
             done: total,
             failed: found.len(),
+            updateable: 0,
         });
         (total, found.len())
     });
@@ -785,6 +812,7 @@ pub async fn fix_mismatch(
         let _ = on_event.send(ProgressEvent::Finished {
             done: fixed,
             failed,
+            updateable: 0,
         });
         (fixed, failed)
     });
@@ -807,6 +835,8 @@ pub async fn update_check(use_proxy: bool) -> Result<serde_json::Value, String> 
         "local_version": info.local_version,
         "remote_version": info.remote_version,
         "url": info.url,
+        "release_title": info.release_title,
+        "release_body": info.release_body,
         "error": info.error,
     }))
 }
