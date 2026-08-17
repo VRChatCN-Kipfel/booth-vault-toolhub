@@ -656,7 +656,7 @@ pub async fn version_audit(
                     },
                 ),
             });
-            if engine::audit::ver_gt(&official, &d.local_tag) {
+            if engine::version::ver_gt(&official, &d.local_tag) {
                 updateable += 1;
                 let _ = on_event.send(ProgressEvent::ItemDone {
                     id: format!("{} · {}", d.id, d.name),

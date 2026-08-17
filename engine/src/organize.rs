@@ -92,7 +92,8 @@ pub fn target_folder(out_root: &Path, item: &ItemJson, item_id: &str) -> PathBuf
 
 /// 本地缺失的免费文件列表：`(url, filename)`。
 ///
-/// 判定：远程文件版本号与本地任一文件同版本（不同后缀也算已存在）则跳过；
+/// 判定：远程文件版本号与本地任一文件同版本（不同后缀也算已存在，按数值
+/// 元组比较，`Ver_2.0` 与 `Ver_2.00` 视为同版本）则跳过；
 /// 否则目标文件名已存在且为有效文件（存在、非空、非 HTML 伪装）则跳过；
 /// 其余列为缺失。
 pub fn missing_free_files(dest_dir: &Path, item: &ItemJson) -> Vec<(String, String)> {
@@ -104,7 +105,7 @@ pub fn missing_free_files(dest_dir: &Path, item: &ItemJson) -> Vec<(String, Stri
             .collect(),
         Err(_) => Vec::new(),
     };
-    let local_vers: std::collections::HashSet<String> = local_files
+    let local_vers: Vec<String> = local_files
         .iter()
         .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
         .map(extract_version_tag)
@@ -114,7 +115,11 @@ pub fn missing_free_files(dest_dir: &Path, item: &ItemJson) -> Vec<(String, Stri
     for (url, fname) in free_downloads(item) {
         let dest = dest_dir.join(sanitize(&fname, 120));
         let remote_ver = extract_version_tag(&fname);
-        if !remote_ver.is_empty() && local_vers.contains(&remote_ver) {
+        if !remote_ver.is_empty()
+            && local_vers
+                .iter()
+                .any(|lv| crate::version::ver_eq(&remote_ver, lv))
+        {
             continue;
         }
         if valid_local_file(&dest) {
