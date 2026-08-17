@@ -622,49 +622,59 @@ pub async fn version_audit(
     let client_c = client.clone();
     let flag = cancel_flag.clone();
     let handle = tauri::async_runtime::spawn_blocking(move || {
-        let dirs = engine::audit::scan_library(&base_path);
-        let total = dirs.len();
+        let total = engine::audit::scan_library(&base_path).len();
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let mut updateable = 0usize;
-        for d in &dirs {
-            if cancelled(&flag) {
-                break;
-            }
-            let item = match engine::fetch::fetch_item(&client_c, &d.id) {
-                Ok(i) => i,
-                Err(e) => {
-                    let _ = on_event.send(ProgressEvent::Log {
-                        line: format!("错误 {}: {e}", d.id),
-                    });
-                    continue;
+        let _ = engine::audit::version_audit_with_progress(
+            &base_path,
+            |id| engine::fetch::fetch_item(&client_c, id).map_err(|e| e.to_string()),
+            |evt| {
+                if cancelled(&flag) {
+                    return false;
                 }
-            };
-            let official = engine::clean::extract_version_tag(&item.name);
-            let _ = on_event.send(ProgressEvent::Log {
-                line: format!(
-                    "核对 {}: 本地 {} / 官方 {}",
-                    d.id,
-                    if d.local_tag.is_empty() {
-                        "-"
-                    } else {
-                        d.local_tag.as_str()
-                    },
-                    if official.is_empty() {
-                        "-"
-                    } else {
-                        official.as_str()
-                    },
-                ),
-            });
-            if engine::version::ver_gt(&official, &d.local_tag) {
-                updateable += 1;
-                let _ = on_event.send(ProgressEvent::ItemDone {
-                    id: format!("{} · {}", d.id, d.name),
-                    message: format!("本地 {} → 官方 {} 可更新", d.local_tag, official),
-                    status: "ok".to_string(),
-                });
-            }
-        }
+                match evt {
+                    engine::audit::VersionEvent::FetchError { id, error } => {
+                        let _ = on_event.send(ProgressEvent::Log {
+                            line: format!("错误 {id}: {error}"),
+                        });
+                    }
+                    engine::audit::VersionEvent::Compared {
+                        dir,
+                        official,
+                        updateable: is_updateable,
+                    } => {
+                        let _ = on_event.send(ProgressEvent::Log {
+                            line: format!(
+                                "核对 {}: 本地 {} / 官方 {}",
+                                dir.id,
+                                if dir.local_tag.is_empty() {
+                                    "-".to_string()
+                                } else {
+                                    dir.local_tag.clone()
+                                },
+                                if official.is_empty() {
+                                    "-".to_string()
+                                } else {
+                                    official.to_string()
+                                },
+                            ),
+                        });
+                        if is_updateable {
+                            updateable += 1;
+                            let _ = on_event.send(ProgressEvent::ItemDone {
+                                id: format!("{} · {}", dir.id, dir.name),
+                                message: format!(
+                                    "本地 {} → 官方 {} 可更新",
+                                    dir.local_tag, official
+                                ),
+                                status: "ok".to_string(),
+                            });
+                        }
+                    }
+                }
+                true
+            },
+        );
         let _ = on_event.send(ProgressEvent::Finished {
             done: total,
             failed: updateable,
