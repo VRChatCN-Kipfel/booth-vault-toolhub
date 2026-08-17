@@ -32,7 +32,7 @@ fn folder_icon_present(dir: &Path) -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        return shell_mac::folder_icon::has_folder_icon(dir);
+        shell_mac::folder_icon::has_folder_icon(dir)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -186,7 +186,7 @@ pub fn audit_one_with_attrs(dir: &Path, fix: bool, attr_fn: impl Fn(&Path) -> u3
 pub fn audit_one(dir: &Path, fix: bool) -> AuditResult {
     #[cfg(target_os = "macos")]
     {
-        return audit_one_macos(dir, fix);
+        audit_one_macos(dir, fix)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -241,7 +241,7 @@ pub fn audit_tree(base: &Path) -> Vec<AuditResult> {
 pub fn audit_tree_with_fix(base: &Path, fix: bool) -> Vec<AuditResult> {
     #[cfg(target_os = "macos")]
     {
-        return audit_tree_macos(base, fix);
+        audit_tree_macos(base, fix)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -918,6 +918,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn audit_tree_reports_only_problem_dirs() {
         let base = tmpdir("tree");
@@ -944,6 +945,32 @@ mod tests {
         assert_eq!(results.len(), 1, "results: {:?}", results);
         assert_eq!(results[0].dir, bad);
         assert!(results[0].issues.iter().any(|i| i == "ini 缺失"));
+        assert_eq!(results[0].suggested_fix, Some(FixAction::NeedsCover));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn audit_tree_macos_skips_hidden_and_reports_missing_icon() {
+        let base = tmpdir("tree_mac");
+        let cat = base.join("3D模型");
+        let good = cat.join("1111111_good");
+        let bad = cat.join("2222222_bad");
+        let hidden_cat = base.join(".hidden_cat");
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::create_dir_all(&bad).unwrap();
+        std::fs::create_dir_all(&hidden_cat).unwrap();
+        std::fs::write(good.join("cover.jpg"), vec![0u8; 100]).unwrap();
+        std::fs::write(good.join(".folder_icon.png"), [0u8; 8]).unwrap();
+        let results = audit_tree_with_fix(&base, true);
+        assert_eq!(results.len(), 1, "results: {:?}", results);
+        assert_eq!(results[0].dir, bad);
+        assert!(
+            results[0]
+                .issues
+                .iter()
+                .any(|i| i == "Finder 自定义图标缺失")
+        );
         assert_eq!(results[0].suggested_fix, Some(FixAction::NeedsCover));
         let _ = std::fs::remove_dir_all(&base);
     }
