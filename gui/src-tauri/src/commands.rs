@@ -212,9 +212,8 @@ pub fn download(
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let mut d = 0usize;
         let mut f = 0usize;
-        let mut processed = 0usize;
         let mut cancelled_now = false;
-        for item_id in ids {
+        for (processed, item_id) in ids.into_iter().enumerate() {
             if cancelled(&flag) {
                 cancelled_now = true;
                 break;
@@ -246,9 +245,8 @@ pub fn download(
                     });
                 }
             }
-            processed += 1;
             let _ = on_event.send(ProgressEvent::Progress {
-                done: processed,
+                done: processed + 1,
                 total,
             });
         }
