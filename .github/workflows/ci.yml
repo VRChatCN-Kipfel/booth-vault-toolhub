@@ -128,12 +128,12 @@ jobs:
             echo "" > version.txt
           fi
 
-      # 上传 booth 三二进制（带架构后缀；含 version.txt）
+      # 上传 booth 三二进制（统一命名：booth-binaries-{平台}-{架构}；含 version.txt）
       # release 工作流下载后做最终打包（tauri bundle + 便携版）
       - name: Upload booth binaries
         uses: actions/upload-artifact@v4
         with:
-          name: booth-binaries-${{ matrix.arch }}
+          name: booth-binaries-windows-${{ matrix.arch }}
           path: |
             version.txt
             target/${{ matrix.rust_target }}/release/booth.exe
@@ -142,19 +142,59 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # Linux / macOS：engine 层测试。macOS 现为正式门禁；Linux 仍不阻塞合并。
-  portable:
+  # macOS：正式产物 job（非仅门控）。由于 macOS 已产出实际 booth 二进制，
+  # 直接作为一等编译来源：arm64 / x64 编译 + 测试 + clippy + 构建上传 booth 二进制。
+  # 与 windows job 平级，均为 release 分发源；本 job 失败即阻塞合并。
+  macos:
     needs: encoding
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            allow_fail: true
           - os: macos-latest
-            allow_fail: false
+            arch: arm64
+            rust_target: aarch64-apple-darwin
+            artifact: booth-binaries-macos-arm64
+          - os: macos-26-intel
+            arch: x64
+            rust_target: x86_64-apple-darwin
+            artifact: booth-binaries-macos-x64
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.allow_fail }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: ${{ matrix.rust_target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Clippy (workspace)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test (workspace)
+        run: cargo test --workspace
+
+      # 编译 macOS booth 二进制（booth + booth-mcp；booth-shell 仅 Windows）
+      - name: Build booth binaries
+        shell: bash
+        run: |
+          cargo build --release --workspace
+          mkdir -p stage
+          cp target/release/booth stage/
+          cp target/release/booth-mcp stage/
+      - name: Upload booth binaries (macOS)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: stage/**
+          if-no-files-found: error
+          retention-days: 14
+
+  # Ubuntu：仅门控（Linux 不是目标分发平台，不产工件）。失败不阻塞合并。
+  portable:
+    needs: encoding
+    runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -167,6 +207,3 @@ jobs:
         run: cargo clippy -p engine --all-targets --all-features -- -D warnings
       - name: Test (engine)
         run: cargo test -p engine
-      - name: Test (shell_mac)
-        if: runner.os == 'macOS'
-        run: cargo test -p shell_mac

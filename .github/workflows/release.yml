@@ -4,7 +4,7 @@
 #   CI   = 测试门控 + 构建三架构 booth 二进制（副产品，供 release 用）
 #   release = 最终产物生产：tauri bundle（MSI/NSIS）+ 便携版组装 + 创建 Release
 #
-# CI 每架构上传 booth-binaries-{arch}（三二进制 + version.txt）。
+# CI 每架构上传 booth-binaries-{platform}-{arch}（三二进制 + version.txt；macOS 无 booth-shell）。
 # release 下载对应架构工件 → 本地构建 GUI → 打包安装器 + 便携版 → 聚合发布。
 #
 # 触发：
@@ -93,7 +93,7 @@ jobs:
       - name: Download booth binaries
         uses: actions/download-artifact@v4
         with:
-          name: booth-binaries-${{ matrix.arch }}
+          name: booth-binaries-windows-${{ matrix.arch }}
           path: binaries
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ steps.ci-run.outputs.ci_run_id }}
@@ -286,9 +286,25 @@ jobs:
           merge-multiple: true
           path: packages
 
+      # 下载 CI 全平台 booth 二进制（Windows x64/x86/arm64 + macOS arm64/x64），
+      # 作为独立 CLI 附件随 release 发布。booth-shell 仅 Windows。
+      # 不用 merge-multiple：各工件（架构）保持独立子目录，避免同名二进制被覆盖。
+      - name: Download booth binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: booth-binaries-*
+          path: binaries
+
       - name: List packages
         shell: bash
-        run: find packages -type f
+        run: find packages binaries -type f
+
+      # 精简：筛掉发布元数据（version.txt），只留可执行二进制。
+      - name: Prepare release binaries
+        shell: bash
+        run: |
+          find binaries -type f -name version.txt -delete
+          find binaries -type f | sort
 
       - name: Create GitHub Release
         if: steps.flags.outputs.should_release == 'true'
@@ -303,3 +319,4 @@ jobs:
             packages/**/*.exe
             packages/**/*-lite.zip
             packages/**/*-full.zip
+            binaries/**/*
