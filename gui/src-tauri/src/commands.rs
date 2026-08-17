@@ -36,8 +36,13 @@ pub enum ProgressEvent {
     Progress { done: usize, total: usize },
     /// 单项失败。
     ItemError { id: String, message: String },
-    /// 任务完成（含统计）。
-    Finished { done: usize, failed: usize },
+    /// 任务完成（含统计；`updateable` 供版本巡检类命令承载「可更新数」，其余命令为 0）。
+    Finished {
+        done: usize,
+        failed: usize,
+        #[serde(default)]
+        updateable: usize,
+    },
     /// 文本日志（用于 scan/fix 等详细输出）。
     #[allow(dead_code)] // audit 命令使用
     Log { line: String },
@@ -187,7 +192,11 @@ pub async fn download(
         if cancelled_now {
             let _ = on_event.send(ProgressEvent::Cancelled);
         } else {
-            let _ = on_event.send(ProgressEvent::Finished { done: d, failed: f });
+            let _ = on_event.send(ProgressEvent::Finished {
+                done: d,
+                failed: f,
+                updateable: 0,
+            });
         }
         (d, f)
     });
@@ -359,7 +368,11 @@ pub async fn organize(
         if cancelled_now {
             let _ = on_event.send(ProgressEvent::Cancelled);
         } else {
-            let _ = on_event.send(ProgressEvent::Finished { done: ok, failed });
+            let _ = on_event.send(ProgressEvent::Finished {
+                done: ok,
+                failed,
+                updateable: 0,
+            });
         }
         (ok, failed)
     });
@@ -469,6 +482,7 @@ pub async fn search(
             let _ = on_event.send(ProgressEvent::Finished {
                 done: matched,
                 failed,
+                updateable: 0,
             });
         }
         (matched, failed)
@@ -599,6 +613,7 @@ pub async fn audit(
     let _ = on_event.send(ProgressEvent::Finished {
         done: total,
         failed: missing,
+        updateable: 0,
     });
     unregister_task(&registry, &task_id);
     Ok(serde_json::json!({ "task_id": task_id, "total": total, "missing": missing }))
@@ -677,7 +692,8 @@ pub async fn version_audit(
         );
         let _ = on_event.send(ProgressEvent::Finished {
             done: total,
-            failed: updateable,
+            failed: 0,
+            updateable,
         });
         (total, updateable)
     });
@@ -726,6 +742,7 @@ pub async fn mismatch_audit(
         let _ = on_event.send(ProgressEvent::Finished {
             done: total,
             failed: found.len(),
+            updateable: 0,
         });
         (total, found.len())
     });
@@ -795,6 +812,7 @@ pub async fn fix_mismatch(
         let _ = on_event.send(ProgressEvent::Finished {
             done: fixed,
             failed,
+            updateable: 0,
         });
         (fixed, failed)
     });

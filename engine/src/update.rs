@@ -402,15 +402,15 @@ pub fn check_update(use_proxy: bool) -> UpdateInfo {
         None
     };
     // 复用 client：代理与直连各 1 个，避免每次调用建 4 个 reqwest Client。
+    // `use_proxy=false` 时两者同为无代理，只建 1 个。
     let proxied = github_client(proxy.clone());
-    let direct = github_client(None);
+    let direct = proxy.as_ref().map(|_| github_client(None));
 
     // 依次尝试候选 client（代理优先、直连兜底），避免重复调同一 client。
-    // `proxied` 在 `use_proxy=false` 时与 `direct` 同为无代理 client，去重后只发一次。
     let mut clients = Vec::new();
     clients.push(&proxied);
-    if proxy.is_some() {
-        clients.push(&direct);
+    if let Some(d) = &direct {
+        clients.push(d);
     }
 
     // 每通道按 Atom → HTML → API 顺序尝试，任一命中即返回（无 API 配额）。
