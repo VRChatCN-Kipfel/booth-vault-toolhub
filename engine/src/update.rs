@@ -17,7 +17,6 @@
 
 use fancy_regex::Regex;
 use reqwest::blocking::Client;
-use reqwest::redirect::Policy;
 use serde::Serialize;
 use std::time::Duration;
 
@@ -149,13 +148,14 @@ fn api_latest_url() -> String {
     format!("https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest")
 }
 
-/// 构建 GitHub 专用 client：禁用重定向（捕获 302 Location）+ 浏览器 UA + 可选代理 + 显式超时。
+/// 构建 GitHub 专用 client：浏览器 UA + 可选代理 + 显式超时。
 ///
 /// 复用 `session::default_headers` 的 UA 与 `resolve_proxy` 的代理裁决（禁硬编码）。
 /// `timeout` 保证单个入口挂起时不拖死更新检查。
+/// 重定向走 reqwest 默认（自动跟随）：`/releases/latest` 的 302/301/308 均被消化，
+/// `fetch_html_tag` 从最终 `resp.url()` 路径提取 tag，无需手动解析 Location。
 fn github_client(proxy: Option<String>) -> Client {
     let mut builder = Client::builder()
-        .redirect(Policy::none())
         .timeout(CHANNEL_TIMEOUT)
         .default_headers(default_headers());
     if let Some(p) = proxy
@@ -301,10 +301,11 @@ fn fetch_atom_tag(client: &Client) -> (Option<ReleaseSnapshot>, bool) {
     (parse_atom_latest(&text), true)
 }
 
-/// HTML 重定向法：GET `/releases/latest`（302）→ `Location` 取 tag。
+/// HTML 重定向法：GET `/releases/latest`，自动跟随跳转后从最终 URL 路径取 tag。
 ///
-/// 部分网络直连 200 返回页面，从页面里抓 tag；返回 `(快照, reachable)`。
-/// 该通道仅能取 tag，无 title/content。
+/// reqwest 默认跟随重定向（302/301/308 通吃），`resp.url()` 为最终地址：
+/// 有 release 时落在 `.../releases/tag/{tag}`，无 release 时落在 `.../releases`（取不到）。
+/// 页面 HTML 抓 tag 保留为兜底。返回 `(快照, reachable)`，该通道仅能取 tag。
 fn fetch_html_tag(client: &Client) -> (Option<ReleaseSnapshot>, bool) {
     let resp = match client
         .get(releases_latest_url())
@@ -314,28 +315,26 @@ fn fetch_html_tag(client: &Client) -> (Option<ReleaseSnapshot>, bool) {
         Ok(r) => r,
         Err(_) => return (None, false),
     };
-    if resp.status().as_u16() == 302
-        && let Some(loc) = resp.headers().get(reqwest::header::LOCATION)
-        && let Ok(loc) = loc.to_str()
-    {
-        let re = Regex::new(r"/releases/tag/([^/]+)/?$").expect("valid regex");
-        if let Ok(Some(c)) = re.captures(loc)
-            && let Some(m) = c.get(1)
-        {
-            return (
-                Some(ReleaseSnapshot {
-                    tag: m.as_str().to_string(),
-                    title: None,
-                    body: None,
-                }),
-                true,
-            );
-        }
+    if !resp.status().is_success() {
+        return (None, true);
     }
-    // 直连 200：从页面 HTML 抓 tag
-    if resp.status().is_success()
-        && let Ok(text) = resp.text()
+    // 最终 URL 路径含 `/releases/tag/{tag}`
+    let final_path = resp.url().path().to_string();
+    let re = Regex::new(r"/releases/tag/([^/]+)/?$").expect("valid regex");
+    if let Ok(Some(c)) = re.captures(&final_path)
+        && let Some(m) = c.get(1)
     {
+        return (
+            Some(ReleaseSnapshot {
+                tag: m.as_str().to_string(),
+                title: None,
+                body: None,
+            }),
+            true,
+        );
+    }
+    // 兜底：从页面 HTML 抓 tag（部分网络直连不跳转、直接 200 页面）。
+    if let Ok(text) = resp.text() {
         let re = Regex::new(r"/releases/tag/(v?[\d.]+)").expect("valid regex");
         if let Ok(Some(c)) = re.captures(&text)
             && let Some(m) = c.get(1)
