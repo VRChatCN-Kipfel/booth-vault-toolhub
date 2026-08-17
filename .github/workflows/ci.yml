@@ -169,16 +169,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Check formatting
         run: cargo fmt --check
+      # shell_win 无条件依赖 windows crate，macOS 上 --all-features 会编进 windows-future 炸 IMarshal
       - name: Clippy (workspace)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --exclude shell_win --all-targets --all-features -- -D warnings
       - name: Test (workspace)
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude shell_win
 
       # 编译 macOS booth 二进制（booth + booth-mcp；booth-shell 仅 Windows）
       - name: Build booth binaries
         shell: bash
         run: |
-          cargo build --release --workspace
+          cargo build --release --workspace --exclude shell_win
           mkdir -p stage
           cp target/release/booth stage/
           cp target/release/booth-mcp stage/
