@@ -115,8 +115,37 @@ const Note = styled.div`
   white-space: pre-wrap;
 `;
 
-const DEFAULT_INTRO = '本工具由主上自用分享，永久免费开源。\n如果帮到了你，欢迎支持继续维护。';
-const DEFAULT_NOTE = '赞助全部用于支付 LLM API 费用 + 服务器，\n本工具永不开源化收费。';
+const DEFAULT_INTRO = '本工具使用Apache-2.0协议免费开源。\n如果你是付费得到该软件，请主动举报抵制不良商家倒卖。 ✨';
+const DEFAULT_NOTE = '赞助将会用于支付作者们给吃软饭的大肥鱼购用token，以及日后可能计划的被库克打劫所获的macos开发者签名\n本工具不会进行强制化收费，不存在VIP档次等级等，自愿赞助，各位老爷赏点白饭吃吧pwp';
+
+const GraphSection = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: var(--bvt-s3);
+`;
+
+/** 贡献者图谱：页面限制内自动等比缩放，不拉伸不平铺。 */
+const Graph = styled.img`
+  display: block;
+  max-width: 100%;
+  max-height: 240px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+`;
+
+const CONTRIBUTOR_URL =
+  'https://contrib.rocks/image?repo=VRChatCN-Kipfel/booth-vault-toolhub';
+
+function ContributorGraph() {
+  return (
+    <GraphSection>
+      <PanelLabel>贡献者</PanelLabel>
+      <Intro>感谢所有为这个开源项目贡献过的开发者。</Intro>
+      <Graph src={CONTRIBUTOR_URL} alt="项目贡献者" loading="lazy" />
+    </GraphSection>
+  );
+}
 
 /** 解析 image 字段 → src（data URL 原样；相对路径加 BASE_URL）。 */
 function resolveImage(image: string): string {
@@ -168,6 +197,7 @@ export function SupportSection() {
         ))
       )}
       <Note>{config?.note ?? DEFAULT_NOTE}</Note>
+      <ContributorGraph />
     </Wrap>
   );
 }

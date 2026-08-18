@@ -270,7 +270,7 @@ jobs:
         if: matrix.msi
         uses: actions/upload-artifact@v4
         with:
-          name: booth-vault-toolhub-packages-${{ matrix.arch }}-msi
+          name: booth-vault-toolhub-packages-${{ matrix.platform }}-${{ matrix.arch }}-msi
           path: target/${{ matrix.rust_target }}/release/bundle/msi/**
           if-no-files-found: warn
           retention-days: 30
@@ -278,7 +278,7 @@ jobs:
         if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: booth-vault-toolhub-packages-${{ matrix.arch }}-nsis
+          name: booth-vault-toolhub-packages-${{ matrix.platform }}-${{ matrix.arch }}-nsis
           path: target/${{ matrix.rust_target }}/release/bundle/nsis/**
           if-no-files-found: warn
           retention-days: 30
@@ -286,7 +286,7 @@ jobs:
         if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: booth-vault-toolhub-packages-${{ matrix.arch }}-lite
+          name: booth-vault-toolhub-packages-${{ matrix.platform }}-${{ matrix.arch }}-lite
           path: dist/lite/**
           if-no-files-found: warn
           retention-days: 30
@@ -294,7 +294,7 @@ jobs:
         if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
-          name: booth-vault-toolhub-packages-${{ matrix.arch }}-full
+          name: booth-vault-toolhub-packages-${{ matrix.platform }}-${{ matrix.arch }}-full
           path: dist/full/**
           if-no-files-found: warn
           retention-days: 30
@@ -303,7 +303,7 @@ jobs:
         if: matrix.platform == 'macos'
         uses: actions/upload-artifact@v4
         with:
-          name: booth-vault-toolhub-packages-${{ matrix.arch }}-dmg
+          name: booth-vault-toolhub-packages-${{ matrix.platform }}-${{ matrix.arch }}-dmg
           path: target/${{ matrix.rust_target }}/release/bundle/dmg/**
           if-no-files-found: error
           retention-days: 30
@@ -330,7 +330,7 @@ jobs:
   # 聚合发布：下载三架构全部产物，统一创建 GitHub Release
   release:
     needs: package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     permissions:
       contents: write
     if: >-

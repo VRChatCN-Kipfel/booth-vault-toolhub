@@ -15,7 +15,7 @@ jobs:
   # 只扫 diff 内文件（PR 取 merge-base 三点 diff，push 取 before..HEAD，拿不到基线则全量兜底）；
   # gitattributes 只管行尾，UTF-8 合法性与 BOM 由本步把关（曾因 dependabot.yml 带 BOM 致配置校验失败）。
   encoding:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v4
         with:
