@@ -201,19 +201,18 @@ const GraphIntro = styled.div`
   white-space: pre-wrap;
 `;
 
-/** 贡献者图谱：页面限制内自动等比缩放，不拉伸不平铺。 */
+const CONTRIBUTOR_URL =
+  'https://contrib.rocks/image?repo=VRChatCN-Kipfel/booth-vault-toolhub&columns=12';
+
+/** 贡献者图谱：锁 12 列扁形横排，按原始尺寸渲染（不缩放），仅溢出时等比缩小兜底。 */
 const Graph = styled.img`
   display: block;
   max-width: 100%;
-  max-height: 240px;
   width: auto;
   height: auto;
   object-fit: contain;
   margin-top: 8px;
 `;
-
-const CONTRIBUTOR_URL =
-  'https://contrib.rocks/image?repo=VRChatCN-Kipfel/booth-vault-toolhub';
 
 function ContributorGraph() {
   return (
