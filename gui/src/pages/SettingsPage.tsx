@@ -1,35 +1,63 @@
 /**
  * 设置页：主题三选 + 明暗 + 归档根目录 + 代理 + Cookie + 保存。
- * 对齐原版 settings_page.py。
  */
 
-import { useState } from 'react';
 import styled from 'styled-components';
 import { open } from '@tauri-apps/plugin-dialog';
-import { invoke } from '@tauri-apps/api/core';
 import {
-  AccentButton, SecondaryButton, Input, PanelLabel, SegSlider,
+  AccentButton, SecondaryButton, Input, PanelLabel, SegSlider, PageShell, Lead,
 } from '../components/ui';
 import { SpeedSlider } from '../components/SpeedSlider';
 import { SupportSection } from '../components/SupportSection';
 import { PageTitle } from '../components/PageTitle';
 import { useThemeStore, resolveMode } from '../store/themeStore';
 import { useAppConfigStore } from '../store/appConfigStore';
-import { THEME_NAMES, THEME_ORDER, THEMES } from '../theme/themes';
+import { useUpdateStore } from '../store/updateStore';
+import { motifBgSrc, THEME_HINTS, THEME_NAMES, THEME_ORDER, THEMES } from '../theme/themes';
+import { brandMark } from '../theme/chrome';
+import { openUrl } from '@tauri-apps/plugin-opener';
 
-const Page = styled.div`
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
+const ThemeGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
-  height: 100%;
-  overflow-y: auto;
 `;
 
-const SubTitle = styled.div`
-  color: var(--bvt-text2);
-  font-size: 13px;
-  margin-top: -8px;
+const ThemeCard = styled.button<{ $active: boolean; $bg: string; $border: string; $radius: string; $motif: string }>`
+  text-align: left;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid ${({ $active, $border }) => ($active ? 'var(--bvt-accent)' : $border)};
+  background-color: ${({ $bg }) => $bg};
+  background-image: linear-gradient(${({ $bg }) => $bg}cc, ${({ $bg }) => $bg}e6), url(${({ $motif }) => $motif});
+  background-size: cover;
+  background-position: center;
+  border-radius: ${({ $radius }) => $radius};
+  cursor: pointer;
+  font-family: inherit;
+  box-shadow: ${({ $active }) =>
+    $active ? '0 0 0 1px var(--bvt-accent), inset 0 0 0 1px color-mix(in srgb, var(--bvt-accent) 30%, transparent)' : 'none'};
+`;
+
+const CardHead = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 8px;
+  .mark { width: 28px; height: 28px; flex: none; }
+  .mark svg { width: 100%; height: 100%; display: block; }
+  .name {
+    font-family: 'Noto Serif CJK SC','Songti SC',serif;
+    font-size: 16px;
+    letter-spacing: 0.16em;
+  }
+  .hint { font-size: 11px; margin-top: 3px; letter-spacing: 0.04em; }
+`;
+
+const Swatches = styled.div`
+  display: grid;
+  grid-template-columns: 1.4fr 0.8fr 0.6fr;
+  height: 10px;
 `;
 
 const Row = styled.div`
@@ -55,6 +83,35 @@ const Divider = styled.div`
   margin: 4px 0;
 `;
 
+const VersionCard = styled.div`
+  border: 1px solid var(--bvt-border);
+  border-top: 2px solid var(--bvt-accent);
+  border-radius: var(--bvt-radius, 0px);
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--bvt-surface) 88%, transparent);
+  .ver {
+    font-family: 'Noto Serif CJK SC','Songti SC',serif;
+    font-size: 18px;
+    letter-spacing: 0.12em;
+  }
+  .sub { color: var(--bvt-text2); font-size: 12px; margin-top: 4px; }
+  .notes {
+    margin-top: 10px;
+    color: var(--bvt-text2);
+    font-size: 12px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    max-height: 140px;
+    overflow: auto;
+  }
+`;
+
+const CARD_RADIUS: Record<string, string> = {
+  zhuyin: '0px',
+  liujin: '8px',
+  guwen: '4px',
+};
+
 export function SettingsPage() {
   const { theme, mode, systemTheme, setTheme, setMode } = useThemeStore();
   const {
@@ -62,54 +119,9 @@ export function SettingsPage() {
     proxy, setProxy, proxyUrl, setProxyUrl,
     cookie, setCookie, save,
   } = useAppConfigStore();
+  const { checking, info, check } = useUpdateStore();
 
   const resolved = resolveMode(mode, systemTheme);
-
-  const [checking, setChecking] = useState(false);
-  const [updMsg, setUpdMsg] = useState('');
-  const [updUrl, setUpdUrl] = useState('');
-  const [relTitle, setRelTitle] = useState('');
-  const [relBody, setRelBody] = useState('');
-
-  function htmlToText(html: string): string {
-    const div = document.createElement('div');
-    div.innerHTML = html;
-    return (div.textContent || '').replace(/\s+/g, ' ').trim();
-  }
-
-  async function checkUpdate() {
-    setChecking(true);
-    setUpdMsg('检查中…');
-    setUpdUrl('');
-    setRelTitle('');
-    setRelBody('');
-    const res = await invoke<{
-      has_update: boolean;
-      local_version: string;
-      remote_version: string;
-      url: string;
-      release_title: string | null;
-      release_body: string | null;
-      error: string | null;
-    }>('update_check', { useProxy: proxy }).catch((e) => {
-      setUpdMsg(String(e));
-      setChecking(false);
-      return null;
-    });
-    if (res) {
-      if (res.error) {
-        setUpdMsg(res.error);
-      } else if (res.has_update) {
-        setUpdMsg(`发现新版本 ${res.remote_version}（当前 ${res.local_version}）`);
-        setUpdUrl(res.url);
-        if (res.release_title) setRelTitle(res.release_title);
-        if (res.release_body) setRelBody(htmlToText(res.release_body));
-      } else {
-        setUpdMsg(`已是最新版本 ${res.local_version}`);
-      }
-      setChecking(false);
-    }
-  }
 
   async function pickRoot() {
     const dir = await open({ directory: true, title: '选择 BOOTH 归档根目录' });
@@ -117,17 +129,45 @@ export function SettingsPage() {
   }
 
   return (
-    <Page>
+    <PageShell>
       <PageTitle title="设置" />
-      <SubTitle>主题、归档路径与网络</SubTitle>
+      <Lead>主题先定调，路径和代理再填。</Lead>
 
-      <Label>主题（三选一，整套视觉意境切换）</Label>
-      <SegSlider
-        options={THEME_ORDER.map((t) => THEME_NAMES[t])}
-        value={THEME_ORDER.indexOf(theme)}
-        accent={THEMES[theme][resolved].accent}
-        onChange={(i) => setTheme(THEME_ORDER[i])}
-      />
+      <Label>主题</Label>
+      <ThemeGrid>
+        {THEME_ORDER.map((t) => {
+          const pal = THEMES[t][resolved];
+          const active = theme === t;
+          return (
+            <ThemeCard
+              key={t}
+              type="button"
+              $active={active}
+              $bg={pal.surface}
+              $border={pal.border}
+              $radius={CARD_RADIUS[t]}
+              $motif={motifBgSrc(t, resolved)}
+              onClick={() => setTheme(t)}
+            >
+              <CardHead>
+                <span
+                  className="mark"
+                  dangerouslySetInnerHTML={{ __html: brandMark(t, pal.accent) }}
+                />
+                <div>
+                  <div className="name" style={{ color: pal.text }}>{THEME_NAMES[t]}</div>
+                  <div className="hint" style={{ color: pal.text3 }}>{THEME_HINTS[t]}</div>
+                </div>
+              </CardHead>
+              <Swatches>
+                <div style={{ background: pal.bg }} />
+                <div style={{ background: pal.accent }} />
+                <div style={{ background: pal.btnFill }} />
+              </Swatches>
+            </ThemeCard>
+          );
+        })}
+      </ThemeGrid>
 
       <Divider />
 
@@ -144,7 +184,6 @@ export function SettingsPage() {
 
       <Divider />
 
-      <Label>动画速度</Label>
       <SpeedSlider />
 
       <Divider />
@@ -187,47 +226,45 @@ export function SettingsPage() {
       />
 
       <Divider />
-
-      <Label>软件更新（检查工具自身新版本）</Label>
-      <Row>
-        <SecondaryButton onClick={() => void checkUpdate()} disabled={checking}>
-          {checking ? '检查中…' : '检查更新'}
-        </SecondaryButton>
-        <span style={{ color: 'var(--bvt-text2)', fontSize: 13 }}>{updMsg}</span>
-        {updUrl && (
-          <a
-            href={updUrl}
-            target="_blank"
-            rel="noreferrer"
-            style={{ color: 'var(--bvt-accent)', fontSize: 13 }}
-          >
-            前往下载 →
-          </a>
-        )}
-      </Row>
-      {(relTitle || relBody) && (
-        <div
-          style={{
-            border: '1px solid var(--bvt-border2)',
-            borderRadius: 8,
-            padding: '8px 12px',
-            fontSize: 13,
-            lineHeight: 1.7,
-            color: 'var(--bvt-text)',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}
-        >
-          {relTitle && <div style={{ fontWeight: 600, marginBottom: 4 }}>{relTitle}</div>}
-          {relBody && <div>{relBody}</div>}
+      <Label>软件版本</Label>
+      <VersionCard>
+        <div className="ver">{info?.local_version || '…'}</div>
+        <div className="sub">
+          {checking && '正在查询 GitHub Releases…'}
+          {!checking && info?.error && `查不到：${info.error}`}
+          {!checking && info && !info.error && info.has_update && (
+            <>有新版本 {info.remote_version}{info.release_title ? ` · ${info.release_title}` : ''}</>
+          )}
+          {!checking && info && !info.error && !info.has_update && '已是最新'}
         </div>
-      )}
+        {info?.release_body && info.has_update && (
+          <div className="notes">{info.release_body}</div>
+        )}
+        <Row style={{ marginTop: 10 }}>
+          <SecondaryButton onClick={() => void check(proxy)} disabled={checking}>
+            {checking ? '检查中…' : '检查更新'}
+          </SecondaryButton>
+          {info?.url && (
+            <SecondaryButton onClick={() => void openUrl(info.url)}>
+              打开发布页
+            </SecondaryButton>
+          )}
+        </Row>
+      </VersionCard>
 
       <Divider />
-      <AccentButton onClick={() => void save()}>保存设置</AccentButton>
+      <AccentButton
+        onClick={() => {
+          void save().catch((e) => {
+            window.alert(`保存失败：${e}`);
+          });
+        }}
+      >
+        保存设置
+      </AccentButton>
 
       <Divider />
       <SupportSection />
-    </Page>
+    </PageShell>
   );
 }

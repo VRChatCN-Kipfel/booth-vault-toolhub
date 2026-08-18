@@ -495,8 +495,16 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
- "shell_win",
+ "shell-win",
  "tokio",
+]
+
+[[package]]
+name = "booth-shell"
+version = "0.0.0"
+dependencies = [
+ "shell-mac",
+ "shell-win",
 ]
 
 [[package]]
@@ -1342,7 +1350,6 @@ name = "engine"
 version = "0.0.0"
 dependencies = [
  "clap",
- "cookie_store",
  "dirs",
  "encoding_rs",
  "fancy-regex",
@@ -1351,7 +1358,8 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "shell_win",
+ "shell-mac",
+ "shell-win",
  "toml 0.9.12+spec-1.1.0",
  "unicode-general-category",
 ]
@@ -2005,7 +2013,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "shell_win",
+ "shell-win",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -4535,7 +4543,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "shell_win"
+name = "shell-mac"
+version = "0.0.0"
+dependencies = [
+ "image",
+]
+
+[[package]]
+name = "shell-win"
 version = "0.0.0"
 dependencies = [
  "image",

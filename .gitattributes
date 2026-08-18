@@ -3,6 +3,9 @@
 
 # 显式二进制，防误判
 *.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
 *.ico binary
 *.icns binary
 *.dll binary

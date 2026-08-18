@@ -118,7 +118,7 @@ pub fn missing_free_files(dest_dir: &Path, item: &ItemJson) -> Vec<(String, Stri
         if !remote_ver.is_empty()
             && local_vers
                 .iter()
-                .any(|lv| crate::version::ver_eq(&remote_ver, lv))
+                .any(|v| crate::version::ver_eq(v, &remote_ver))
         {
             continue;
         }
@@ -439,13 +439,18 @@ fn valid_local_file(p: &Path) -> bool {
     !crate::cover::looks_html(&head[..n])
 }
 
-/// 默认图标实现：Windows 下调用 shell_win 的 make_folder_icon；其余平台空操作。
+/// 默认图标实现：Windows → shell_win；macOS → Finder 自定义图标；其余空操作。
 #[cfg(windows)]
 pub fn default_icon_fn(cover: &Path, folder: &Path) -> Result<(), String> {
     shell_win::folder_icon::make_folder_icon(cover, folder).map_err(|e| e.to_string())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn default_icon_fn(cover: &Path, folder: &Path) -> Result<(), String> {
+    shell_mac::folder_icon::make_folder_icon(cover, folder).map_err(|e| e.to_string())
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 pub fn default_icon_fn(_cover: &Path, _folder: &Path) -> Result<(), String> {
     Ok(())
 }

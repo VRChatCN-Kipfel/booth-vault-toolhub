@@ -4,7 +4,7 @@
 #   CI   = 测试门控 + 构建三架构 booth 二进制（副产品，供 release 用）
 #   release = 最终产物生产：tauri bundle（MSI/NSIS）+ 便携版组装 + 创建 Release
 #
-# CI 每架构上传 booth-binaries-{arch}（三二进制 + version.txt）。
+# CI 每架构上传 booth-binaries-{platform}-{arch}（三二进制 + version.txt；macOS 无 booth-shell）。
 # release 下载对应架构工件 → 本地构建 GUI → 打包安装器 + 便携版 → 聚合发布。
 #
 # 触发：
@@ -49,24 +49,44 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: x64
+          # ---- Windows (x64 / x86 / arm64) ----
+          - platform: windows
+            arch: x64
             rust_target: x86_64-pc-windows-msvc
             msvc_arch: x64
             runs_on: windows-latest
             wv2: x64
             msi: true
-          - arch: x86
+            portable: true
+          - platform: windows
+            arch: x86
             rust_target: i686-pc-windows-msvc
             msvc_arch: amd64_x86
             runs_on: windows-latest
             wv2: x86
             msi: true
-          - arch: arm64
+            portable: true
+          - platform: windows
+            arch: arm64
             rust_target: aarch64-pc-windows-msvc
             msvc_arch: arm64
             runs_on: windows-11-arm
             wv2: arm64
             msi: false
+            portable: true
+          # ---- macOS (arm64 / x64) ----
+          - platform: macos
+            arch: arm64
+            rust_target: aarch64-apple-darwin
+            runs_on: macos-latest
+            msi: false
+            portable: false
+          - platform: macos
+            arch: x64
+            rust_target: x86_64-apple-darwin
+            runs_on: macos-26-intel
+            msi: false
+            portable: false
     runs-on: ${{ matrix.runs_on }}
     steps:
       - uses: actions/checkout@v4
@@ -88,17 +108,18 @@ jobs:
             echo "ci_run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           fi
 
-      # 下载 CI 构建的对应架构 booth 三二进制；缺失即失败，不产出残缺包
+      # 下载 CI 构建的对应平台/架构 booth 二进制；缺失即失败，不产出残缺包
       - name: Download booth binaries
         uses: actions/download-artifact@v4
         with:
-          name: booth-binaries-${{ matrix.arch }}
+          name: booth-binaries-${{ matrix.platform }}-${{ matrix.arch }}
           path: binaries
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ steps.ci-run.outputs.ci_run_id }}
 
-      # 配置 MSVC 开发环境（tauri build 多架构需要；x86 用 VS amd64_x86 交叉工具集）
+      # 配置 MSVC 开发环境（仅 Windows；tauri build 多架构需要，x86 用 VS amd64_x86 交叉工具集）
       - name: Enable Developer Command Prompt
+        if: matrix.platform == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: ${{ matrix.msvc_arch }}
@@ -117,15 +138,26 @@ jobs:
         working-directory: gui
         run: npm ci
 
-      # 把 CI booth 三二进制放回 release target；beforeBundleCommand 钩子
-      # （gui/scripts/stage-cli.mjs）据此生成 MSI fragment / NSIS generated.nsh 打进行安装器。
-      - name: Stage booth binaries
+      # ---- Windows：把 CI booth 三二进制放回 release target ----
+      # beforeBundleCommand 钩子（gui/scripts/stage-cli.mjs）据此生成 MSI fragment / NSIS generated.nsh。
+      - name: Stage booth binaries (Windows)
+        if: matrix.platform == 'windows'
         shell: bash
         run: |
           mkdir -p target/${{ matrix.rust_target }}/release
           cp binaries/target/${{ matrix.rust_target }}/release/booth.exe \
              binaries/target/${{ matrix.rust_target }}/release/booth-mcp.exe \
              binaries/target/${{ matrix.rust_target }}/release/booth-shell.exe \
+             target/${{ matrix.rust_target }}/release/
+
+      # ---- macOS：把 CI booth/mcp 放回 release target（macOS 无 booth-shell；打包含在 Build bundle）----
+      - name: Stage booth binaries (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          mkdir -p target/${{ matrix.rust_target }}/release
+          cp binaries/booth \
+             binaries/booth-mcp \
              target/${{ matrix.rust_target }}/release/
 
       # 注入打包版本号：release 打包的 GUI 从仓库 checkout（默认 0.0.0），
@@ -158,12 +190,26 @@ jobs:
           # 正式发布构建来源为 tag（真实版本比较）
           echo "BUILD_SOURCE=tag" >> "$GITHUB_ENV"
 
-      # 构建 GUI bundle（MSI/NSIS；arm64 仅 NSIS）
-      - name: Build GUI bundle
+      # 构建 GUI bundle：
+      #   Windows：MSI/NSIS（arm64 仅 NSIS）。
+      #   macOS：仅 dmg，--no-sign 跳过签名（调研决策：暂不做签名/公证，先出骨架；
+      #           arm64 纯 unsigned 的 dmg 在 Apple Silicon 上会被判"已损坏"，后者待定）。
+      #   --bundles dmg 收紧产物，避免多产中间 .app 目录。
+      # 传 --target host 目标，产物统一落 target/{rust_target}/release/bundle/（与 Windows 对称）。
+      - name: Build GUI bundle (Windows)
+        if: matrix.platform == 'windows'
         working-directory: gui
+        env:
+          BOOTH_TARGET: ${{ matrix.rust_target }}
         run: npm run tauri build -- --target ${{ matrix.rust_target }}
+      - name: Build GUI bundle (macOS)
+        if: matrix.platform == 'macos'
+        working-directory: gui
+        env:
+          BOOTH_TARGET: ${{ matrix.rust_target }}
+        run: npm run tauri build -- --target ${{ matrix.rust_target }} --bundles dmg --no-sign
 
-      # 校验 bundle 产物
+      # verify bundle 产物（Windows：bundle/ 整体；macOS：bundle/dmg/）
       - name: Verify bundle output
         shell: bash
         run: |
@@ -174,10 +220,11 @@ jobs:
           fi
           find target/${{ matrix.rust_target }}/release/bundle -type f
 
-      # ---- 便携版组装 ----
+      # ---- 便携版组装（仅 Windows）----
 
       # Lite 便携版：GUI exe + 三 CLI + portable.txt（依赖系统 WebView2）
       - name: Assemble lite portable
+        if: matrix.platform == 'windows'
         shell: bash
         run: |
           mkdir -p dist/lite
@@ -190,6 +237,7 @@ jobs:
 
       # Full 版：内置 WebView2 fixed runtime（对应架构 cab，latest）
       - name: Download WebView2 fixed runtime (latest)
+        if: matrix.platform == 'windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/wv2" -Force | Out-Null
@@ -202,6 +250,7 @@ jobs:
           & "$env:SystemRoot\System32\expand.exe" $cab -F:* "dist/full/runtime"
 
       - name: Assemble full portable
+        if: matrix.platform == 'windows'
         shell: bash
         run: |
           mkdir -p dist/full
@@ -216,7 +265,7 @@ jobs:
           rm -rf dist/full/runtime
           cd dist/full && 7z a -r -tzip booth-vault-toolhub-${{ matrix.arch }}-full.zip .
 
-      # 上传产物（带架构后缀）
+      # 上传产物（带架构后缀；macOS 见下方 TODO）
       - name: Upload MSI installer
         if: matrix.msi
         uses: actions/upload-artifact@v4
@@ -226,6 +275,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
       - name: Upload NSIS installer
+        if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: booth-vault-toolhub-packages-${{ matrix.arch }}-nsis
@@ -233,6 +283,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
       - name: Upload Lite portable
+        if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: booth-vault-toolhub-packages-${{ matrix.arch }}-lite
@@ -240,15 +291,26 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
       - name: Upload Full portable
+        if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: booth-vault-toolhub-packages-${{ matrix.arch }}-full
           path: dist/full/**
           if-no-files-found: warn
           retention-days: 30
+      # macOS：上传 dmg 安装包（unsigned，见 Build GUI bundle (macOS) 注释）
+      - name: Upload dmg installer
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: booth-vault-toolhub-packages-${{ matrix.arch }}-dmg
+          path: target/${{ matrix.rust_target }}/release/bundle/dmg/**
+          if-no-files-found: error
+          retention-days: 30
 
-      # 上传发布元数据（version marker）供聚合 job 判断
+      # 上传发布元数据（version marker）供聚合 job 判断。仅 Windows 产物带 version.txt。
       - name: Upload release metadata
+        if: matrix.platform == 'windows'
         shell: bash
         run: |
           if [ -f binaries/version.txt ]; then
@@ -257,6 +319,7 @@ jobs:
             echo "" > release-meta.txt
           fi
       - name: Upload release meta artifact
+        if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: release-meta
@@ -315,9 +378,25 @@ jobs:
           merge-multiple: true
           path: packages
 
+      # 下载 CI 全平台 booth 二进制（Windows x64/x86/arm64 + macOS arm64/x64），
+      # 作为独立 CLI 附件随 release 发布。booth-shell 仅 Windows。
+      # 不用 merge-multiple：各工件（架构）保持独立子目录，避免同名二进制被覆盖。
+      - name: Download booth binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: booth-binaries-*
+          path: binaries
+
       - name: List packages
         shell: bash
-        run: find packages -type f
+        run: find packages binaries -type f
+
+      # 精简：筛掉发布元数据（version.txt），只留可执行二进制。
+      - name: Prepare release binaries
+        shell: bash
+        run: |
+          find binaries -type f -name version.txt -delete
+          find binaries -type f | sort
 
       - name: Create GitHub Release
         if: steps.flags.outputs.should_release == 'true'
@@ -332,3 +411,5 @@ jobs:
             packages/**/*.exe
             packages/**/*-lite.zip
             packages/**/*-full.zip
+            packages/**/*.dmg
+            binaries/**/*

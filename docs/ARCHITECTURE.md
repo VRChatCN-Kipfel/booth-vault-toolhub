@@ -18,17 +18,23 @@ booth-vault-toolhub 是统一的 BOOTH 素材工具链：下载免费商品、�
 │            ┌────────────────────────┐
 │            │      engine crate      │  业务逻辑唯一事实源
 │            └───────────┬────────────┘
-│                        ▼
+│                         ▼
 │            ┌────────────────────────┐
-│            │  shell_win (Windows)   │  平台专属能力
-│            └────────────────────────┘
+│            │  booth-shell (CLI 入口) │  跨平台分发
+│            └─────┬────────────┬─────┘
+│                  ▼            ▼
+│         ┌──────────────┐ ┌──────────────┐
+│         │  shell/win   │ │  shell/mac   │  平台专属能力
+│         └──────────────┘ └──────────────┘
 └────────────────────────────────────────────────┘
 ```
 
 - **engine**：全部业务逻辑（下载/整理/搜索/巡检/配置/网络），跨平台，是唯一事实源。
 - **CLI / MCP / GUI**：仅做薄封装与交互适配，不承载业务逻辑。
-- **shell_win**：Windows 专属的文件夹图标三件套（`#[cfg(windows)]`），其他平台不编译。
-- **平台门控**：Windows 逻辑收敛在 shell_win；非 Windows 平台退化为无图标功能。
+- **booth-shell**：文件夹图标 CLI 通用入口，按平台分发到 `shell/win`（包 `shell-win`）或 `shell/mac`（包 `shell-mac`）。
+- **shell/win**：Windows 专属的文件夹图标三件套（`#[cfg(windows)]`），其他平台不编译。
+- **shell/mac**：macOS Finder 文件夹图标（`#[cfg(target_os = "macos")]`），osascript 调 AppKit。
+- **平台门控**：Windows 逻辑收敛在 `shell/win`，macOS Finder 图标在 `shell/mac`；Linux 无文件夹图标，退化为无图标功能。
 
 ## 二、仓库布局
 
@@ -38,7 +44,10 @@ booth-vault-toolhub/
 ├── AGENTS.md          ← 唯一开发者指南（规范/契约/警告事项）
 ├── docs/              ← 本文档（架构与开发指南）
 ├── engine/            ← 核心引擎 crate
-├── shell_win/         ← Windows 文件夹图标三件套（仅 Windows）
+├── shell/             ← 平台专属文件夹图标库
+│   ├── win/           ← shell-win：Windows 图标三件套（仅 Windows）
+│   └── mac/           ← shell-mac：macOS Finder 文件夹图标（仅 macOS）
+├── booth-shell/       ← 文件夹图标 CLI 通用入口（按平台分发 shell/win 或 shell/mac）
 ├── booth-mcp/         ← MCP stdio server crate
 ├── gui/               ← Tauri v2 + React 19 桌面应用
 │   ├── src/           ← React 前端
@@ -64,7 +73,7 @@ booth-vault-toolhub/
 | `classify` | 商品分类（`CATEGORY_MAP`，53 键固化） | — |
 | `score` | 搜索结果评分与歧义判定 | — |
 | `cover` | 封面文件识别（HTML 伪装判定） | `looks_html` |
-| `audit` | 完整性巡检：三件套缺失检测与修复建议 | `audit_tree_with_fix` / `scan_library` |
+| `audit` | 完整性巡检：三件套缺失检测与修复建议、版本巡检（联网比对官方版本）、macOS Finder 图标检查 | `audit_tree_with_fix` / `scan_library` / `version_audit_with_progress` |
 | `fetch` | 抓取与响应解析（BOOTH DOM `data-product-id`） | — |
 | `update` | 工具自更新检查 | `check_update` |
 
@@ -107,7 +116,7 @@ booth-vault-toolhub/
 | 2 | 自更新用 HTML 重定向法（GET `/releases/latest` 解析 302） | 不消耗 GitHub API 配额，规避 60 次/小时限流；API 兜底 + 403/429 指数退避 |
 | 3 | 403 退避仅限 GitHub 域 | BOOTH 域 403 为 Cloudflare 风控/登录页伪装，重试无益反增批量延迟 |
 | 4 | 退避封顶 `MAX_BACKOFF_SECS=32` | 杜绝 Retry-After 极端值导致的无限 sleep |
-| 5 | Windows 图标逻辑收敛 shell_win crate + cfg 门控 | 平台差异隔离，engine 保持跨平台纯净 |
+| 5 | Windows 图标逻辑收敛 `shell/win`（shell-win）crate + cfg 门控；macOS 在 `shell/mac`（shell-mac）；booth-shell 统一 CLI 入口 | 平台差异隔离，engine 保持跨平台纯净 |
 | 6 | 评分不偏置免费（除非 `prefer_free`） | 免费偏置会把付费商品错配到同名免费兄弟 |
 | 7 | 三二进制不挂 `bundle.externalBin`，由 `stage-cli.mjs` 钩子生成安装器片段 | 规避编译期 sidecar 强制存在与 stage-cli 时序冲突 |
 | 8 | 无 manifest，纯文件系统推导归档状态 | 存在+非空+非 HTML 伪装即有效，扫描幂等 |

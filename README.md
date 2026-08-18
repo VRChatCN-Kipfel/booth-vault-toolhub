@@ -31,7 +31,7 @@ BOOTH 素材统一管理工具 —— VRChat / XR 创作者的 BOOTH 资产全�
 - **按名搜索**：文件名无 ID 时，清洗生成搜索候选 → 评分选优 → 归档（含水印/UnityPackage 二次验真）
 - **巡检**：文件夹图标三件套（cover.jpg + .folder_icon.ico + desktop.ini）完整性扫描 + 自动修复 + 版本巡检 + 错位纠正
 - **自更新检查**：GitHub `releases.atom` feed 取最新版本（成熟库 feed-rs 解析，无 API 配额限流；HTML 重定向/API 作兜底 + 403/429 退避 + 代理直连重试 + 显式超时），CLI/MCP/GUI（设置页「软件更新」入口）三端一致
-- **三主题六配色 GUI**：朱印 / 鎏金 / 古纹 × 亮 / 暗，SVG 母题纹样，动效齐全
+- **三主题六配色 GUI**：朱印（印泥/宣纸）/ 鎏金（金缮/漆）/ 古纹（青铜/青瓷）× 亮 / 暗，形制与色板分开，SVG 母题纹样与素材图，动效齐全
 
 ## 架构
 
@@ -45,17 +45,23 @@ BOOTH 素材统一管理工具 —— VRChat / XR 创作者的 BOOTH 资产全�
 │   └──────────────┬───────────────┘           │
 │                  ▼                           │
 │   ┌──────────────────────────────┐           │
-│   │      shell_win crate          │ Windows 文件夹图标三件套 │
-│   └──────────────────────────────┘           │
+│   │     booth-shell (CLI 入口)     │ 文件夹图标 set/reset/audit │
+│   └──────┬───────────────┬───────┘           │
+│          ▼               ▼                   │
+│   ┌──────────────┐  ┌──────────────┐         │
+│   │  shell/win    │  │  shell/mac   │        │
+│   └──────────────┘  └──────────────┘         │
 └────────────────────────────────────────────┘
 ```
 
-| crate | 职责 | 平台 |
-|---|---|---|
-| `engine` | 纯函数层 + 网络 + 归档 + 巡检，三端共享单一事实源 | 三平台 |
-| `shell_win` | 属性位 / desktop.ini / ICO / SHChangeNotify（图标三件套） | Windows only |
-| `booth-mcp` | MCP stdio server，暴露四工具 | 三平台 |
-| `gui` | Tauri v2 + React 19 桌面应用 | 三平台 |
+| crate | 目录 | 职责 | 平台 |
+|---|---|---|---|
+| `engine` | `engine/` | 纯函数层 + 网络 + 归档 + 巡检，三端共享单一事实源 | 三平台 |
+| `shell-win` | `shell/win/` | 属性位 / desktop.ini / ICO / SHChangeNotify（图标三件套） | Windows only |
+| `shell-mac` | `shell/mac/` | 封面正方形化 + Finder 自定义文件夹图标 | macOS only |
+| `booth-shell` | `booth-shell/` | 文件夹图标 CLI 通用入口（set/reset/audit），按平台分发 shell-win / shell-mac | 三平台 |
+| `booth-mcp` | `booth-mcp/` | MCP stdio server，暴露四工具 | 三平台 |
+| `gui` | `gui/` | Tauri v2 + React 19 桌面应用 | 三平台 |
 
 ## 快速开始
 
@@ -74,6 +80,8 @@ cargo build --release --workspace
 > 默认全勾选）：默认把安装目录加入当前用户 PATH（幂等，卸载自动移除）。
 > **主程序每次启动会把自身目录写入用户环境变量 `BOOTHVAULT_TOOLHUB`**（便携版同样生效），
 > agent 定位工具目录优先读该变量（验证路径存在），再回退 PATH / 常规位置。
+> macOS：写入 `launchctl setenv` + `~/Library/LaunchAgents/com.boothvault.toolhub.env.plist`，
+> 工具在 `.app/Contents/MacOS/`。
 
 ### CLI
 
@@ -132,11 +140,13 @@ git clone https://github.com/VRChatCN-Kipfel/booth-vault-toolhub.git
 
 ```toml
 proxy = "http://127.0.0.1:7890"   # 可选；优先级 配置文件 > HTTPS_PROXY > 系统默认
+proxy_enabled = true               # false = 强制直连（忽略环境变量/系统代理）
 download_root = "D:/BOOTH"         # 归档根目录（不硬编码路径）
 rate_limit_secs = 0.8              # 限速秒数（三端统一，防封）
+cookie = ""                        # 可选；仅用户目录。CLI --cookie / MCP 参数优先
 ```
 
-- 用户目录：`{config_dir}/booth-vault-toolhub/config.toml`
+- 用户目录：`{config_dir}/booth-vault-toolhub/config.toml`（GUI 设置页写入这里，三端共用）
 - 应用目录：exe 同目录或 CWD 的 `config.toml`
 
 ## 目录结构
