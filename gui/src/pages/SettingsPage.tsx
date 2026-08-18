@@ -29,9 +29,12 @@ const ThemeCard = styled.button<{ $active: boolean; $bg: string; $border: string
   overflow: hidden;
   border: 1px solid ${({ $active, $border }) => ($active ? 'var(--bvt-accent)' : $border)};
   background-color: ${({ $bg }) => $bg};
-  background-image: linear-gradient(${({ $bg }) => $bg}cc, ${({ $bg }) => $bg}e6), url(${({ $motif }) => $motif});
+  background-image: linear-gradient(${({ $bg }) => $bg}99, ${({ $bg }) => $bg}c4), url(${({ $motif }) => $motif});
   background-size: cover;
   background-position: center;
+  backdrop-filter: blur(10px) saturate(var(--bvt-glass-sat));
+  -webkit-backdrop-filter: blur(10px) saturate(var(--bvt-glass-sat));
+  box-shadow: var(--bvt-glass-highlight);
   border-radius: ${({ $radius }) => $radius};
   cursor: pointer;
   font-family: inherit;
@@ -84,11 +87,14 @@ const Divider = styled.div`
 `;
 
 const VersionCard = styled.div`
-  border: 1px solid var(--bvt-border);
+  border: 1px solid var(--bvt-glass-border);
   border-top: 2px solid var(--bvt-accent);
   border-radius: var(--bvt-radius, 0px);
   padding: 12px 14px;
-  background: color-mix(in srgb, var(--bvt-surface) 88%, transparent);
+  background: var(--bvt-glass);
+  backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
+  -webkit-backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
+  box-shadow: var(--bvt-glass-highlight);
   .ver {
     font-family: 'Noto Serif CJK SC','Songti SC',serif;
     font-size: 18px;

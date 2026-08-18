@@ -11,7 +11,7 @@ import { useUiStore } from './store/uiStore';
 import { useSystemTheme } from './hooks/useSystemTheme';
 import { motifBgSrc, THEMES } from './theme/themes';
 import { GlobalStyle, paletteToVars } from './theme/global';
-import { contentFrame } from './theme/chrome';
+import { contentFrame, glassFill } from './theme/chrome';
 import { Sidebar, type NavItemDef } from './components/Sidebar';
 import { Titlebar } from './components/Titlebar';
 import { StatusBar } from './components/StatusBar';
@@ -58,9 +58,14 @@ const ContentBg = styled.div<{ $src: string }>`
   z-index: 0;
   pointer-events: none;
   background-image: url(${({ $src }) => $src});
-  background-size: cover;
+  /* 按面板宽度适配，封顶避免大窗把纹样拉成一块大疤 */
+  background-size: min(100%, 720px) auto;
+  background-repeat: no-repeat;
   background-position: center;
-  opacity: ${({ theme }) => (theme.mode === 'dark' ? 0.34 : 0.32)};
+  opacity: ${({ theme }) => (theme.mode === 'dark' ? 0.4 : 0.38)};
+  html[data-platform='mac'] & {
+    opacity: ${({ theme }) => (theme.mode === 'dark' ? 0.3 : 0.28)};
+  }
 `;
 
 const Content = styled.div`
@@ -72,14 +77,16 @@ const Content = styled.div`
   flex-direction: column;
   overflow: hidden;
   margin: 10px 12px 8px;
-  background: color-mix(in srgb, var(--bvt-surface) 96%, transparent);
-  border: 1px solid var(--bvt-border);
+  ${glassFill('panel')}
+  border: 1px solid var(--bvt-glass-border);
   border-radius: var(--bvt-radius, 0px);
   box-shadow: ${({ theme }) => contentFrame(theme.theme)};
 `;
 
 /** 页面容器（key 变化重挂载 → 触发淡入动画）。 */
 const PageWrap = styled.div`
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -125,13 +132,21 @@ function App() {
 
   useEffect(() => {
     const root = document.documentElement;
-    const next = paletteToVars(THEMES[theme][resolved]);
+    const next = paletteToVars(THEMES[theme][resolved], resolved);
     for (const [k, v] of Object.entries(next)) {
       root.style.setProperty(k, v);
     }
     root.style.setProperty('--bvt-anim', String(animSpeed));
     root.dataset.theme = theme;
     root.dataset.mode = resolved;
+    if (/Mac|Macintosh/.test(navigator.userAgent)) {
+      root.dataset.platform = 'mac';
+      // 玻璃填色交给 CSS，别让 JS 色板把原生材质盖死。
+      root.style.removeProperty('--bvt-glass');
+      root.style.removeProperty('--bvt-glass-2');
+      root.style.removeProperty('--bvt-glass-input');
+      root.style.setProperty('--bvt-glass-blur', '0px');
+    }
   }, [theme, resolved, animSpeed]);
 
   return (
@@ -142,8 +157,8 @@ function App() {
         <div style={BODY_STYLE}>
           <Sidebar items={NAV_ITEMS} active={page} onNavigate={setPage} />
           <ContentWrap>
-            <ContentBg $src={motifBgSrc(theme, resolved)} />
             <Content>
+              <ContentBg $src={motifBgSrc(theme, resolved)} />
               <PageWrap key={page}>
                 {page === 'links' && <LinksPage />}
                 {page === 'drag' && <DragDropPage />}

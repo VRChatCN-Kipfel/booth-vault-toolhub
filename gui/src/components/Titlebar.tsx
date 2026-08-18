@@ -6,6 +6,7 @@ import styled from 'styled-components';
 import { Minus, Square, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { FONTS } from '../theme/themes';
+import { glassFill } from '../theme/chrome';
 import { useUpdateStore } from '../store/updateStore';
 import { useUiStore } from '../store/uiStore';
 
@@ -14,9 +15,9 @@ const Bar = styled.div`
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: var(--bvt-surface2);
-  border-bottom: 1px solid var(--bvt-border2);
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--bvt-accent) 22%, transparent);
+  ${glassFill('chrome')}
+  border-bottom: 1px solid var(--bvt-glass-border);
+  box-shadow: var(--bvt-glass-highlight), inset 0 -1px 0 color-mix(in srgb, var(--bvt-accent) 22%, transparent);
   -webkit-app-region: drag;
   user-select: none;
 `;
@@ -80,7 +81,7 @@ export function Titlebar() {
   const ver = info?.local_version;
   return (
     <Bar data-tauri-drag-region style={isMac ? { paddingLeft: 78 } : undefined}>
-      <Title data-tauri-drag-region>Booth Vault Toolhub</Title>
+      <Title data-tauri-drag-region>展位库 · Booth Vault</Title>
       <div style={{ display: 'flex', alignItems: 'center' }}>
         {ver && (
           <Meta type="button" onClick={() => goTo('settings')} title="软件更新">

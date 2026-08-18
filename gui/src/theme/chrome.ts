@@ -81,10 +81,25 @@ export function titleOrnament(kind: ThemeName, color: string): string {
 
 export function contentFrame(t: ThemeName): string {
   if (t === 'zhuyin') {
-    return `inset 0 0 0 1px var(--bvt-surface), inset 0 0 0 2px var(--bvt-accent)`;
+    return `var(--bvt-glass-highlight), inset 0 0 0 1px var(--bvt-glass-border), inset 0 0 0 2px var(--bvt-accent)`;
   }
   if (t === 'liujin') {
-    return `inset 0 1px 0 color-mix(in srgb, var(--bvt-accent) 40%, transparent), 0 0 0 1px color-mix(in srgb, var(--bvt-accent) 20%, transparent)`;
+    return `var(--bvt-glass-highlight), 0 0 0 1px color-mix(in srgb, var(--bvt-accent) 20%, transparent)`;
   }
-  return `inset 0 0 0 1px color-mix(in srgb, var(--bvt-accent) 18%, transparent)`;
+  return `var(--bvt-glass-highlight), inset 0 0 0 1px color-mix(in srgb, var(--bvt-accent) 18%, transparent)`;
+}
+
+/** 毛玻璃填色。macOS 走 NSGlassEffectView（blur=0），其它平台 CSS backdrop-filter。 */
+export function glassFill(kind: 'panel' | 'chrome' | 'input' = 'panel'): string {
+  const bg =
+    kind === 'chrome'
+      ? 'var(--bvt-glass-2)'
+      : kind === 'input'
+        ? 'var(--bvt-glass-input)'
+        : 'var(--bvt-glass)';
+  return `
+    background: ${bg};
+    backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
+    -webkit-backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
+  `;
 }

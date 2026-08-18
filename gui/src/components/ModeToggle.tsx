@@ -14,8 +14,11 @@ const Track = styled.button<{ $state: number }>`
   width: 72px;
   height: 28px;
   border-radius: ${({ theme }) => (theme.theme === 'zhuyin' ? '0px' : '14px')};
-  border: 1px solid var(--bvt-border);
-  background: var(--bvt-surface2);
+  border: 1px solid var(--bvt-glass-border);
+  background: var(--bvt-glass-2);
+  backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
+  -webkit-backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
+  box-shadow: var(--bvt-glass-highlight);
   padding: 0 3px;
   cursor: pointer;
   position: relative;

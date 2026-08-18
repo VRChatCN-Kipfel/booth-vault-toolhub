@@ -4,7 +4,7 @@
  */
 
 import { createGlobalStyle } from 'styled-components';
-import type { ThemePalette } from './themes';
+import type { ThemeMode, ThemePalette } from './themes';
 import { FONTS } from './themes';
 
 function hexToRgba(hex: string, alpha: number): string {
@@ -15,7 +15,10 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-export function paletteToVars(pal: ThemePalette): Record<string, string> {
+export function paletteToVars(pal: ThemePalette, mode: ThemeMode = 'light'): Record<string, string> {
+  const glassA = mode === 'dark' ? 0.42 : 0.58;
+  const glass2A = mode === 'dark' ? 0.34 : 0.46;
+  const inputA = mode === 'dark' ? 0.4 : 0.52;
   return {
     '--bvt-bg': pal.bg,
     '--bvt-surface': pal.surface,
@@ -45,6 +48,11 @@ export function paletteToVars(pal: ThemePalette): Record<string, string> {
     '--bvt-danger-l': pal.dangerL,
     '--bvt-sel-bg': pal.selBg,
     '--bvt-sel-text': pal.selText,
+    '--bvt-glass': hexToRgba(pal.surface, glassA),
+    '--bvt-glass-2': hexToRgba(pal.surface2, glass2A),
+    '--bvt-glass-input': hexToRgba(pal.inputBg, inputA),
+    '--bvt-glass-border': hexToRgba(pal.border, 0.55),
+    '--bvt-glass-highlight': `inset 0 1px 0 ${hexToRgba(pal.accentLight, 0.42)}`,
   };
 }
 
@@ -78,6 +86,13 @@ export const GlobalStyle = createGlobalStyle`
     --bvt-danger-l: #F4C4BC;
     --bvt-sel-bg: #F0C8C0;
     --bvt-sel-text: #8A100C;
+    --bvt-glass: rgba(251, 243, 228, 0.58);
+    --bvt-glass-2: rgba(230, 211, 180, 0.46);
+    --bvt-glass-input: rgba(253, 246, 232, 0.52);
+    --bvt-glass-border: rgba(196, 169, 122, 0.55);
+    --bvt-glass-highlight: inset 0 1px 0 rgba(244, 196, 188, 0.42);
+    --bvt-glass-blur: 14px;
+    --bvt-glass-sat: 1.28;
     --bvt-anim: 1;
     --bvt-radius: 0px;
     --bvt-title-track: 0.22em;
@@ -93,6 +108,22 @@ export const GlobalStyle = createGlobalStyle`
     user-select: none;
     overflow: hidden;
     isolation: isolate;
+  }
+  /* macOS：窗体背后是 NSGlassEffectView / NSVisualEffectView，网页只染色 */
+  html[data-platform='mac'] {
+    --bvt-glass-blur: 0px;
+    --bvt-glass-sat: 1.08;
+    --bvt-glass: color-mix(in srgb, var(--bvt-surface) 28%, transparent);
+    --bvt-glass-2: color-mix(in srgb, var(--bvt-surface2) 20%, transparent);
+    --bvt-glass-input: color-mix(in srgb, var(--bvt-input-bg) 26%, transparent);
+  }
+  html[data-platform='mac'],
+  html[data-platform='mac'] body,
+  html[data-platform='mac'] #root {
+    background: transparent;
+  }
+  html[data-platform='mac'] body {
+    isolation: auto;
   }
   #root {
     position: relative;
@@ -111,14 +142,23 @@ export const GlobalStyle = createGlobalStyle`
   html[data-theme='zhuyin'] {
     --bvt-radius: 0px;
     --bvt-title-track: 0.22em;
+    --bvt-glass-blur: 12px;
+    --bvt-glass-sat: 1.18;
   }
   html[data-theme='liujin'] {
     --bvt-radius: 8px;
     --bvt-title-track: 0.14em;
+    --bvt-glass-blur: 18px;
+    --bvt-glass-sat: 1.42;
   }
   html[data-theme='guwen'] {
     --bvt-radius: 4px;
     --bvt-title-track: 0.08em;
+    --bvt-glass-blur: 16px;
+    --bvt-glass-sat: 1.3;
+  }
+  html[data-mode='dark'] {
+    --bvt-glass-blur: 18px;
   }
 
   /* 底纹只垫在内容后面，禁止 mix-blend-mode，避免洗白整窗 */
@@ -128,6 +168,9 @@ export const GlobalStyle = createGlobalStyle`
     position: fixed;
     inset: 0;
     z-index: -1;
+  }
+  html[data-platform='mac'][data-theme] body::before {
+    opacity: 0.12;
   }
   html[data-theme='zhuyin'] body::before {
     opacity: 0.28;

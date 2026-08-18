@@ -3,7 +3,7 @@
  */
 
 import styled from 'styled-components';
-import { themeRadius } from '../theme/chrome';
+import { glassFill, themeRadius } from '../theme/chrome';
 import { FONTS } from '../theme/themes';
 
 export const AccentButton = styled.button`
@@ -27,7 +27,7 @@ export const AccentButton = styled.button`
 `;
 
 export const SecondaryButton = styled.button`
-  background: transparent;
+  ${glassFill('input')}
   color: var(--bvt-accent);
   border: 1.5px solid var(--bvt-accent);
   border-radius: ${({ theme }) => themeRadius(theme.theme)};
@@ -36,6 +36,7 @@ export const SecondaryButton = styled.button`
   letter-spacing: 0.04em;
   cursor: pointer;
   font-family: inherit;
+  box-shadow: var(--bvt-glass-highlight);
   &:hover { background: var(--bvt-accent-light); color: var(--bvt-accent-deep); }
   &:disabled { opacity: 0.5; cursor: not-allowed; }
 `;
@@ -53,34 +54,32 @@ export const GhostButton = styled.button`
 `;
 
 export const Card = styled.div`
-  background: var(--bvt-surface);
+  ${glassFill('panel')}
   border: 1px solid var(--bvt-accent);
   border-radius: ${({ theme }) => themeRadius(theme.theme)};
   padding: 14px;
+  box-shadow: var(--bvt-glass-highlight);
 `;
 
 export const Input = styled.input`
-  background: var(--bvt-input-bg-70);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
+  ${glassFill('input')}
   color: var(--bvt-text);
-  border: 1px solid var(--bvt-border);
+  border: 1px solid var(--bvt-glass-border);
   border-left: 3px solid var(--bvt-accent);
   border-radius: ${({ theme }) => themeRadius(theme.theme)};
   padding: 8px 10px;
   font-size: 13px;
   font-family: inherit;
   outline: none;
+  box-shadow: var(--bvt-glass-highlight);
   &:focus { border-color: var(--bvt-accent); box-shadow: inset 0 0 0 1px var(--bvt-accent-light); }
   &::placeholder { color: var(--bvt-text3); }
 `;
 
 export const TextArea = styled.textarea`
-  background: var(--bvt-input-bg-70);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
+  ${glassFill('input')}
   color: var(--bvt-text);
-  border: 1px solid var(--bvt-border);
+  border: 1px solid var(--bvt-glass-border);
   border-left: 3px solid var(--bvt-accent);
   border-radius: ${({ theme }) => themeRadius(theme.theme)};
   padding: 8px 10px;
@@ -88,19 +87,19 @@ export const TextArea = styled.textarea`
   font-family: inherit;
   outline: none;
   resize: none;
+  box-shadow: var(--bvt-glass-highlight);
   &:focus { border-color: var(--bvt-accent); box-shadow: inset 0 0 0 1px var(--bvt-accent-light); }
   &::placeholder { color: var(--bvt-text3); }
 `;
 
 export const ObsPanel = styled.div`
-  background: var(--bvt-surface2-70);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
-  border: 1px solid var(--bvt-border2);
+  ${glassFill('chrome')}
+  border: 1px solid var(--bvt-glass-border);
   border-top: 2px solid var(--bvt-accent);
   overflow-y: auto;
   border-radius: ${({ theme }) => themeRadius(theme.theme)};
   padding: 6px;
+  box-shadow: var(--bvt-glass-highlight);
 `;
 
 export const PanelLabel = styled.div`
@@ -172,11 +171,12 @@ const SegWrap = styled.div`
   flex: none;
   width: fit-content;
   height: ${SEG_H}px;
-  background: var(--bvt-surface2);
-  border: 1px solid var(--bvt-border);
+  ${glassFill('chrome')}
+  border: 1px solid var(--bvt-glass-border);
   border-radius: ${({ theme }) =>
     theme.theme === 'zhuyin' ? '0px' : `${SEG_H / 2}px`};
   padding: 2px;
+  box-shadow: var(--bvt-glass-highlight);
 `;
 
 const SegSliderKnob = styled.div<{ $index: number; $accent: string }>`

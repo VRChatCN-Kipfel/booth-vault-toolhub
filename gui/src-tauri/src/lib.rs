@@ -10,12 +10,17 @@ use commands::{
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .manage(TaskRegistry::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_window_state::Builder::default().build());
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.plugin(tauri_plugin_liquid_glass::init());
+    }
+    builder
         .invoke_handler(tauri::generate_handler![
             download,
             organize,
@@ -45,9 +50,27 @@ pub fn run() {
             {
                 builder = builder
                     .hidden_title(true)
-                    .title_bar_style(tauri::TitleBarStyle::Overlay);
+                    .title_bar_style(tauri::TitleBarStyle::Overlay)
+                    .transparent(true);
             }
-            builder.build()?;
+            let window = builder.build()?;
+            #[cfg(target_os = "macos")]
+            {
+                use tauri_plugin_liquid_glass::{
+                    GlassMaterialVariant, LiquidGlassConfig, LiquidGlassExt,
+                };
+                // macOS 26：NSGlassEffectView；更旧系统回落 NSVisualEffectView。
+                let _ = app.handle().liquid_glass().set_effect(
+                    &window,
+                    LiquidGlassConfig {
+                        enabled: true,
+                        corner_radius: 10.0,
+                        tint_color: None,
+                        variant: GlassMaterialVariant::Regular,
+                    },
+                );
+            }
+            let _ = window;
             Ok(())
         })
         .run(tauri::generate_context!())

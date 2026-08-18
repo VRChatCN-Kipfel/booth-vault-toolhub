@@ -5,14 +5,13 @@
 import styled from 'styled-components';
 import { useThemeStore, resolveMode } from '../store/themeStore';
 import { FONTS, motifSidebarSrc, THEME_NAMES, THEMES } from '../theme/themes';
-import { brandMark } from '../theme/chrome';
+import { brandMark, glassFill } from '../theme/chrome';
 import { ModeToggle } from './ModeToggle';
 
 const SidebarWrap = styled.div`
   width: 208px;
   min-width: 208px;
-  background: var(--bvt-surface2);
-  border-right: 1px solid var(--bvt-border);
+  border-right: 1px solid var(--bvt-glass-border);
   display: flex;
   flex-direction: column;
   position: relative;
@@ -25,9 +24,10 @@ const MotifLayer = styled.div<{ $src: string }>`
   z-index: 0;
   pointer-events: none;
   background-image: url(${({ $src }) => $src});
-  background-size: cover;
-  background-position: center right;
-  opacity: ${({ theme }) => (theme.mode === 'dark' ? 0.28 : 0.22)};
+  background-size: auto 100%;
+  background-repeat: no-repeat;
+  background-position: right center;
+  opacity: ${({ theme }) => (theme.mode === 'dark' ? 0.46 : 0.4)};
   -webkit-mask-image: linear-gradient(to right, transparent 0%, black 55%);
   mask-image: linear-gradient(to right, transparent 0%, black 55%);
 `;
@@ -38,6 +38,7 @@ const Content = styled.div`
   display: flex;
   flex-direction: column;
   height: 100%;
+  ${glassFill('chrome')}
 `;
 
 const Brand = styled.div`
@@ -86,9 +87,12 @@ const NavSlider = styled.div<{ $index: number }>`
   right: ${NAV_PAD_X}px;
   top: ${NAV_PAD_Y}px;
   height: ${NAV_ITEM_H}px;
-  background: var(--bvt-sel-bg);
+  background: color-mix(in srgb, var(--bvt-sel-bg) 72%, transparent);
+  backdrop-filter: blur(8px) saturate(var(--bvt-glass-sat));
+  -webkit-backdrop-filter: blur(8px) saturate(var(--bvt-glass-sat));
   border-left: 3px solid var(--bvt-accent);
   border-radius: var(--bvt-radius, 0px);
+  box-shadow: var(--bvt-glass-highlight);
   transform: translateY(${({ $index }) => $index * (NAV_ITEM_H + NAV_ITEM_GAP)}px);
   transition: transform calc(0.32s / var(--bvt-anim)) cubic-bezier(0.4, 0, 0.2, 1);
   z-index: 0;
