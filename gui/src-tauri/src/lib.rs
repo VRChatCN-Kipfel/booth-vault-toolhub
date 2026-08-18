@@ -48,10 +48,13 @@ pub fn run() {
             }
             #[cfg(target_os = "macos")]
             {
+                // Overlay + decorations:true 才会画出系统红黄绿；false 只留空位。
                 builder = builder
+                    .decorations(true)
                     .hidden_title(true)
                     .title_bar_style(tauri::TitleBarStyle::Overlay)
-                    .transparent(true);
+                    .transparent(true)
+                    .traffic_light_position(tauri::LogicalPosition::new(14.0, 10.0));
             }
             let window = builder.build()?;
             #[cfg(target_os = "macos")]

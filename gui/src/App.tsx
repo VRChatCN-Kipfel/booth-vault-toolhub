@@ -9,9 +9,9 @@ import { useAppConfigStore } from './store/appConfigStore';
 import { useUpdateStore } from './store/updateStore';
 import { useUiStore } from './store/uiStore';
 import { useSystemTheme } from './hooks/useSystemTheme';
-import { motifBgSrc, THEMES } from './theme/themes';
+import { THEMES } from './theme/themes';
 import { GlobalStyle, paletteToVars } from './theme/global';
-import { contentFrame, glassFill } from './theme/chrome';
+import { contentFrame } from './theme/chrome';
 import { Sidebar, type NavItemDef } from './components/Sidebar';
 import { Titlebar } from './components/Titlebar';
 import { StatusBar } from './components/StatusBar';
@@ -42,7 +42,6 @@ const BODY_STYLE: CSSProperties = {
   minHeight: 0,
 };
 
-/** 内容区：背景母题垫底 + 页面浮于其上。 */
 const ContentWrap = styled.div`
   flex: 1;
   min-width: 0;
@@ -50,22 +49,6 @@ const ContentWrap = styled.div`
   flex-direction: column;
   position: relative;
   overflow: hidden;
-`;
-
-const ContentBg = styled.div<{ $src: string }>`
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background-image: url(${({ $src }) => $src});
-  /* 裁成面板里的落款，不要当墙纸；右下躲开生图左侧空带，把字让给左上 */
-  background-size: min(100%, 560px) auto;
-  background-repeat: no-repeat;
-  background-position: right 16px bottom 20px;
-  opacity: ${({ theme }) => (theme.mode === 'dark' ? 0.4 : 0.38)};
-  html[data-platform='mac'] & {
-    opacity: ${({ theme }) => (theme.mode === 'dark' ? 0.3 : 0.28)};
-  }
 `;
 
 const Content = styled.div`
@@ -77,7 +60,7 @@ const Content = styled.div`
   flex-direction: column;
   overflow: hidden;
   margin: 10px 12px 8px;
-  ${glassFill('panel')}
+  background: var(--bvt-surface);
   border: 1px solid var(--bvt-glass-border);
   border-radius: var(--bvt-radius, 0px);
   box-shadow: ${({ theme }) => contentFrame(theme.theme)};
@@ -158,7 +141,6 @@ function App() {
           <Sidebar items={NAV_ITEMS} active={page} onNavigate={setPage} />
           <ContentWrap>
             <Content>
-              <ContentBg $src={motifBgSrc(theme, resolved)} />
               <PageWrap key={page}>
                 {page === 'links' && <LinksPage />}
                 {page === 'drag' && <DragDropPage />}

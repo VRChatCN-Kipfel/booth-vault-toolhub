@@ -13,7 +13,7 @@ import { PageTitle } from '../components/PageTitle';
 import { useThemeStore, resolveMode } from '../store/themeStore';
 import { useAppConfigStore } from '../store/appConfigStore';
 import { useUpdateStore } from '../store/updateStore';
-import { motifBgSrc, THEME_HINTS, THEME_NAMES, THEME_ORDER, THEMES } from '../theme/themes';
+import { motifSidebarSrc, THEME_HINTS, THEME_NAMES, THEME_ORDER, THEMES } from '../theme/themes';
 import { brandMark } from '../theme/chrome';
 import { openUrl } from '@tauri-apps/plugin-opener';
 
@@ -30,11 +30,9 @@ const ThemeCard = styled.button<{ $active: boolean; $bg: string; $border: string
   border: 1px solid ${({ $active, $border }) => ($active ? 'var(--bvt-accent)' : $border)};
   background-color: ${({ $bg }) => $bg};
   background-image: linear-gradient(${({ $bg }) => $bg}99, ${({ $bg }) => $bg}c4), url(${({ $motif }) => $motif});
-  background-size: auto 100%;
-  background-position: right center;
+  background-size: cover;
+  background-position: center;
   background-repeat: no-repeat;
-  backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
-  -webkit-backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
   border-radius: ${({ $radius }) => $radius};
   cursor: pointer;
   font-family: inherit;
@@ -93,9 +91,7 @@ const VersionCard = styled.div`
   border-top: 2px solid var(--bvt-accent);
   border-radius: var(--bvt-radius, 0px);
   padding: 12px 14px;
-  background: var(--bvt-glass);
-  backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
-  -webkit-backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
+  background: var(--bvt-surface2);
   box-shadow: var(--bvt-glass-highlight);
   .ver {
     font-family: 'Noto Serif CJK SC','Songti SC',serif;
@@ -154,7 +150,7 @@ export function SettingsPage() {
               $bg={pal.surface}
               $border={pal.border}
               $radius={CARD_RADIUS[t]}
-              $motif={motifBgSrc(t, resolved)}
+              $motif={motifSidebarSrc(t, resolved)}
               onClick={() => setTheme(t)}
             >
               <CardHead>

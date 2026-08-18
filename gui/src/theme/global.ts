@@ -93,6 +93,7 @@ export const GlobalStyle = createGlobalStyle`
     --bvt-glass-highlight: inset 0 1px 0 rgba(244, 196, 188, 0.42);
     --bvt-glass-blur: 14px;
     --bvt-glass-sat: 1.28;
+    --bvt-glass-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
     --bvt-anim: 1;
     --bvt-radius: 0px;
     --bvt-title-track: 0.22em;
@@ -113,6 +114,8 @@ export const GlobalStyle = createGlobalStyle`
   html[data-platform='mac'] {
     --bvt-glass-blur: 0px;
     --bvt-glass-sat: 1.08;
+    /* blur(0) 仍会建 WebKit backdrop 根，导致母题错位；必须是 none */
+    --bvt-glass-filter: none;
     --bvt-glass: color-mix(in srgb, var(--bvt-surface) 22%, transparent);
     --bvt-glass-2: color-mix(in srgb, var(--bvt-surface2) 12%, transparent);
     --bvt-glass-input: color-mix(in srgb, var(--bvt-input-bg) 20%, transparent);

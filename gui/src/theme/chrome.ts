@@ -88,18 +88,3 @@ export function contentFrame(t: ThemeName): string {
   }
   return `var(--bvt-glass-highlight), inset 0 0 0 1px color-mix(in srgb, var(--bvt-accent) 18%, transparent)`;
 }
-
-/** 毛玻璃填色。macOS 走 NSGlassEffectView（blur=0），其它平台 CSS backdrop-filter。 */
-export function glassFill(kind: 'panel' | 'chrome' | 'input' = 'panel'): string {
-  const bg =
-    kind === 'chrome'
-      ? 'var(--bvt-glass-2)'
-      : kind === 'input'
-        ? 'var(--bvt-glass-input)'
-        : 'var(--bvt-glass)';
-  return `
-    background: ${bg};
-    backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
-    -webkit-backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
-  `;
-}

@@ -52,8 +52,6 @@ const Overlay = styled.div`
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
-  -webkit-backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -68,9 +66,7 @@ const Overlay = styled.div`
 const Dialog = styled.div`
   min-width: 420px;
   max-width: 620px;
-  background: var(--bvt-glass);
-  backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
-  -webkit-backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
+  background: var(--bvt-surface);
   border: 1.5px solid var(--bvt-accent-deep);
   border-top: 3px solid var(--bvt-accent);
   border-radius: var(--bvt-radius, 0px);

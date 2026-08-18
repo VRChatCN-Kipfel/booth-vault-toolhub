@@ -3,7 +3,7 @@
  */
 
 import styled from 'styled-components';
-import { glassFill, themeRadius } from '../theme/chrome';
+import { themeRadius } from '../theme/chrome';
 import { FONTS } from '../theme/themes';
 
 export const AccentButton = styled.button`
@@ -27,7 +27,7 @@ export const AccentButton = styled.button`
 `;
 
 export const SecondaryButton = styled.button`
-  ${glassFill('input')}
+  background: var(--bvt-input-bg);
   color: var(--bvt-accent);
   border: 1.5px solid var(--bvt-accent);
   border-radius: ${({ theme }) => themeRadius(theme.theme)};
@@ -54,7 +54,7 @@ export const GhostButton = styled.button`
 `;
 
 export const Card = styled.div`
-  ${glassFill('panel')}
+  background: var(--bvt-surface);
   border: 1px solid var(--bvt-accent);
   border-radius: ${({ theme }) => themeRadius(theme.theme)};
   padding: 14px;
@@ -62,7 +62,7 @@ export const Card = styled.div`
 `;
 
 export const Input = styled.input`
-  ${glassFill('input')}
+  background: var(--bvt-input-bg);
   color: var(--bvt-text);
   border: 1px solid var(--bvt-glass-border);
   border-left: 3px solid var(--bvt-accent);
@@ -77,7 +77,7 @@ export const Input = styled.input`
 `;
 
 export const TextArea = styled.textarea`
-  ${glassFill('input')}
+  background: var(--bvt-input-bg);
   color: var(--bvt-text);
   border: 1px solid var(--bvt-glass-border);
   border-left: 3px solid var(--bvt-accent);
@@ -93,13 +93,12 @@ export const TextArea = styled.textarea`
 `;
 
 export const ObsPanel = styled.div`
-  ${glassFill('chrome')}
+  background: var(--bvt-input-bg);
   border: 1px solid var(--bvt-glass-border);
   border-top: 2px solid var(--bvt-accent);
   overflow-y: auto;
   border-radius: ${({ theme }) => themeRadius(theme.theme)};
   padding: 6px;
-  box-shadow: var(--bvt-glass-highlight);
 `;
 
 export const PanelLabel = styled.div`
@@ -171,7 +170,7 @@ const SegWrap = styled.div`
   flex: none;
   width: fit-content;
   height: ${SEG_H}px;
-  ${glassFill('chrome')}
+  background: var(--bvt-surface2);
   border: 1px solid var(--bvt-glass-border);
   border-radius: ${({ theme }) =>
     theme.theme === 'zhuyin' ? '0px' : `${SEG_H / 2}px`};
