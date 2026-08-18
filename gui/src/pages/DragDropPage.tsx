@@ -1,27 +1,22 @@
 /**
- * 拖拽分类页：文件拖入 → 提取 ID → 归档队列。
- * 用 getCurrentWebview().onDragDropEvent 拿绝对路径。
- * 拖入区麻叶纹（asa_no_ha）+ 高亮，对齐原版 dragdrop_page.py。
+ * 拖拽分类页：文件拖入或点选 → 提取 ID → 归档队列。
  */
 
 import { useEffect, useRef, useState } from 'react';
 import styled from 'styled-components';
-import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { AccentButton, SecondaryButton, ObsPanel, ProgressBar, Badge, PanelLabel, PageShell, Lead } from '../components/ui';
-import { confirmation } from '../components/Dialog';
+import { information } from '../components/Dialog';
+import { QueueActions } from '../components/QueueActions';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
-import { runTask } from '../lib/task';
+import { failedItems, useLatestTask } from '../store/taskStore';
+import { cancelTask, retryFailed, runTask } from '../lib/task';
 import { useThemeStore, resolveMode } from '../store/themeStore';
 import { THEMES } from '../theme/themes';
 import { dropTile } from '../theme/motifs';
-
-interface QueueItem {
-  id: string;
-  message: string;
-  status: 'ok' | 'warn' | 'err' | 'run' | 'wait';
-}
+import { badgeKind, badgeLabel } from '../lib/booth';
 
 const DROP_KIND: Record<string, 'zhuyin' | 'gold' | 'guwen'> = {
   zhuyin: 'zhuyin',
@@ -29,7 +24,6 @@ const DROP_KIND: Record<string, 'zhuyin' | 'gold' | 'guwen'> = {
   guwen: 'guwen',
 };
 
-/** 麻叶纹拖入区（垫底纹样 + 高亮）。 */
 const DropZone = styled.div<{ dragging: boolean }>`
   height: 180px;
   border: ${({ dragging }) => (dragging ? '2px solid var(--bvt-accent)' : '2px dashed var(--bvt-accent)')};
@@ -80,19 +74,34 @@ const QueueRow = styled.div`
   .msg { color: var(--bvt-text2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `;
 
+function ingest(paths: string[]): { good: string[]; bad: string[] } {
+  const good: string[] = [];
+  const bad: string[] = [];
+  for (const p of paths) {
+    if (/(?<!\d)\d{7}(?!\d)/.test(p)) good.push(p);
+    else bad.push(p);
+  }
+  return { good, bad };
+}
+
 export function DragDropPage() {
   const boothRoot = useAppConfigStore((s) => s.boothRoot);
   const cookie = useAppConfigStore((s) => s.cookie);
   const { theme, mode, systemTheme } = useThemeStore();
   const resolved = resolveMode(mode, systemTheme);
   const pal = THEMES[theme][resolved];
+  const latest = useLatestTask('organize');
+  const task = latest?.task;
   const [dragging, setDragging] = useState(false);
   const [pending, setPending] = useState<string[]>([]);
   const [noId, setNoId] = useState<string[]>([]);
-  const [queue, setQueue] = useState<QueueItem[]>([]);
-  const [running, setRunning] = useState(false);
-  const [total, setTotal] = useState(0);
-  const taskIdRef = useRef<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const summarized = useRef<string | null>(null);
+
+  const running = starting || task?.status === 'running';
+  const queue = task?.items ?? [];
+  const total = task?.total ?? 0;
+  const failed = task ? failedItems(task) : [];
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -103,16 +112,7 @@ export function DragDropPage() {
         else if (t === 'leave') setDragging(false);
         else if (t === 'drop') {
           setDragging(false);
-          const paths = event.payload.paths ?? [];
-          const good: string[] = [];
-          const bad: string[] = [];
-          for (const p of paths) {
-            const m = p.match(/(?<!\d)(\d{7})(?!\d)/);
-            if (m) good.push(p);
-            else bad.push(p);
-          }
-          if (good.length) setPending((prev) => [...new Set([...prev, ...good])]);
-          if (bad.length) setNoId((prev) => [...new Set([...prev, ...bad])]);
+          addPaths(event.payload.paths ?? []);
         }
       });
     };
@@ -122,67 +122,59 @@ export function DragDropPage() {
     };
   }, []);
 
-  async function start() {
-    if (pending.length === 0) return;
-    setQueue([]);
-    setTotal(pending.length);
-    setRunning(true);
-    try {
-      const taskId = await runTask(
-        'organize',
-        {
-          archives: pending,
-          out: boothRoot || null,
-          dryRun: false,
-          cookie: cookie || null,
-        },
-        (evt) => {
-          if (evt.type === 'taskStarted' && typeof evt.total === 'number') {
-            setTotal(evt.total);
-          } else if (evt.type === 'itemDone') {
-            const status = String(evt.status ?? 'ok');
-            if (status === 'exists') {
-              void confirmation('已存在', `${evt.id}\n目标目录已存在同名文件，跳过移动。`);
-              setQueue((q) => [...q, { id: String(evt.id ?? ''), message: '目标已存在，跳过', status: 'warn' }]);
-            } else if (status === 'mismatch') {
-              void confirmation('错位', `${evt.id}\n同 ID 已在其他类目。是否重新归档到正确分类？`);
-              setQueue((q) => [...q, { id: String(evt.id ?? ''), message: '已归档（可能错位）', status: 'ok' }]);
-            } else {
-              setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'ok' }]);
-            }
-            setPending((p) => p.filter((x) => x !== String(evt.id ?? '')));
-          } else if (evt.type === 'itemError') {
-            setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'err' }]);
-          } else if (evt.type === 'finished' || evt.type === 'cancelled') {
-            setRunning(false);
-            taskIdRef.current = null;
-          }
-        },
-      );
-      taskIdRef.current = taskId;
-    } catch (e) {
-      setQueue([{ id: '-', message: String(e), status: 'err' }]);
-      setRunning(false);
-    }
+  useEffect(() => {
+    if (!latest || !task || task.status !== 'done') return;
+    if (summarized.current === latest.id) return;
+    summarized.current = latest.id;
+    const exists = task.items.filter((i) => i.status === 'exists');
+    const mismatch = task.items.filter((i) => i.status === 'mismatch');
+    if (exists.length === 0 && mismatch.length === 0) return;
+    const lines = [
+      exists.length ? `已存在 ${exists.length} 件：${exists.map((i) => i.id).join('、')}` : '',
+      mismatch.length ? `错位 ${mismatch.length} 件：${mismatch.map((i) => i.id).join('、')}` : '',
+    ].filter(Boolean);
+    void information('归档汇总', lines.join('\n'));
+  }, [latest, task]);
+
+  function addPaths(paths: string[]) {
+    const { good, bad } = ingest(paths);
+    if (good.length) setPending((prev) => [...new Set([...prev, ...good])]);
+    if (bad.length) setNoId((prev) => [...new Set([...prev, ...bad])]);
   }
 
-  async function cancel() {
-    if (taskIdRef.current) {
-      await invoke('cancel_task', { taskId: taskIdRef.current });
-      setRunning(false);
+  async function pickFiles() {
+    const selected = await open({ multiple: true, title: '选择要归档的文件' });
+    if (!selected) return;
+    addPaths(Array.isArray(selected) ? selected : [selected]);
+  }
+
+  async function start() {
+    if (pending.length === 0) return;
+    setStarting(true);
+    try {
+      await runTask('organize', {
+        archives: pending,
+        out: boothRoot || null,
+        dryRun: false,
+        cookie: cookie || null,
+      });
+      setPending([]);
+    } catch (e) {
+      void information('归档失败', String(e));
+    } finally {
+      setStarting(false);
     }
   }
 
   function clearAll() {
     setPending([]);
     setNoId([]);
-    setQueue([]);
   }
 
   return (
     <PageShell>
       <PageTitle title="拖拽分类" />
-      <Lead>文件名带 7 位商品 ID 的压缩包，拖进来归档。</Lead>
+      <Lead>文件名带 7 位商品 ID 的压缩包，拖进来或点选后归档。</Lead>
       <DropZone dragging={dragging}>
         <Motif
           style={{ opacity: dragging ? 0.42 : 0.22 }}
@@ -203,32 +195,41 @@ export function DragDropPage() {
           </NoList>
         </div>
       )}
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <SecondaryButton onClick={() => void pickFiles()} disabled={running}>
+          选择文件
+        </SecondaryButton>
         <AccentButton onClick={() => void start()} disabled={running || pending.length === 0}>
           开始归档（{pending.length}）
         </AccentButton>
         <SecondaryButton onClick={clearAll} disabled={running}>
           清空
         </SecondaryButton>
-        {running && <SecondaryButton onClick={() => void cancel()}>取消</SecondaryButton>}
+        {running && latest && (
+          <SecondaryButton onClick={() => void cancelTask(latest.id)}>取消</SecondaryButton>
+        )}
+        {latest && task?.status === 'done' && failed.length > 0 && (
+          <SecondaryButton onClick={() => void retryFailed(latest.id)}>重试失败（{failed.length}）</SecondaryButton>
+        )}
         <span style={{ color: 'var(--bvt-text2)', fontSize: 13 }}>
-          队列 {pending.length} / 完成 {queue.filter((x) => x.status === 'ok').length}
+          待处理 {pending.length} / 完成 {queue.filter((x) => x.status === 'ok').length}
         </span>
       </div>
-      <PanelLabel>待归档队列</PanelLabel>
+      <PanelLabel>归档队列</PanelLabel>
       <ProgressBar>
         <div style={{ width: `${total ? (queue.length / total) * 100 : 0}%` }} />
       </ProgressBar>
       <QueueList>
         {queue.map((it, i) => (
-          <QueueRow key={i}>
-            <Badge kind={it.status}>{it.status}</Badge>
+          <QueueRow key={`${it.id}-${i}`}>
+            <Badge kind={badgeKind(it.status)}>{badgeLabel(it.status)}</Badge>
             <span>{it.id}</span>
             <span className="msg">{it.message}</span>
+            <QueueActions id={it.id} path={it.path} />
           </QueueRow>
         ))}
         {queue.length === 0 && (
-          <div style={{ color: 'var(--bvt-text3)', padding: 8 }}>等待拖入文件…</div>
+          <div style={{ color: 'var(--bvt-text3)', padding: 8 }}>等待拖入或选择文件…</div>
         )}
       </QueueList>
     </PageShell>
