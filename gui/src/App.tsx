@@ -58,10 +58,10 @@ const ContentBg = styled.div<{ $src: string }>`
   z-index: 0;
   pointer-events: none;
   background-image: url(${({ $src }) => $src});
-  /* 按面板宽度适配，封顶避免大窗把纹样拉成一块大疤；靠右躲开生图左侧空带 */
-  background-size: min(100%, 720px) auto;
+  /* 裁成面板里的落款，不要当墙纸；右下躲开生图左侧空带，把字让给左上 */
+  background-size: min(100%, 560px) auto;
   background-repeat: no-repeat;
-  background-position: right center;
+  background-position: right 16px bottom 20px;
   opacity: ${({ theme }) => (theme.mode === 'dark' ? 0.4 : 0.38)};
   html[data-platform='mac'] & {
     opacity: ${({ theme }) => (theme.mode === 'dark' ? 0.3 : 0.28)};

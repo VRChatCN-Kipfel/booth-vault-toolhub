@@ -14,6 +14,7 @@ import { useAppConfigStore } from '../store/appConfigStore';
 import { runTask } from '../lib/task';
 import { useThemeStore, resolveMode } from '../store/themeStore';
 import { THEMES } from '../theme/themes';
+import { glassFill } from '../theme/chrome';
 import { dropTile } from '../theme/motifs';
 
 interface QueueItem {
@@ -32,7 +33,11 @@ const DROP_KIND: Record<string, 'zhuyin' | 'gold' | 'guwen'> = {
 const DropZone = styled.div<{ dragging: boolean }>`
   height: 180px;
   border: ${({ dragging }) => (dragging ? '2px solid var(--bvt-accent)' : '2px dashed var(--bvt-accent)')};
-  background: ${({ dragging }) => (dragging ? 'var(--bvt-accent-light)' : 'var(--bvt-input-bg)')};
+  ${glassFill('input')}
+  background: ${({ dragging }) =>
+    dragging
+      ? 'color-mix(in srgb, var(--bvt-accent-light) 62%, transparent)'
+      : 'var(--bvt-glass-input)'};
   display: flex;
   align-items: center;
   justify-content: center;

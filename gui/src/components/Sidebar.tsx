@@ -90,9 +90,13 @@ const NavSlider = styled.div<{ $index: number }>`
   background: color-mix(in srgb, var(--bvt-sel-bg) 72%, transparent);
   backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
   -webkit-backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
-  border-left: 3px solid var(--bvt-accent);
+  border-left: ${({ theme }) =>
+    theme.theme === 'liujin' ? 'none' : theme.theme === 'guwen' ? '2px solid var(--bvt-accent)' : '3px solid var(--bvt-accent)'};
   border-radius: var(--bvt-radius, 0px);
-  box-shadow: var(--bvt-glass-highlight);
+  box-shadow: ${({ theme }) =>
+    theme.theme === 'liujin'
+      ? 'var(--bvt-glass-highlight), 0 0 0 1px color-mix(in srgb, var(--bvt-accent) 28%, transparent)'
+      : 'var(--bvt-glass-highlight)'};
   transform: translateY(${({ $index }) => $index * (NAV_ITEM_H + NAV_ITEM_GAP)}px);
   transition: transform calc(0.32s / var(--bvt-anim)) cubic-bezier(0.4, 0, 0.2, 1);
   z-index: 0;

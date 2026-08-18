@@ -113,9 +113,9 @@ export const GlobalStyle = createGlobalStyle`
   html[data-platform='mac'] {
     --bvt-glass-blur: 0px;
     --bvt-glass-sat: 1.08;
-    --bvt-glass: color-mix(in srgb, var(--bvt-surface) 28%, transparent);
-    --bvt-glass-2: color-mix(in srgb, var(--bvt-surface2) 20%, transparent);
-    --bvt-glass-input: color-mix(in srgb, var(--bvt-input-bg) 26%, transparent);
+    --bvt-glass: color-mix(in srgb, var(--bvt-surface) 22%, transparent);
+    --bvt-glass-2: color-mix(in srgb, var(--bvt-surface2) 12%, transparent);
+    --bvt-glass-input: color-mix(in srgb, var(--bvt-input-bg) 20%, transparent);
   }
   html[data-platform='mac'],
   html[data-platform='mac'] body,
@@ -177,7 +177,7 @@ export const GlobalStyle = createGlobalStyle`
     z-index: -1;
   }
   html[data-platform='mac'][data-theme] body::before {
-    opacity: 0.12;
+    content: none;
   }
   html[data-theme='zhuyin'] body::before {
     opacity: 0.28;
