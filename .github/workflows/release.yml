@@ -330,7 +330,7 @@ jobs:
   # 聚合发布：下载三架构全部产物，统一创建 GitHub Release
   release:
     needs: package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     permissions:
       contents: write
     if: >-
