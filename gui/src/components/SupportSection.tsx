@@ -84,7 +84,7 @@ const Qr = styled.img`
   height: 96px;
   border: 1.5px solid var(--bvt-text3);
   border-radius: var(--bvt-radius, 0px);
-  object-fit: cover;
+  object-fit: fill;
   flex: none;
 `;
 
@@ -106,7 +106,7 @@ const Avatar = styled.img`
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  object-fit: cover;
+  object-fit: contain;
   flex: none;
   border: 1px solid var(--bvt-border2);
 `;
