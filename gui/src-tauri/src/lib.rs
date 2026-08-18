@@ -7,6 +7,8 @@ use commands::{
     TaskRegistry, audit, cancel_task, download, fix_mismatch, load_app_config, mismatch_audit,
     organize, save_app_config, search, update_check, version_audit,
 };
+use tauri::Manager;
+use tauri_plugin_window_state::StateFlags;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -15,7 +17,16 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_window_state::Builder::default().build());
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    StateFlags::SIZE
+                        | StateFlags::POSITION
+                        | StateFlags::MAXIMIZED
+                        | StateFlags::FULLSCREEN,
+                )
+                .build(),
+        );
     #[cfg(target_os = "macos")]
     {
         builder = builder.plugin(tauri_plugin_liquid_glass::init());
@@ -35,6 +46,9 @@ pub fn run() {
             save_app_config,
         ])
         .setup(|app| {
+            if app.handle().get_webview_window("main").is_some() {
+                return Ok(());
+            }
             // 主窗口手建（config create:false）。
             // 便携模式：数据目录锚定 exe 目录内（data/webview），
             // 避免污染 %LOCALAPPDATA% 且跨机器可携带。
@@ -77,6 +91,14 @@ pub fn run() {
             }
             let _ = window;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                window.app_handle().exit(0);
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
