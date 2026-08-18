@@ -15,7 +15,9 @@ import { contentFrame } from './theme/chrome';
 import { Sidebar, type NavItemDef } from './components/Sidebar';
 import { Titlebar } from './components/Titlebar';
 import { StatusBar } from './components/StatusBar';
-import { DialogHost } from './components/Dialog';
+import { confirmation, DialogHost, isDialogOpen } from './components/Dialog';
+import { useTaskStore } from './store/taskStore';
+import { cancelTask } from './lib/task';
 import { LinksPage } from './pages/LinksPage';
 import { DragDropPage } from './pages/DragDropPage';
 import { SearchPage } from './pages/SearchPage';
@@ -104,6 +106,31 @@ function App() {
     setPage(pendingPage);
     consumePage();
   }, [pendingPage, consumePage]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key >= '1' && e.key <= '5') {
+        const item = NAV_ITEMS[Number(e.key) - 1];
+        if (!item) return;
+        e.preventDefault();
+        setPage(item.key);
+        return;
+      }
+      if (e.key !== 'Escape' || isDialogOpen()) return;
+      const running = Object.entries(useTaskStore.getState().tasks).filter(([, t]) => t.status === 'running');
+      if (running.length === 0) return;
+      e.preventDefault();
+      const msg = running.length === 1
+        ? `取消「${running[0][1].label}」？`
+        : `取消全部 ${running.length} 个进行中的任务？`;
+      void confirmation('取消任务', msg).then((ok) => {
+        if (!ok) return;
+        for (const [id] of running) void cancelTask(id);
+      });
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // 系统明暗变化 → 写入 store（仅 mode=system 时消费）。
   useEffect(() => {

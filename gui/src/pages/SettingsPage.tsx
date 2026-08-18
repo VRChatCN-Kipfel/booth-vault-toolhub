@@ -13,8 +13,8 @@ import { PageTitle } from '../components/PageTitle';
 import { useThemeStore, resolveMode } from '../store/themeStore';
 import { useAppConfigStore } from '../store/appConfigStore';
 import { useUpdateStore } from '../store/updateStore';
-import { motifSidebarSrc, THEME_HINTS, THEME_NAMES, THEME_ORDER, THEMES } from '../theme/themes';
-import { brandMark } from '../theme/chrome';
+import { FONTS, motifSidebarSrc, THEME_HINTS, THEME_NAMES, THEME_ORDER, THEMES } from '../theme/themes';
+import { brandMark, themeRadius } from '../theme/chrome';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { error, information } from '../components/Dialog';
 
@@ -51,7 +51,7 @@ const CardHead = styled.div`
   .mark { width: 28px; height: 28px; flex: none; }
   .mark svg { width: 100%; height: 100%; display: block; }
   .name {
-    font-family: 'Noto Serif CJK SC','Songti SC',serif;
+    font-family: ${FONTS.serif};
     font-size: 16px;
     letter-spacing: 0.16em;
   }
@@ -95,7 +95,7 @@ const VersionCard = styled.div`
   background: var(--bvt-surface2);
   box-shadow: var(--bvt-glass-highlight);
   .ver {
-    font-family: 'Noto Serif CJK SC','Songti SC',serif;
+    font-family: ${FONTS.serif};
     font-size: 18px;
     letter-spacing: 0.12em;
   }
@@ -110,12 +110,6 @@ const VersionCard = styled.div`
     overflow: auto;
   }
 `;
-
-const CARD_RADIUS: Record<string, string> = {
-  zhuyin: '0px',
-  liujin: '8px',
-  guwen: '4px',
-};
 
 export function SettingsPage() {
   const { theme, mode, systemTheme, setTheme, setMode } = useThemeStore();
@@ -150,7 +144,7 @@ export function SettingsPage() {
               $active={active}
               $bg={pal.surface}
               $border={pal.border}
-              $radius={CARD_RADIUS[t]}
+              $radius={themeRadius(t)}
               $motif={motifSidebarSrc(t, resolved)}
               onClick={() => setTheme(t)}
             >

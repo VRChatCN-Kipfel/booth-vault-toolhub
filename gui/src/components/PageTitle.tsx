@@ -5,7 +5,7 @@
 import styled from 'styled-components';
 import { useThemeStore, resolveMode } from '../store/themeStore';
 import { THEMES } from '../theme/themes';
-import { themeTitleFont, titleOrnament } from '../theme/chrome';
+import { titleOrnament } from '../theme/chrome';
 
 const Wrapper = styled.div`
   display: flex;
@@ -18,7 +18,7 @@ const Title = styled.h2`
   font-size: 22px;
   font-weight: 600;
   color: var(--bvt-text);
-  font-family: ${({ theme }) => themeTitleFont(theme.theme)};
+  font-family: var(--bvt-serif);
   margin: 0;
   letter-spacing: var(--bvt-title-track, 0.12em);
   line-height: 1.15;

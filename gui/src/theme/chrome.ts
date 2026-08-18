@@ -4,25 +4,11 @@
  */
 
 import type { ThemeName } from './themes';
-import { FONTS } from './themes';
 
 export function themeRadius(t: ThemeName): string {
   if (t === 'liujin') return '8px';
   if (t === 'guwen') return '4px';
   return '0px';
-}
-
-export function themeTitleFont(t: ThemeName): string {
-  if (t === 'guwen') {
-    return FONTS.serif;
-  }
-  return FONTS.serif;
-}
-
-export function themeTitleTrack(t: ThemeName): string {
-  if (t === 'zhuyin') return '0.22em';
-  if (t === 'liujin') return '0.14em';
-  return '0.08em';
 }
 
 export function brandMark(kind: ThemeName, color: string): string {

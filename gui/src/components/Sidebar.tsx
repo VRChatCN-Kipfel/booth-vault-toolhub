@@ -86,22 +86,27 @@ const NavSlider = styled.div<{ $index: number }>`
   top: ${NAV_PAD_Y}px;
   height: ${NAV_ITEM_H}px;
   background: var(--bvt-sel-bg);
-  border-left: ${({ theme }) =>
-    theme.theme === 'liujin' ? 'none' : theme.theme === 'guwen' ? '2px solid var(--bvt-accent)' : '3px solid var(--bvt-accent)'};
+  border-left: var(--bvt-nav-mark);
   border-radius: var(--bvt-radius, 0px);
-  box-shadow: ${({ theme }) =>
-    theme.theme === 'liujin'
-      ? 'var(--bvt-glass-highlight), 0 0 0 1px color-mix(in srgb, var(--bvt-accent) 28%, transparent)'
-      : 'var(--bvt-glass-highlight)'};
+  box-shadow: var(--bvt-nav-ring);
   transform: translateY(${({ $index }) => $index * (NAV_ITEM_H + NAV_ITEM_GAP)}px);
   transition: transform calc(0.32s / var(--bvt-anim)) cubic-bezier(0.4, 0, 0.2, 1);
   z-index: 0;
 `;
 
+const NavKbd = styled.span`
+  font-size: 10px;
+  color: var(--bvt-text3);
+  letter-spacing: 0.02em;
+  font-weight: 400;
+`;
+
 const NavItem = styled.button<{ active: boolean }>`
   position: relative;
   z-index: 1;
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   width: 100%;
   height: ${NAV_ITEM_H}px;
   margin-bottom: ${NAV_ITEM_GAP}px;
@@ -161,6 +166,7 @@ export function Sidebar({
   const { theme, mode, systemTheme, cycleTheme } = useThemeStore();
   const resolved = resolveMode(mode, systemTheme);
   const pal = THEMES[theme][resolved];
+  const mod = /Mac|Macintosh/.test(navigator.userAgent) ? '⌘' : 'Ctrl+';
 
   return (
     <SidebarWrap>
@@ -175,18 +181,21 @@ export function Sidebar({
         </Brand>
         <Nav>
           <NavSlider $index={Math.max(0, items.findIndex((it) => it.key === active))} />
-          {items.map((it) => (
+          {items.map((it, i) => (
             <NavItem
               key={it.key}
+              type="button"
               active={active === it.key}
+              aria-current={active === it.key ? 'page' : undefined}
               onClick={() => onNavigate(it.key)}
             >
-              {it.label}
+              <span>{it.label}</span>
+              <NavKbd>{mod}{i + 1}</NavKbd>
             </NavItem>
           ))}
         </Nav>
         <SidebarFooter>
-          <GhostAction onClick={cycleTheme}>
+          <GhostAction type="button" onClick={cycleTheme}>
             <span
               className="mark"
               dangerouslySetInnerHTML={{ __html: brandMark(theme, pal.accent) }}

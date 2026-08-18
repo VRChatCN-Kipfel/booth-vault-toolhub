@@ -6,7 +6,7 @@
  * 入场动画：opacity 淡入 + 轻微上移。
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import styled from 'styled-components';
 import { createPortal } from 'react-dom';
 import { useThemeStore, resolveMode } from '../store/themeStore';
@@ -23,6 +23,11 @@ interface ThemeDialogState {
 }
 
 let openDialog: ((state: ThemeDialogState) => void) | null = null;
+let dialogOpen = false;
+
+export function isDialogOpen(): boolean {
+  return dialogOpen;
+}
 
 /** 注册全局弹窗打开器（App 挂载时调用）；传 null 取消注册。 */
 export function registerDialogOpener(fn: ((s: ThemeDialogState) => void) | null) {
@@ -83,7 +88,7 @@ const Title = styled.div`
   font-size: 15px;
   font-weight: 700;
   color: var(--bvt-text);
-  font-family: 'Noto Serif CJK SC','Songti SC',serif;
+  font-family: var(--bvt-serif);
   letter-spacing: var(--bvt-title-track, 0.1em);
   border-bottom: 1px solid var(--bvt-border);
   padding: 4px 0 8px;
@@ -109,21 +114,48 @@ const Buttons = styled.div`
 /** 弹窗宿主（App 挂载一次）。 */
 export function DialogHost() {
   const [state, setState] = useState<ThemeDialogState | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const { theme, mode, systemTheme } = useThemeStore();
   const resolved = resolveMode(mode, systemTheme);
   const pal = THEMES[theme][resolved];
 
   useEffect(() => {
-    registerDialogOpener((s) => setState(s));
-    return () => registerDialogOpener(null);
+    registerDialogOpener((s) => {
+      dialogOpen = true;
+      setState(s);
+    });
+    return () => {
+      dialogOpen = false;
+      registerDialogOpener(null);
+    };
   }, []);
 
   useEffect(() => {
     if (!state) return;
+    const root = panelRef.current;
+    const focusables = () =>
+      Array.from(root?.querySelectorAll<HTMLButtonElement>('button') ?? []).filter((el) => !el.disabled);
+    const initial = focusables();
+    initial[initial.length - 1]?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        e.preventDefault();
+        dialogOpen = false;
         state.resolve(null);
         setState(null);
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const els = focusables();
+      if (els.length === 0) return;
+      const first = els[0];
+      const last = els[els.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -134,14 +166,15 @@ export function DialogHost() {
   const isAsk = state.kind === 'ask';
   const accent = pal.accent;
   const close = (result: string | null) => {
+    dialogOpen = false;
     state.resolve(result);
     setState(null);
   };
 
   return createPortal(
     <Overlay onMouseDown={(e) => { if (e.target === e.currentTarget) close(null); }}>
-      <Dialog>
-        <Title>{state.title}</Title>
+      <Dialog ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="bvt-dialog-title">
+        <Title id="bvt-dialog-title">{state.title}</Title>
         <Body>{state.body}</Body>
         <Buttons>
           {isAsk ? (

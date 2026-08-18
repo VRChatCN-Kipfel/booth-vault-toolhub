@@ -175,7 +175,7 @@ export function DragDropPage() {
     <PageShell>
       <PageTitle title="拖拽分类" />
       <Lead>文件名带 7 位商品 ID 的压缩包，拖进来或点选后归档。</Lead>
-      <DropZone dragging={dragging}>
+      <DropZone dragging={dragging} role="region" aria-label="拖入 BOOTH 压缩包文件">
         <Motif
           style={{ opacity: dragging ? 0.42 : 0.22 }}
           dangerouslySetInnerHTML={{ __html: dropTile(DROP_KIND[theme], pal.accent) }}

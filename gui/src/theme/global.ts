@@ -97,6 +97,16 @@ export const GlobalStyle = createGlobalStyle`
     --bvt-anim: 1;
     --bvt-radius: 0px;
     --bvt-title-track: 0.22em;
+    --bvt-btn-track: 0.14em;
+    --bvt-label-track: 0.12em;
+    --bvt-serif: ${FONTS.serif};
+    --bvt-btn-font: ${FONTS.serif};
+    --bvt-label-font: ${FONTS.serif};
+    --bvt-pill-radius: 0px;
+    --bvt-knob-radius: 0px;
+    --bvt-btn-sheen: none;
+    --bvt-nav-mark: 3px solid var(--bvt-accent);
+    --bvt-nav-ring: var(--bvt-glass-highlight);
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
@@ -141,18 +151,52 @@ export const GlobalStyle = createGlobalStyle`
   ::-webkit-scrollbar-thumb { background: var(--bvt-border); border-radius: 5px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--bvt-text3); }
   input, textarea, select { font-family: ${FONTS.sans}; }
+  :focus-visible {
+    outline: 2px solid var(--bvt-accent);
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :root { --bvt-anim: 80; }
+  }
 
   html[data-theme='zhuyin'] {
     --bvt-radius: 0px;
     --bvt-title-track: 0.22em;
+    --bvt-btn-track: 0.14em;
+    --bvt-label-track: 0.12em;
+    --bvt-btn-font: ${FONTS.serif};
+    --bvt-label-font: ${FONTS.serif};
+    --bvt-pill-radius: 0px;
+    --bvt-knob-radius: 0px;
+    --bvt-btn-sheen: none;
+    --bvt-nav-mark: 3px solid var(--bvt-accent);
+    --bvt-nav-ring: var(--bvt-glass-highlight);
   }
   html[data-theme='liujin'] {
     --bvt-radius: 8px;
     --bvt-title-track: 0.14em;
+    --bvt-btn-track: 0.08em;
+    --bvt-label-track: 0.03em;
+    --bvt-btn-font: inherit;
+    --bvt-label-font: inherit;
+    --bvt-pill-radius: 999px;
+    --bvt-knob-radius: 50%;
+    --bvt-btn-sheen: inset 0 1px 0 color-mix(in srgb, var(--bvt-accent) 42%, transparent);
+    --bvt-nav-mark: none;
+    --bvt-nav-ring: var(--bvt-glass-highlight), 0 0 0 1px color-mix(in srgb, var(--bvt-accent) 28%, transparent);
   }
   html[data-theme='guwen'] {
     --bvt-radius: 4px;
     --bvt-title-track: 0.08em;
+    --bvt-btn-track: 0.04em;
+    --bvt-label-track: 0.03em;
+    --bvt-btn-font: inherit;
+    --bvt-label-font: inherit;
+    --bvt-pill-radius: 999px;
+    --bvt-knob-radius: 50%;
+    --bvt-btn-sheen: none;
+    --bvt-nav-mark: 2px solid var(--bvt-accent);
+    --bvt-nav-ring: var(--bvt-glass-highlight);
   }
   /* 主题 blur 不得盖掉 mac 的 --bvt-glass-blur: 0（同特异性、后写会赢） */
   html[data-theme='zhuyin']:not([data-platform='mac']) {

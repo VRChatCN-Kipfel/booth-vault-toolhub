@@ -13,7 +13,7 @@ const Track = styled.button<{ $state: number }>`
   align-items: center;
   width: 72px;
   height: 28px;
-  border-radius: ${({ theme }) => (theme.theme === 'zhuyin' ? '0px' : '14px')};
+  border-radius: var(--bvt-pill-radius, 0px);
   border: 1px solid var(--bvt-glass-border);
   background: var(--bvt-input-bg);
   box-shadow: var(--bvt-glass-highlight);
@@ -29,7 +29,7 @@ const Knob = styled.span<{ $state: number }>`
   top: 2px;
   width: 22px;
   height: 22px;
-  border-radius: ${({ theme }) => (theme.theme === 'zhuyin' ? '0px' : '50%')};
+  border-radius: var(--bvt-knob-radius, 0px);
   background: var(--bvt-accent);
   display: flex;
   align-items: center;
@@ -55,7 +55,13 @@ export function ModeToggle() {
   const state = MODE_ORDER.indexOf(mode);
   const knobIcon = mode === 'dark' ? <Moon /> : mode === 'system' ? <Monitor /> : <Sun />;
   return (
-    <Track $state={Math.max(0, state)} onClick={cycleMode} title="明暗切换（亮色/系统/深色）">
+    <Track
+      type="button"
+      $state={Math.max(0, state)}
+      onClick={cycleMode}
+      title="明暗切换（亮色/系统/深色）"
+      aria-label="明暗切换（亮色/系统/深色）"
+    >
       <Icons>
         <Sun />
         <Monitor />
