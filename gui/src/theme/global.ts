@@ -142,22 +142,29 @@ export const GlobalStyle = createGlobalStyle`
   html[data-theme='zhuyin'] {
     --bvt-radius: 0px;
     --bvt-title-track: 0.22em;
-    --bvt-glass-blur: 12px;
-    --bvt-glass-sat: 1.18;
   }
   html[data-theme='liujin'] {
     --bvt-radius: 8px;
     --bvt-title-track: 0.14em;
-    --bvt-glass-blur: 18px;
-    --bvt-glass-sat: 1.42;
   }
   html[data-theme='guwen'] {
     --bvt-radius: 4px;
     --bvt-title-track: 0.08em;
+  }
+  /* 主题 blur 不得盖掉 mac 的 --bvt-glass-blur: 0（同特异性、后写会赢） */
+  html[data-theme='zhuyin']:not([data-platform='mac']) {
+    --bvt-glass-blur: 12px;
+    --bvt-glass-sat: 1.18;
+  }
+  html[data-theme='liujin']:not([data-platform='mac']) {
+    --bvt-glass-blur: 18px;
+    --bvt-glass-sat: 1.42;
+  }
+  html[data-theme='guwen']:not([data-platform='mac']) {
     --bvt-glass-blur: 16px;
     --bvt-glass-sat: 1.3;
   }
-  html[data-mode='dark'] {
+  html[data-mode='dark']:not([data-platform='mac']) {
     --bvt-glass-blur: 18px;
   }
 

@@ -52,8 +52,8 @@ const Overlay = styled.div`
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(8px) saturate(1.2);
-  -webkit-backdrop-filter: blur(8px) saturate(1.2);
+  backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
+  -webkit-backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
   display: flex;
   align-items: center;
   justify-content: center;

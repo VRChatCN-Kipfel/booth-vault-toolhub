@@ -60,7 +60,7 @@ pub fn run() {
                     GlassMaterialVariant, LiquidGlassConfig, LiquidGlassExt,
                 };
                 // macOS 26：NSGlassEffectView；更旧系统回落 NSVisualEffectView。
-                let _ = app.handle().liquid_glass().set_effect(
+                if let Err(e) = app.handle().liquid_glass().set_effect(
                     &window,
                     LiquidGlassConfig {
                         enabled: true,
@@ -68,7 +68,9 @@ pub fn run() {
                         tint_color: None,
                         variant: GlassMaterialVariant::Regular,
                     },
-                );
+                ) {
+                    eprintln!("liquid glass: {e}");
+                }
             }
             let _ = window;
             Ok(())

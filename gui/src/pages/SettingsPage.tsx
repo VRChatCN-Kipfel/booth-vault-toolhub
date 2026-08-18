@@ -30,16 +30,18 @@ const ThemeCard = styled.button<{ $active: boolean; $bg: string; $border: string
   border: 1px solid ${({ $active, $border }) => ($active ? 'var(--bvt-accent)' : $border)};
   background-color: ${({ $bg }) => $bg};
   background-image: linear-gradient(${({ $bg }) => $bg}99, ${({ $bg }) => $bg}c4), url(${({ $motif }) => $motif});
-  background-size: cover;
-  background-position: center;
-  backdrop-filter: blur(10px) saturate(var(--bvt-glass-sat));
-  -webkit-backdrop-filter: blur(10px) saturate(var(--bvt-glass-sat));
-  box-shadow: var(--bvt-glass-highlight);
+  background-size: auto 100%;
+  background-position: right center;
+  background-repeat: no-repeat;
+  backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
+  -webkit-backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
   border-radius: ${({ $radius }) => $radius};
   cursor: pointer;
   font-family: inherit;
   box-shadow: ${({ $active }) =>
-    $active ? '0 0 0 1px var(--bvt-accent), inset 0 0 0 1px color-mix(in srgb, var(--bvt-accent) 30%, transparent)' : 'none'};
+    $active
+      ? 'var(--bvt-glass-highlight), 0 0 0 1px var(--bvt-accent), inset 0 0 0 1px color-mix(in srgb, var(--bvt-accent) 30%, transparent)'
+      : 'var(--bvt-glass-highlight)'};
 `;
 
 const CardHead = styled.div`

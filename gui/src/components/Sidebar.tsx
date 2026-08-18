@@ -88,8 +88,8 @@ const NavSlider = styled.div<{ $index: number }>`
   top: ${NAV_PAD_Y}px;
   height: ${NAV_ITEM_H}px;
   background: color-mix(in srgb, var(--bvt-sel-bg) 72%, transparent);
-  backdrop-filter: blur(8px) saturate(var(--bvt-glass-sat));
-  -webkit-backdrop-filter: blur(8px) saturate(var(--bvt-glass-sat));
+  backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
+  -webkit-backdrop-filter: blur(var(--bvt-glass-blur)) saturate(var(--bvt-glass-sat));
   border-left: 3px solid var(--bvt-accent);
   border-radius: var(--bvt-radius, 0px);
   box-shadow: var(--bvt-glass-highlight);
