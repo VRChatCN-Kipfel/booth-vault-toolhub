@@ -2,17 +2,19 @@
  * 实验检索页：文件名/路径/关键词 → 搜索候选 → 评分选优 → 归档。
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import styled from 'styled-components';
+import { invoke } from '@tauri-apps/api/core';
 import { AccentButton, SecondaryButton, TextArea, ObsPanel, ProgressBar, Badge, PanelLabel, PageShell, Lead } from '../components/ui';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
-import { runTask } from '../lib/task';
+import { runTask, type ProgressEvt } from '../lib/task';
 
 interface ResultItem {
   id: string;
   name: string;
   priceText: string;
+  sourcePath: string;
 }
 
 const Row = styled.div`
@@ -45,6 +47,10 @@ const ResultRow = styled.div<{ selected: boolean }>`
   &:hover { background: var(--bvt-hover); }
 `;
 
+function parseFiles(blob: string): string[] {
+  return blob.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+}
+
 export function SearchPage() {
   const boothRoot = useAppConfigStore((s) => s.boothRoot);
   const cookie = useAppConfigStore((s) => s.cookie);
@@ -56,33 +62,72 @@ export function SearchPage() {
   const [running, setRunning] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [total, setTotal] = useState(0);
+  const taskIdRef = useRef<string | null>(null);
+  const cancelRequestedRef = useRef(false);
+
+  function runUntilDone(
+    cmd: string,
+    args: Record<string, unknown>,
+    onEvent: (evt: ProgressEvt) => void,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      void runTask(cmd, args, (evt) => {
+        onEvent(evt);
+        if (evt.type === 'finished' || evt.type === 'cancelled') {
+          taskIdRef.current = null;
+          resolve();
+        }
+      })
+        .then((id) => {
+          taskIdRef.current = id;
+          if (cancelRequestedRef.current) {
+            void invoke('cancel_task', { taskId: id });
+          }
+        })
+        .catch(reject);
+    });
+  }
 
   async function search() {
-    if (!text.trim()) return;
+    const files = parseFiles(text);
+    if (files.length === 0) return;
+    cancelRequestedRef.current = false;
     setStatus('搜索中…');
     setResults([]);
+    setSelected([]);
     setRunning(true);
     try {
-      await runTask(
-        'search',
-        {
-          files: [text.trim()],
-          baseDir: boothRoot || null,
-          dryRun: true,
-          cookie: cookie || null,
-        },
-        (evt) => {
-          if (evt.type === 'itemDone') {
-            setResults((r) => [...r, { id: String(evt.id ?? ''), name: String(evt.message ?? ''), priceText: '' }]);
-          } else if (evt.type === 'finished' || evt.type === 'cancelled') {
-            setRunning(false);
-            setStatus('搜索完成');
-          }
-        },
-      );
+      for (const file of files) {
+        if (cancelRequestedRef.current) break;
+        await runUntilDone(
+          'search',
+          {
+            files: [file],
+            baseDir: boothRoot || null,
+            dryRun: true,
+            cookie: cookie || null,
+          },
+          (evt) => {
+            if (evt.type === 'itemDone') {
+              setResults((r) => [
+                ...r,
+                {
+                  id: String(evt.id ?? ''),
+                  name: String(evt.message ?? ''),
+                  priceText: '',
+                  sourcePath: file,
+                },
+              ]);
+            }
+          },
+        );
+      }
+      setStatus(cancelRequestedRef.current ? '已取消' : '搜索完成');
     } catch (e) {
       setStatus(String(e));
+    } finally {
       setRunning(false);
+      taskIdRef.current = null;
     }
   }
 
@@ -91,33 +136,48 @@ export function SearchPage() {
   }
 
   async function archiveSelected() {
-    if (selected.length === 0) return;
+    const items = results.filter((r) => selected.includes(r.id));
+    if (items.length === 0) return;
+    cancelRequestedRef.current = false;
     setArchiving(true);
-    setTotal(selected.length);
+    setTotal(items.length);
     try {
-      await runTask(
-        'search',
-        {
-          files: selected,
-          baseDir: boothRoot || null,
-          dryRun: false,
-          cookie: cookie || null,
-        },
-        (evt) => {
-          if (evt.type === 'itemDone') {
-            setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'ok' }]);
-          } else if (evt.type === 'itemError') {
-            setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'err' }]);
-          } else if (evt.type === 'finished' || evt.type === 'cancelled') {
-            setArchiving(false);
-            setSelected([]);
-          }
-        },
-      );
+      for (const it of items) {
+        if (cancelRequestedRef.current) break;
+        await runUntilDone(
+          'search',
+          {
+            files: [it.sourcePath],
+            baseDir: boothRoot || null,
+            dryRun: false,
+            forceId: it.id,
+            cookie: cookie || null,
+          },
+          (evt) => {
+            if (evt.type === 'itemDone') {
+              setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'ok' }]);
+            } else if (evt.type === 'itemError') {
+              setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'err' }]);
+            }
+          },
+        );
+      }
+      setSelected([]);
     } catch (e) {
       setQueue([{ id: '-', message: String(e), status: 'err' }]);
+    } finally {
       setArchiving(false);
+      taskIdRef.current = null;
     }
+  }
+
+  async function cancel() {
+    cancelRequestedRef.current = true;
+    if (taskIdRef.current) {
+      await invoke('cancel_task', { taskId: taskIdRef.current });
+    }
+    setRunning(false);
+    setArchiving(false);
   }
 
   return (
@@ -131,22 +191,23 @@ export function SearchPage() {
         onChange={(e) => setText(e.target.value)}
       />
       <Row>
-        <AccentButton onClick={() => void search()} disabled={running || !text.trim()}>
+        <AccentButton onClick={() => void search()} disabled={running || archiving || !text.trim()}>
           检索
         </AccentButton>
-        <AccentButton onClick={() => void archiveSelected()} disabled={archiving || selected.length === 0}>
+        <AccentButton onClick={() => void archiveSelected()} disabled={archiving || running || selected.length === 0}>
           归档选中（{selected.length}）
         </AccentButton>
-        <SecondaryButton onClick={() => setSelected([])} disabled={archiving}>
+        <SecondaryButton onClick={() => setSelected([])} disabled={archiving || running}>
           清空
         </SecondaryButton>
+        {(running || archiving) && <SecondaryButton onClick={() => void cancel()}>取消</SecondaryButton>}
         <StatusLabel>{status}</StatusLabel>
       </Row>
       <PanelLabel>检索结果（可多选）</PanelLabel>
       <ResultList>
         {results.map((it) => (
           <ResultRow
-            key={it.id}
+            key={`${it.sourcePath}:${it.id}`}
             selected={selected.includes(it.id)}
             onClick={() => toggleSelect(it.id)}
           >
