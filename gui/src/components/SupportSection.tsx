@@ -63,7 +63,7 @@ const Qr = styled.img`
   width: 96px;
   height: 96px;
   border: 1.5px solid var(--bvt-text3);
-  border-radius: 4px;
+  border-radius: var(--bvt-radius, 0px);
   object-fit: cover;
   flex: none;
 `;

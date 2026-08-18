@@ -6,15 +6,15 @@
 
 import { useEffect, useState } from 'react';
 import styled from 'styled-components';
-import { invoke } from '@tauri-apps/api/core';
-import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { AccentButton, SecondaryButton, ObsPanel, ProgressBar, Badge, PanelLabel } from '../components/ui';
+import { AccentButton, SecondaryButton, ObsPanel, ProgressBar, Badge, PanelLabel, PageShell, Lead } from '../components/ui';
 import { confirmation } from '../components/Dialog';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
+import { runTask } from '../lib/task';
 import { useThemeStore, resolveMode } from '../store/themeStore';
 import { THEMES } from '../theme/themes';
+import { dropTile } from '../theme/motifs';
 
 interface QueueItem {
   id: string;
@@ -22,43 +22,17 @@ interface QueueItem {
   status: 'ok' | 'warn' | 'err' | 'run' | 'wait';
 }
 
-const Page = styled.div`
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  height: 100%;
-  overflow-y: auto;
-`;
-
-/** 麻叶纹（对齐 theme.py:352-371 asa_no_ha，28×28 平铺）。 */
-function asaNoHa(color: string, op: number): string {
-  const paths = [
-    'M6 26 L6 8 L10 4',
-    'M6 8 L14 16',
-    'M14 16 L22 8',
-    'M22 8 L22 26',
-    'M8 14 L18 24',
-    'M12 6 L12 26',
-  ];
-  const body = paths
-    .map(
-      (d) =>
-        `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.2" stroke-opacity="${op}"/>`,
-    )
-    .join('');
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28">` +
-    body +
-    `</svg>`
-  );
-}
+const DROP_KIND: Record<string, 'zhuyin' | 'gold' | 'guwen'> = {
+  zhuyin: 'zhuyin',
+  liujin: 'gold',
+  guwen: 'guwen',
+};
 
 /** 麻叶纹拖入区（垫底纹样 + 高亮）。 */
 const DropZone = styled.div<{ dragging: boolean }>`
   height: 180px;
-  border: ${({ dragging }) => (dragging ? '2px solid var(--bvt-accent)' : '2px dashed var(--bvt-border)')};
-  background: ${({ dragging }) => (dragging ? 'var(--bvt-accent-light)' : 'var(--bvt-surface)')};
+  border: ${({ dragging }) => (dragging ? '2px solid var(--bvt-accent)' : '2px dashed var(--bvt-accent)')};
+  background: ${({ dragging }) => (dragging ? 'var(--bvt-accent-light)' : 'var(--bvt-input-bg)')};
   display: flex;
   align-items: center;
   justify-content: center;
@@ -66,7 +40,7 @@ const DropZone = styled.div<{ dragging: boolean }>`
   gap: 10px;
   color: var(--bvt-text2);
   transition: all 0.2s;
-  border-radius: 2px;
+  border-radius: var(--bvt-radius, 0px);
   font-size: 14px;
   position: relative;
   .hint { font-size: 12px; color: var(--bvt-text3); }
@@ -106,6 +80,7 @@ const QueueRow = styled.div`
 
 export function DragDropPage() {
   const boothRoot = useAppConfigStore((s) => s.boothRoot);
+  const cookie = useAppConfigStore((s) => s.cookie);
   const { theme, mode, systemTheme } = useThemeStore();
   const resolved = resolveMode(mode, systemTheme);
   const pal = THEMES[theme][resolved];
@@ -149,39 +124,41 @@ export function DragDropPage() {
     setQueue([]);
     setTotal(pending.length);
     setRunning(true);
-    const onEvent = new Channel<Record<string, unknown>>();
-    const taskId = await invoke<string>('organize', {
-      archives: pending,
-      out: boothRoot || null,
-      dryRun: false,
-      onEvent,
-    }).catch((e) => {
+    try {
+      await runTask(
+        'organize',
+        {
+          archives: pending,
+          out: boothRoot || null,
+          dryRun: false,
+          cookie: cookie || null,
+        },
+        (evt) => {
+          if (evt.type === 'taskStarted' && typeof evt.total === 'number') {
+            setTotal(evt.total);
+          } else if (evt.type === 'itemDone') {
+            const status = String(evt.status ?? 'ok');
+            if (status === 'exists') {
+              void confirmation('已存在', `${evt.id}\n目标目录已存在同名文件，跳过移动。`);
+              setQueue((q) => [...q, { id: String(evt.id ?? ''), message: '目标已存在，跳过', status: 'warn' }]);
+            } else if (status === 'mismatch') {
+              void confirmation('错位', `${evt.id}\n同 ID 已在其他类目。是否重新归档到正确分类？`);
+              setQueue((q) => [...q, { id: String(evt.id ?? ''), message: '已归档（可能错位）', status: 'ok' }]);
+            } else {
+              setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'ok' }]);
+            }
+            setPending((p) => p.filter((x) => x !== String(evt.id ?? '')));
+          } else if (evt.type === 'itemError') {
+            setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'err' }]);
+          } else if (evt.type === 'finished' || evt.type === 'cancelled') {
+            setRunning(false);
+          }
+        },
+      );
+    } catch (e) {
       setQueue([{ id: '-', message: String(e), status: 'err' }]);
       setRunning(false);
-      return null;
-    });
-    if (taskId === null) return;
-
-    onEvent.onmessage = (evt) => {
-      const type = evt.type as string;
-      if (type === 'itemDone') {
-        const status = String(evt.status ?? 'ok');
-        if (status === 'exists') {
-          void confirmation('已存在', `${evt.id}\n目标目录已存在同名文件，跳过移动。`);
-          setQueue((q) => [...q, { id: String(evt.id ?? ''), message: '目标已存在，跳过', status: 'warn' }]);
-        } else if (status === 'mismatch') {
-          void confirmation('错位', `${evt.id}\n同 ID 已在其他类目。是否重新归档到正确分类？`);
-          setQueue((q) => [...q, { id: String(evt.id ?? ''), message: '已归档（可能错位）', status: 'ok' }]);
-        } else {
-          setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'ok' }]);
-        }
-        setPending((p) => p.filter((x) => x !== String(evt.id ?? '')));
-      } else if (type === 'itemError') {
-        setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'err' }]);
-      } else if (type === 'finished' || type === 'cancelled') {
-        setRunning(false);
-      }
-    };
+    }
   }
 
   function clearAll() {
@@ -191,10 +168,14 @@ export function DragDropPage() {
   }
 
   return (
-    <Page>
+    <PageShell>
       <PageTitle title="拖拽分类" />
+      <Lead>文件名带 7 位商品 ID 的压缩包，拖进来归档。</Lead>
       <DropZone dragging={dragging}>
-        <Motif dangerouslySetInnerHTML={{ __html: asaNoHa(pal.accent, dragging ? 0.32 : 0.18) }} />
+        <Motif
+          style={{ opacity: dragging ? 0.42 : 0.22 }}
+          dangerouslySetInnerHTML={{ __html: dropTile(DROP_KIND[theme], pal.accent) }}
+        />
         <div>拖入 BOOTH 压缩包文件</div>
         <div className="hint">文件名需含 7 位商品 ID（如 1234567_xxx.zip），支持多选</div>
       </DropZone>
@@ -237,6 +218,6 @@ export function DragDropPage() {
           <div style={{ color: 'var(--bvt-text3)', padding: 8 }}>等待拖入文件…</div>
         )}
       </QueueList>
-    </Page>
+    </PageShell>
   );
 }

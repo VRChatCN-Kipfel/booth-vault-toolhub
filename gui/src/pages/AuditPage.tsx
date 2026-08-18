@@ -5,29 +5,13 @@
 
 import { useState } from 'react';
 import styled from 'styled-components';
-import { invoke } from '@tauri-apps/api/core';
-import { Channel } from '@tauri-apps/api/core';
 import {
-  AccentButton, SecondaryButton, ObsPanel, ProgressBar, Badge,
+  AccentButton, SecondaryButton, ObsPanel, ProgressBar, Badge, PageShell, Lead,
 } from '../components/ui';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
 import { useUiStore } from '../store/uiStore';
-
-const Page = styled.div`
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  height: 100%;
-  overflow-y: auto;
-`;
-
-const SubTitle = styled.div`
-  color: var(--bvt-text2);
-  font-size: 13px;
-  margin-top: -8px;
-`;
+import { runTask } from '../lib/task';
 
 const Row = styled.div`
   display: flex;
@@ -104,53 +88,53 @@ export function AuditPage() {
     setMstat('错位检测中…');
     setScanning(true);
     setStatus('巡检中…');
-    const onEvent = new Channel<Record<string, unknown>>();
-    const res = await invoke<{ total: number; missing: number }>('audit', {
-      base: boothRoot,
-      dryRun: true,
-      noFix: true,
-      onEvent,
-    }).catch((e) => {
+    try {
+      await runTask(
+        'audit',
+        { base: boothRoot, dryRun: true, noFix: true },
+        (evt) => {
+          if (evt.type === 'itemDone') {
+            setScanList((l) => [...l, `${evt.id}   [${evt.message}]`]);
+          } else if (evt.type === 'finished') {
+            const total = evt.done ?? 0;
+            const miss = evt.failed ?? 0;
+            setFull(total - miss);
+            setMissing(miss);
+            setStat(`共 ${total} 件，${miss} 件缺失三件套`);
+            setScanning(false);
+            setStatus(`巡检完成：${total} 件，${miss} 件待修复`);
+          } else if (evt.type === 'cancelled') {
+            setScanning(false);
+          }
+        },
+      );
+    } catch (e) {
       setStat(String(e));
-      return null;
-    });
-    if (res) {
-      setFull(res.total - res.missing);
-      setMissing(res.missing);
-      setStat(`共 ${res.total} 件，${res.missing} 件缺失三件套`);
       setScanning(false);
-      setStatus(`巡检完成：${res.total} 件，${res.missing} 件待修复`);
     }
-    onEvent.onmessage = (evt) => {
-      const type = evt.type as string;
-      if (type === 'itemDone') {
-        setScanList((l) => [...l, `${evt.id}   [${evt.message}]`]);
-      } else if (type === 'finished' || type === 'cancelled') {
-        setScanning(false);
-      }
-    };
   }
 
   async function runFix() {
     if (!boothRoot) return;
     setFixing(true);
     setScanList((l) => [...l, '── 修复日志 ──']);
-    const onEvent = new Channel<Record<string, unknown>>();
-    await invoke('audit', {
-      base: boothRoot,
-      dryRun: false,
-      noFix: false,
-      onEvent,
-    }).catch((e) => setScanList((l) => [...l, String(e)]));
-    onEvent.onmessage = (evt) => {
-      const type = evt.type as string;
-      if (type === 'itemDone') {
-        setScanList((l) => [...l, `已修复 ${evt.id} · ${evt.message}`]);
-      } else if (type === 'finished' || type === 'cancelled') {
-        setFixing(false);
-        setStatus('三件套修复完成');
-      }
-    };
+    try {
+      await runTask(
+        'audit',
+        { base: boothRoot, dryRun: false, noFix: false },
+        (evt) => {
+          if (evt.type === 'itemDone') {
+            setScanList((l) => [...l, `已修复 ${evt.id} · ${evt.message}`]);
+          } else if (evt.type === 'finished' || evt.type === 'cancelled') {
+            setFixing(false);
+            setStatus('三件套修复完成');
+          }
+        },
+      );
+    } catch (e) {
+      setScanList((l) => [...l, String(e)]);
+      setFixing(false);
+    }
   }
 
   async function runVersion() {
@@ -159,85 +143,88 @@ export function AuditPage() {
     setVerProgress(0);
     setVersioning(true);
     setVstat('版本巡检中…');
-    const onEvent = new Channel<Record<string, unknown>>();
-    const res = await invoke<{ task_id: string; total: number; updateable: number }>('version_audit', {
-      base: boothRoot,
-      onEvent,
-    }).catch((e) => {
+    try {
+      await runTask(
+        'version_audit',
+        { base: boothRoot },
+        (evt) => {
+          if (evt.type === 'taskStarted' && typeof evt.total === 'number' && evt.total > 0) {
+            setVerProgress(0);
+          } else if (evt.type === 'itemDone') {
+            setVerList((l) => [...l, `${evt.id} · ${evt.message}`]);
+          } else if (evt.type === 'log') {
+            setStatus(String(evt.line ?? ''));
+          } else if (evt.type === 'finished') {
+            const n = evt.failed ?? 0;
+            setVstat(n > 0 ? `发现 ${n} 件可更新` : '未检测到更高版本');
+            setVerProgress(100);
+            setVersioning(false);
+          } else if (evt.type === 'cancelled') {
+            setVersioning(false);
+          }
+        },
+      );
+    } catch (e) {
       setVstat(String(e));
       setVersioning(false);
-      return null;
-    });
-    if (res) {
-      setVstat(res.updateable > 0 ? `发现 ${res.updateable} 件可更新` : '未检测到更高版本');
-      setVerProgress(100);
-      setVersioning(false);
     }
-    onEvent.onmessage = (evt) => {
-      const type = evt.type as string;
-      if (type === 'itemDone') {
-        setVerList((l) => [...l, `${evt.id} · ${evt.message}`]);
-      } else if (type === 'log') {
-        setStatus(String(evt.line ?? ''));
-      }
-    };
   }
 
   async function runMismatch() {
     if (!boothRoot) return;
     setMismatchList([]);
     setMstat('错位检测中…');
-    const onEvent = new Channel<Record<string, unknown>>();
-    const res = await invoke<{ task_id: string; total: number; mismatches: number }>('mismatch_audit', {
-      base: boothRoot,
-      onEvent,
-    }).catch((e) => {
+    try {
+      await runTask(
+        'mismatch_audit',
+        { base: boothRoot },
+        (evt) => {
+          if (evt.type === 'itemDone') {
+            setMismatchList((l) => [...l, `${evt.id}   ${evt.message}`]);
+          } else if (evt.type === 'finished') {
+            const n = evt.failed ?? 0;
+            setMstat(n > 0 ? `检测到 ${n} 件错位` : '无错位 ✓');
+          }
+        },
+      );
+    } catch (e) {
       setMstat(String(e));
-      return null;
-    });
-    if (res) {
-      setMstat(res.mismatches > 0 ? `检测到 ${res.mismatches} 件错位` : '无错位 ✓');
     }
-    onEvent.onmessage = (evt) => {
-      const type = evt.type as string;
-      if (type === 'itemDone') {
-        setMismatchList((l) => [...l, `${evt.id}   ${evt.message}`]);
-      }
-    };
   }
 
   async function runFixMismatch() {
     if (!boothRoot) return;
     setFixingMismatch(true);
     setMstat('正在纠正…');
-    const onEvent = new Channel<Record<string, unknown>>();
-    const res = await invoke<{ task_id: string; fixed: number; failed: number }>('fix_mismatch', {
-      base: boothRoot,
-      onEvent,
-    }).catch((e) => {
+    try {
+      await runTask(
+        'fix_mismatch',
+        { base: boothRoot },
+        (evt) => {
+          if (evt.type === 'log') {
+            setMismatchList((l) => [...l, String(evt.line ?? '')]);
+          } else if (evt.type === 'itemError') {
+            setMismatchList((l) => [...l, `错误 ${evt.id}：${evt.message}`]);
+          } else if (evt.type === 'finished') {
+            const n = evt.done ?? 0;
+            setMstat(`纠正完成：${n} 件已重归档`);
+            setFixingMismatch(false);
+            setStatus(`错位纠正完成：${n} 件`);
+          } else if (evt.type === 'cancelled') {
+            setFixingMismatch(false);
+          }
+        },
+      );
+    } catch (e) {
       setMstat(String(e));
       setFixingMismatch(false);
-      return null;
-    });
-    if (res) {
-      setMstat(`纠正完成：${res.fixed} 件已重归档`);
-      setFixingMismatch(false);
-      setStatus(`错位纠正完成：${res.fixed} 件`);
     }
-    onEvent.onmessage = (evt) => {
-      const type = evt.type as string;
-      if (type === 'log') {
-        setMismatchList((l) => [...l, String(evt.line ?? '')]);
-      } else if (type === 'itemError') {
-        setMismatchList((l) => [...l, `错误 ${evt.id}：${evt.message}`]);
-      }
-    };
   }
 
   return (
-    <Page>
+    <PageShell>
       <PageTitle title="目录巡检" />
-      <SubTitle>巡检 BOOTH 库的三件套完整性与命名规范</SubTitle>
+      <Lead>封面、图标、目录名，一次扫完再决定修不修。</Lead>
 
       <Row>
         <AccentButton onClick={() => void runScan()} disabled={scanning || !boothRoot}>
@@ -297,6 +284,6 @@ export function AuditPage() {
           <ListRow key={i}>{line}</ListRow>
         ))}
       </VerList>
-    </Page>
+    </PageShell>
   );
 }

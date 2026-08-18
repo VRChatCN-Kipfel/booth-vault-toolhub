@@ -13,7 +13,7 @@ const Track = styled.button<{ $state: number }>`
   align-items: center;
   width: 72px;
   height: 28px;
-  border-radius: 14px;
+  border-radius: ${({ theme }) => (theme.theme === 'zhuyin' ? '0px' : '14px')};
   border: 1px solid var(--bvt-border);
   background: var(--bvt-surface2);
   padding: 0 3px;
@@ -28,14 +28,14 @@ const Knob = styled.span<{ $state: number }>`
   top: 2px;
   width: 22px;
   height: 22px;
-  border-radius: 50%;
+  border-radius: ${({ theme }) => (theme.theme === 'zhuyin' ? '0px' : '50%')};
   background: var(--bvt-accent);
   display: flex;
   align-items: center;
   justify-content: center;
   transition: transform calc(0.3s / var(--bvt-anim)) cubic-bezier(0.4, 0, 0.2, 1), background-color calc(0.35s / var(--bvt-anim));
   transform: translateX(${({ $state }) => $state * 24}px);
-  svg { width: 12px; height: 12px; color: #fafafa; }
+  svg { width: 12px; height: 12px; color: var(--bvt-on-accent); }
 `;
 
 const Icons = styled.div`

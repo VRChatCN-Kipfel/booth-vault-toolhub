@@ -6,25 +6,16 @@
 import { useRef, useState } from 'react';
 import styled from 'styled-components';
 import { invoke } from '@tauri-apps/api/core';
-import { Channel } from '@tauri-apps/api/core';
-import { AccentButton, SecondaryButton, TextArea, ObsPanel, ProgressBar, Badge, PanelLabel } from '../components/ui';
+import { AccentButton, SecondaryButton, TextArea, ObsPanel, ProgressBar, Badge, PanelLabel, PageShell, Lead } from '../components/ui';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
+import { runTask } from '../lib/task';
 
 interface QueueItem {
   id: string;
   message: string;
   status: 'ok' | 'warn' | 'err' | 'run';
 }
-
-const Page = styled.div`
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  height: 100%;
-  overflow-y: auto;
-`;
 
 const Row = styled.div`
   display: flex;
@@ -55,10 +46,12 @@ const QueueRow = styled.div`
 
 export function LinksPage() {
   const boothRoot = useAppConfigStore((s) => s.boothRoot);
+  const cookie = useAppConfigStore((s) => s.cookie);
   const [text, setText] = useState('');
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [running, setRunning] = useState(false);
   const [total, setTotal] = useState(0);
+  const [done, setDone] = useState(0);
   const taskIdRef = useRef<string | null>(null);
 
   // 解析文本中的商品 ID（对齐旧版 URL_RE + BARE_ID_RE）。
@@ -83,40 +76,45 @@ export function LinksPage() {
     }
     setQueue([]);
     setTotal(ids.length);
+    setDone(0);
     setRunning(true);
 
-    const onEvent = new Channel<Record<string, unknown>>();
-    const taskId = await invoke<string>('download', {
-      items: [text],
-      out: boothRoot || null,
-      dryRun: false,
-      onEvent,
-    }).catch((e) => {
+    try {
+      const taskId = await runTask(
+        'download',
+        {
+          items: [text],
+          out: boothRoot || null,
+          dryRun: false,
+          cookie: cookie || null,
+        },
+        (evt) => {
+          if (evt.type === 'taskStarted' && typeof evt.total === 'number') {
+            setTotal(evt.total);
+          } else if (evt.type === 'itemDone') {
+            const st = evt.status === 'warn' ? 'warn' : 'ok';
+            setQueue((q) => [
+              ...q,
+              { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: st },
+            ]);
+          } else if (evt.type === 'itemError') {
+            setQueue((q) => [
+              ...q,
+              { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'err' },
+            ]);
+          } else if (evt.type === 'progress' && typeof evt.done === 'number') {
+            setDone(evt.done);
+          } else if (evt.type === 'finished' || evt.type === 'cancelled') {
+            setRunning(false);
+            taskIdRef.current = null;
+          }
+        },
+      );
+      taskIdRef.current = taskId;
+    } catch (e) {
       setQueue([{ id: '-', message: String(e), status: 'err' }]);
       setRunning(false);
-      return null;
-    });
-    if (taskId === null) return;
-    taskIdRef.current = taskId;
-
-    onEvent.onmessage = (evt) => {
-      const type = evt.type as string;
-      if (type === 'taskStarted') {
-        // 队列开始
-      } else if (type === 'itemDone') {
-        setQueue((q) => [
-          ...q,
-          { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'ok' },
-        ]);
-      } else if (type === 'itemError') {
-        setQueue((q) => [
-          ...q,
-          { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'err' },
-        ]);
-      } else if (type === 'finished' || type === 'cancelled') {
-        setRunning(false);
-      }
-    };
+    }
   }
 
   async function cancel() {
@@ -127,8 +125,9 @@ export function LinksPage() {
   }
 
   return (
-    <Page>
+    <PageShell>
       <PageTitle title="批量链接" />
+      <Lead>把聊天记录或散链贴进来，按商品 ID 下载免费文件。</Lead>
       <TextArea
         rows={6}
         placeholder={'粘贴含 BOOTH 商品链接的文本（如聊天记录）…\n支持全 locale 链接：https://booth.pm/ja/items/1234567\n也支持裸 ID：1234567'}
@@ -143,10 +142,10 @@ export function LinksPage() {
           清空
         </SecondaryButton>
         {running && <SecondaryButton onClick={() => void cancel()}>取消</SecondaryButton>}
-        <CountLabel>{queue.length}/{total}</CountLabel>
+        <CountLabel>{done}/{total}</CountLabel>
       </Row>
       <ProgressBar>
-        <div style={{ width: `${total ? (queue.length / total) * 100 : 0}%` }} />
+        <div style={{ width: `${total ? (done / total) * 100 : 0}%` }} />
       </ProgressBar>
       <PanelLabel>下载队列</PanelLabel>
       <QueueList>
@@ -163,6 +162,6 @@ export function LinksPage() {
           </div>
         )}
       </QueueList>
-    </Page>
+    </PageShell>
   );
 }

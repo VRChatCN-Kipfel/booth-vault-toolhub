@@ -8,6 +8,7 @@
 /gui/dist/
 /gui/src-tauri/gen/schemas/
 /gui/src-tauri/wix/generated.wxs
+/gui/src-tauri/binaries/
 
 # 隐私与敏感数据（AGENTS.md 安全要求，不可删）
 cookie*

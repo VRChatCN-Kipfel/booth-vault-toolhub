@@ -69,7 +69,7 @@ const Dialog = styled.div`
   background: var(--bvt-surface);
   border: 1.5px solid var(--bvt-accent-deep);
   border-top: 3px solid var(--bvt-accent);
-  border-radius: 2px;
+  border-radius: var(--bvt-radius, 0px);
   padding: 18px 22px;
   animation: bvtDialogIn calc(0.18s / var(--bvt-anim)) ease both;
   @keyframes bvtDialogIn {
@@ -79,11 +79,13 @@ const Dialog = styled.div`
 `;
 
 const Title = styled.div`
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--bvt-text);
+  font-family: 'Noto Serif CJK SC','Songti SC',serif;
+  letter-spacing: var(--bvt-title-track, 0.1em);
   border-bottom: 1px solid var(--bvt-border);
-  padding: 4px 0 6px;
+  padding: 4px 0 8px;
   margin-bottom: 10px;
 `;
 

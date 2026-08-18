@@ -1,0 +1,13 @@
+[package]
+name = "shell-mac"
+description = "macOS Finder 专属模块：封面 → 文件夹自定义图标（仅 macOS）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+
+[dependencies]
+image = "0.25"

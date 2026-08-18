@@ -4,17 +4,27 @@ import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const root = resolve(scriptDir, "..", "..");
-const names = ["booth.exe", "booth-mcp.exe", "booth-shell.exe"];
+const isWin = process.platform === "win32";
+const names = isWin
+  ? ["booth.exe", "booth-mcp.exe", "booth-shell.exe"]
+  : ["booth", "booth-mcp"];
 
+// 打包目标 triple（如 aarch64-apple-darwin）。CI 经环境变量显式传入，
+// 命中则精确锁定 target/<triple>/release/ 下的产物，不赌 mtime；本地未传则回退到遍历定位。
+const targetTriple = process.env.BOOTH_TARGET;
 const candidates = [];
 const collectRelease = (dir) => {
   const release = join(dir, "release");
   if (existsSync(release)) candidates.push(release);
 };
-collectRelease(join(root, "target"));
-if (existsSync(join(root, "target"))) {
-  for (const entry of readdirSync(join(root, "target"), { withFileTypes: true })) {
-    if (entry.isDirectory()) collectRelease(join(root, "target", entry.name));
+if (targetTriple) {
+  collectRelease(join(root, "target", targetTriple));
+} else {
+  collectRelease(join(root, "target"));
+  if (existsSync(join(root, "target"))) {
+    for (const entry of readdirSync(join(root, "target"), { withFileTypes: true })) {
+      if (entry.isDirectory()) collectRelease(join(root, "target", entry.name));
+    }
   }
 }
 
@@ -37,10 +47,23 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-const boothSrc = picked.get("booth.exe")[0];
-const boothMcpSrc = picked.get("booth-mcp.exe")[0];
-const boothShellSrc = picked.get("booth-shell.exe")[0];
+const boothKey = isWin ? "booth.exe" : "booth";
+const mcpKey = isWin ? "booth-mcp.exe" : "booth-mcp";
+const boothSrc = picked.get(boothKey)[0];
+const boothMcpSrc = picked.get(mcpKey)[0];
+const boothShellSrc = isWin ? picked.get("booth-shell.exe")[0] : "";
 const projectOut = dirname(boothSrc);
+
+if (!isWin) {
+  const macCliDir = join(scriptDir, "..", "src-tauri", "binaries");
+  mkdirSync(macCliDir, { recursive: true });
+  cpSync(boothSrc, join(macCliDir, "booth"));
+  cpSync(boothMcpSrc, join(macCliDir, "booth-mcp"));
+  console.log("[stage-cli] booth -> " + boothSrc);
+  console.log("[stage-cli] booth-mcp -> " + boothMcpSrc);
+  console.log("[stage-cli] macOS: CLI 已复制到 " + macCliDir + "（经 bundle.macOS.files 进 dmg）");
+  process.exit(0);
+}
 
 const xmlEsc = (s) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
