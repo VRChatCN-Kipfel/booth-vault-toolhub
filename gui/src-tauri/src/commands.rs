@@ -605,13 +605,8 @@ fn pick_search_match(
                 price: it.price,
             })
             .collect();
-        let (picked, ambiguous) = engine::score::score_and_pick(
-            &q,
-            &items,
-            false,
-            |id| canonical_name(client, id),
-            None,
-        );
+        let (picked, ambiguous) =
+            engine::score::score_and_pick(&q, &items, false, |id| canonical_name(client, id), None);
         if let Some(p) = picked {
             return Ok(SearchPick {
                 candidates: last,
@@ -767,10 +762,7 @@ pub fn version_audit(
                         let _ = on_event.send(ProgressEvent::Log {
                             line: format!("错误 {id}: {error}"),
                         });
-                        let _ = on_event.send(ProgressEvent::Progress {
-                            done: seen,
-                            total,
-                        });
+                        let _ = on_event.send(ProgressEvent::Progress { done: seen, total });
                     }
                     engine::audit::VersionEvent::Compared {
                         dir,
@@ -794,10 +786,7 @@ pub fn version_audit(
                                 },
                             ),
                         });
-                        let _ = on_event.send(ProgressEvent::Progress {
-                            done: seen,
-                            total,
-                        });
+                        let _ = on_event.send(ProgressEvent::Progress { done: seen, total });
                         if is_updateable {
                             updateable += 1;
                             let _ = on_event.send(ProgressEvent::ItemDone {
