@@ -3,9 +3,14 @@
     {
       "name": "",
       "title": "",
-      "url": "",
       "desc": "本工具作者，爱发电支持",
-      "image": "donate_qr.png"
+      "avatar": "",
+      "avatarAlt": "",
+      "links": [
+        { "url": "https://afdian.com/a/example", "label": "爱发电" }
+      ],
+      "image": "donate_qr.png",
+      "imageAlt": ""
     }
   ],
   "note": ""
