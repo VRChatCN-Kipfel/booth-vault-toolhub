@@ -261,7 +261,7 @@ export function SettingsPage() {
         }}
       >
         保存设置
-      </AccentButton
+      </AccentButton>
 
       <Divider />
       <SupportSection />

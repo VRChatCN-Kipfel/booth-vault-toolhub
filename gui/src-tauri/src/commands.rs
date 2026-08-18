@@ -710,11 +710,7 @@ pub fn version_audit(
                                 } else {
                                     dir.local_tag.as_str()
                                 },
-                                if official.is_empty() {
-                                    "-"
-                                } else {
-                                    official
-                                },
+                                if official.is_empty() { "-" } else { official },
                             ),
                         });
                         if is_updateable {
