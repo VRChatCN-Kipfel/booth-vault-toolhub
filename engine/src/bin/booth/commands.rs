@@ -362,7 +362,7 @@ fn cmd_search(
     let mut failures: Vec<String> = Vec::new();
 
     for fp in files {
-        let path = std::path::Path::new(fp);
+        let path = Path::new(fp);
         if dry_run {
             let candidates = engine::clean::sanitize_query(
                 &path
@@ -660,9 +660,9 @@ fn cmd_update_check(use_proxy: bool, json: bool) -> u8 {
             "local_version": info.local_version,
             "remote_version": info.remote_version,
             "url": info.url,
-            "error": info.error,
             "release_title": info.release_title,
             "release_body": info.release_body,
+            "error": info.error,
         });
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else if let Some(err) = &info.error {
@@ -675,7 +675,13 @@ fn cmd_update_check(use_proxy: bool, json: bool) -> u8 {
         if let Some(title) = &info.release_title {
             println!("{title}");
         }
-        if let Some(body) = &info.release_body {
+        if let Some(body) = info
+            .release_body
+            .as_deref()
+            .map(engine::update::html_to_text)
+            && !body.is_empty()
+        {
+            println!("---");
             println!("{body}");
         }
     } else {

@@ -21,7 +21,7 @@ pub fn apply_custom_settings(folder: &Path, icon_file_name: &str) -> Result<(), 
     let folder_wide = wide(folder);
     let icon_wide = wide(Path::new(icon_file_name));
     let mut settings = SHFOLDERCUSTOMSETTINGS {
-        dwSize: std::mem::size_of::<SHFOLDERCUSTOMSETTINGS>() as u32,
+        dwSize: size_of::<SHFOLDERCUSTOMSETTINGS>() as u32,
         dwMask: FCSM_ICONFILE,
         pszIconFile: windows::core::PWSTR(icon_wide.as_ptr() as *mut u16),
         ..Default::default()

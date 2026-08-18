@@ -437,13 +437,63 @@ pub fn version_audit(
     root: &Path,
     fetch: impl Fn(&str) -> Option<crate::fetch::ItemJson>,
 ) -> Vec<VersionInfo> {
+    version_audit_with_progress(
+        root,
+        |id| match fetch(id) {
+            Some(i) => Ok(i),
+            None => Err("未获取到官方信息".to_string()),
+        },
+        |_| true,
+    )
+}
+
+/// 版本巡检进度事件（供 GUI 流式场景复用核心判定逻辑）。
+#[derive(Debug)]
+pub enum VersionEvent<'a> {
+    /// 官方信息获取失败（GUI 记录日志用）。
+    FetchError { id: &'a str, error: String },
+    /// 单件版本比对结果（含是否可更新，供 GUI 决定是否高亮/累计）。
+    Compared {
+        dir: &'a ScannedDir,
+        official: &'a str,
+        updateable: bool,
+    },
+}
+
+/// 带进度回调的版本巡检。
+///
+/// 收敛 GUI 在进程外复刻的判定核心：`fetch` 负责联网取官方信息，`progress` 负责
+/// 消费每件进度（日志/插桩）。回调返回 `true` 继续、`false` 提前终止（协作式取消）。
+/// 判定逻辑（`extract_version_tag` + `ver_gt`）单点落此，GUI 不再重复实现。
+pub fn version_audit_with_progress<F, P>(root: &Path, fetch: F, mut progress: P) -> Vec<VersionInfo>
+where
+    F: Fn(&str) -> Result<crate::fetch::ItemJson, String>,
+    P: FnMut(VersionEvent<'_>) -> bool,
+{
     let mut out = Vec::new();
     for d in scan_library(root) {
-        let Some(item) = fetch(&d.id) else {
-            continue;
+        let item = match fetch(&d.id) {
+            Ok(i) => i,
+            Err(e) => {
+                if !progress(VersionEvent::FetchError {
+                    id: &d.id,
+                    error: e,
+                }) {
+                    break;
+                }
+                continue;
+            }
         };
         let official = extract_version_tag(&item.name);
-        if ver_gt(&official, &d.local_tag) {
+        let updateable = ver_gt(&official, &d.local_tag);
+        if !progress(VersionEvent::Compared {
+            dir: &d,
+            official: &official,
+            updateable,
+        }) {
+            break;
+        }
+        if updateable {
             out.push(VersionInfo {
                 id: d.id,
                 name: d.name,
@@ -1025,6 +1075,70 @@ mod tests {
         make_id_dir(&base, "5555555_脱机");
         let out = version_audit(&base, |_| None);
         assert!(out.is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn version_audit_with_progress_emits_and_collects() {
+        let base = tmpdir("vap_emit");
+        make_id_dir(&base, "1111111_雪女v1");
+        make_id_dir(&base, "2222222_メカv3");
+        let mut compared = Vec::new();
+        let out = version_audit_with_progress(
+            &base,
+            |id| match id {
+                "1111111" => Ok(json_item("雪女v2")),
+                "2222222" => Ok(json_item("メカv2")),
+                _ => Err("404".to_string()),
+            },
+            |evt| {
+                if let VersionEvent::Compared {
+                    dir,
+                    official,
+                    updateable,
+                } = evt
+                {
+                    compared.push((dir.id.clone(), official.to_string(), updateable));
+                }
+                true
+            },
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "1111111");
+        assert_eq!(
+            compared,
+            vec![
+                ("1111111".to_string(), "Ver_2".to_string(), true),
+                ("2222222".to_string(), "Ver_2".to_string(), false),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn version_audit_with_progress_abort_stops_loop() {
+        let base = tmpdir("vap_abort");
+        make_id_dir(&base, "1111111_雪女v1");
+        make_id_dir(&base, "2222222_メカv3");
+        let mut visited = Vec::new();
+        let out = version_audit_with_progress(
+            &base,
+            |id| match id {
+                "1111111" => Ok(json_item("雪女v2")),
+                "2222222" => Ok(json_item("メカv2")),
+                _ => Err("404".to_string()),
+            },
+            |evt| {
+                if let VersionEvent::Compared { dir, .. } = evt {
+                    visited.push(dir.id.clone());
+                    // 首个 Compared 即返回 false 以终止循环，后续项（2222222）不再处理。
+                    return dir.id != "1111111";
+                }
+                true
+            },
+        );
+        assert_eq!(visited, vec!["1111111".to_string()]);
+        assert!(out.is_empty(), "out: {:?}", out);
         let _ = std::fs::remove_dir_all(&base);
     }
 

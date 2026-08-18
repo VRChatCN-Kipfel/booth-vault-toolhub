@@ -121,7 +121,7 @@ JSON 输入输出与 CLI 完全一致。客户端配置示例（`.mcp.json` 片�
 └─ 主上想让整个库图标整齐 / 图标异常
     └─► booth audit                 （三件套巡检 + 自动修复）
 └─ 询问工具是否有新版本 / 版本号
-    └─► booth update-check [--proxy]（GitHub 查最新 release，HTML 重定向法规避限流）
+    └─► booth update-check [--proxy]（GitHub `releases.atom` 查最新 release，Atom feed 规避 API 限流）
 ```
 
 ## 关键共享知识

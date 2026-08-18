@@ -3,7 +3,10 @@
 mod commands;
 pub mod portable;
 
-use commands::TaskRegistry;
+use commands::{
+    TaskRegistry, audit, cancel_task, download, fix_mismatch, load_app_config, mismatch_audit,
+    organize, save_app_config, search, update_check, version_audit,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -14,17 +17,17 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
-            commands::download,
-            commands::organize,
-            commands::search,
-            commands::audit,
-            commands::version_audit,
-            commands::mismatch_audit,
-            commands::fix_mismatch,
-            commands::update_check,
-            commands::cancel_task,
-            commands::load_app_config,
-            commands::save_app_config,
+            download,
+            organize,
+            search,
+            audit,
+            version_audit,
+            mismatch_audit,
+            fix_mismatch,
+            update_check,
+            cancel_task,
+            load_app_config,
+            save_app_config,
         ])
         .setup(|app| {
             // 主窗口手建（config create:false）。

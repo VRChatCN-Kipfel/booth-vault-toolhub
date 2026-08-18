@@ -3,7 +3,7 @@
 //! 全部复用 engine crate，JSON 输入输出与 CLI 一致；
 //! 限速策略（三端统一）在 engine::download 内部保证，此处不绕过。
 
-use engine::config::{default_rate_limit_secs, load_config, resolve_cookie};
+use engine::config::{default_rate_limit_secs, load_config};
 use engine::session::make_session;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -146,9 +146,9 @@ struct UpdateCheckResult {
     local_version: String,
     remote_version: String,
     url: String,
-    error: Option<String>,
     release_title: Option<String>,
     release_body: Option<String>,
+    error: Option<String>,
 }
 
 // ── 服务 ─────────────────────────────────────────────────────────
@@ -177,8 +177,7 @@ impl BoothServer {
                 return tool_error("未指定输出目录：用 out 或配置文件 download_root");
             }
         };
-        let cookie = resolve_cookie(params.cookie.as_deref(), &config);
-        let client = make_session(&config, cookie.as_deref());
+        let client = make_session(&config, params.cookie.as_deref());
         let rate_limit = config
             .rate_limit_secs
             .unwrap_or_else(default_rate_limit_secs);
@@ -257,12 +256,11 @@ impl BoothServer {
                 return tool_error("未指定输出目录：用 out 或配置文件 download_root");
             }
         };
-        let cookie = resolve_cookie(params.cookie.as_deref(), &config);
-        let client = make_session(&config, cookie.as_deref());
+        let client = make_session(&config, params.cookie.as_deref());
         let opts = engine::organize::OrganizeOptions {
             out_root: &out_root,
             dry_run: params.dry_run,
-            cookie: cookie.as_deref(),
+            cookie: params.cookie.as_deref(),
         };
         let mut ok = 0usize;
         let mut failures: Vec<String> = Vec::new();
@@ -318,8 +316,7 @@ impl BoothServer {
                 return tool_error("未指定归档目录：用 base_dir 或配置文件 download_root");
             }
         };
-        let cookie = resolve_cookie(params.cookie.as_deref(), &config);
-        let client = make_session(&config, cookie.as_deref());
+        let client = make_session(&config, params.cookie.as_deref());
         let mut matched: Vec<String> = Vec::new();
         let mut failures: Vec<String> = Vec::new();
 
@@ -344,13 +341,7 @@ impl BoothServer {
                 }
                 continue;
             }
-            match process_search_file(
-                &client,
-                path,
-                &base,
-                params.id.as_deref(),
-                cookie.as_deref(),
-            ) {
+            match process_search_file(&client, path, &base, params.id.as_deref()) {
                 Ok(Some(id)) => matched.push(id),
                 Ok(None) => {}
                 Err(e) => failures.push(format!("{path_str}: {e}")),
@@ -422,7 +413,7 @@ impl BoothServer {
 
     /// 检查工具自身是否有新版本（GitHub Releases）。
     #[tool(
-        description = "检查 booth-vault-toolhub 自身是否有新版本。主通道 GitHub releases.atom（不占 API 配额），失败再走 HTML / API。"
+        description = "检查 booth-vault-toolhub 工具自身是否有新版本：拉取 GitHub Releases 最新 tag 与本地版本比较，返回是否有更新、最新版本号与下载链接。优先用 releases.atom feed（不消耗 API 配额）。"
     )]
     async fn update_check(
         &self,
@@ -435,9 +426,9 @@ impl BoothServer {
             local_version: info.local_version,
             remote_version: info.remote_version,
             url: info.url,
-            error: info.error,
             release_title: info.release_title,
             release_body: info.release_body,
+            error: info.error,
         };
         let text = serde_json::to_string_pretty(&result).unwrap_or_default();
         CallToolResult::success(vec![ContentBlock::text(text)])
@@ -510,7 +501,6 @@ fn process_search_file(
     path: &std::path::Path,
     base: &std::path::Path,
     force_id: Option<&str>,
-    cookie: Option<&str>,
 ) -> Result<Option<String>, String> {
     let fname = path
         .file_name()
@@ -553,7 +543,7 @@ fn process_search_file(
     let opts = engine::organize::OrganizeOptions {
         out_root: base,
         dry_run: false,
-        cookie,
+        cookie: None,
     };
     let outcome = engine::organize::organize_archive(client, path, &item.id, &opts, icon_fn);
     if !outcome.ok {
@@ -569,14 +559,29 @@ fn canonical_name(client: &reqwest::blocking::Client, id: &str) -> String {
         .unwrap_or_default()
 }
 
-/// 图标注入：Windows / macOS 走 engine 默认实现。
+/// 图标注入：Windows 用 shell_win，其余平台 no-op。
 fn icon_fn(cover: &std::path::Path, folder: &std::path::Path) -> Result<(), String> {
-    engine::organize::default_icon_fn(cover, folder)
+    #[cfg(windows)]
+    {
+        shell_win::folder_icon::make_folder_icon(cover, folder).map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (cover, folder);
+        Ok(())
+    }
 }
 
-/// 设置文件夹图标。
+/// 设置文件夹图标（Windows 用 shell_win；其余平台跳过）。
 fn apply_icon(cover: &std::path::Path, folder: &std::path::Path) {
-    if cover.is_file() {
-        let _ = engine::organize::default_icon_fn(cover, folder);
+    #[cfg(windows)]
+    {
+        if cover.is_file() {
+            let _ = shell_win::folder_icon::make_folder_icon(cover, folder);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (cover, folder);
     }
 }

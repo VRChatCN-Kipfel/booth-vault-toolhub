@@ -114,6 +114,57 @@ jobs:
         working-directory: gui
         run: npm run build
 
+      # 注入构建版本号到根 Cargo.toml（workspace 唯一源，各 crate 自动跟随）。
+      # 规则：
+      #   - tag 触发：直接用 tag 版本（去 v 前缀），如 v1.0.0 → 1.0.0
+      #   - 非 tag：取当前分支最近 tag（git describe），拼 {tag}-{shorthash}，如 1.2.3-f3ab2c1
+      #   - 无 tag：用分支名清洗为纯 ASCII（/ 反斜杠 → '-'，连续 '-' 压缩，
+      #     非 [A-Za-z0-9.-] 替换为 '-'，trim 两端 '-'；中文丢弃），拼 -{shorthash}
+      #     若清洗后不以「数字.数字」开头（非法 semver，如 PR 的 24/merge → 24-merge、
+      #     字母开头分支），补 0.0.0- 前缀保证可编译（如 0.0.0-24-merge）。
+      #     显示层剥离 0.0.0- 前缀，见 update::display_version。
+      # 默认仓库版本为 0.0.0（Nightly Build），注入后产物内嵌真实来源版本。
+      # 非 tag 构建同时设 BUILD_SOURCE=branch（经 $GITHUB_ENV 供后续 build 步骤读取，
+      # build.rs 据此写 BOOTH_BUILD_SOURCE 编译期常量，update 比较时按 0.0.0 恒提示
+      # 正式版可更新，避免分支里的数字被误判为已最新）。
+      - name: Inject build version
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_kind="tag"
+          version=""
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            version="${{ github.ref_name }}"
+            version="${version#v}"
+          else
+            source_kind="branch"
+            sha="${{ github.sha }}"
+            shorthash="${sha:0:7}"
+            last_tag=$(git describe --tags --abbrev=0 2>/dev/null || true)
+            if [ -n "$last_tag" ]; then
+              last_tag="${last_tag#v}"
+              version="${last_tag}-${shorthash}"
+            else
+              # PR 时 head_ref 为真实分支名（ref_name 是 NN/merge），优先用 head_ref。
+              branch="${{ github.head_ref }}"
+              [ -n "$branch" ] || branch="${{ github.ref_name }}"
+              # 清洗分支名为纯 ASCII semver 兼容片段
+              clean=$(printf '%s' "$branch" | sed 's/[\\/]/-/g; s/[^A-Za-z0-9.-]/-/g; s/--*/-/g; s/^-//; s/-$//')
+              [ -n "$clean" ] || clean="nightly"
+              # 以「数字.数字」开头视为合法版本基座；否则补 0.0.0- 前缀
+              if printf '%s' "$clean" | grep -qE '^[0-9]+\.[0-9]+'; then
+                version="${clean}-${shorthash}"
+              else
+                version="0.0.0-${clean}-${shorthash}"
+              fi
+            fi
+          fi
+          echo "injecting version: $version (source=$source_kind)"
+          # 写回根 Cargo.toml 的 version = "..."
+          sed -i -E "s/^version = \".*\"/version = \"${version}\"/" Cargo.toml
+          grep -n '^version' Cargo.toml | head -3
+          echo "BUILD_SOURCE=$source_kind" >> "$GITHUB_ENV"
+
       # 构建 booth 三二进制（目标架构，验证可编译；供 release 打包用）
       - name: Build booth binaries
         run: cargo build --release --target ${{ matrix.rust_target }} --workspace

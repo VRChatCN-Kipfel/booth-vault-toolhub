@@ -487,7 +487,7 @@ dependencies = [
 
 [[package]]
 name = "booth-mcp"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "engine",
@@ -501,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "booth-shell"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "shell-mac",
  "shell-win",
@@ -712,8 +712,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link 0.2.1",
 ]
 
@@ -1345,13 +1347,13 @@ checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 
 [[package]]
 name = "engine"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "clap",
- "cookie_store",
  "dirs",
  "encoding_rs",
  "fancy-regex",
+ "feed-rs",
  "phf",
  "reqwest",
  "serde",
@@ -1497,6 +1499,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
 dependencies = [
  "simd-adler32",
+]
+
+[[package]]
+name = "feed-rs"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "369995dae0733f1fe5ab0e3f345f6503a5f384179df5d8da333702031a131cf9"
+dependencies = [
+ "chrono",
+ "mediatype",
+ "quick-xml",
+ "regex",
+ "serde",
+ "serde_json",
+ "siphasher",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -1988,7 +2007,7 @@ dependencies = [
 
 [[package]]
 name = "gui"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "engine",
  "reqwest",
@@ -2804,6 +2823,15 @@ checksum = "8ea1f30cedd69f0a2954655f7188c6a834246d2bcf1e315e2ac40c4b24dc9519"
 dependencies = [
  "cfg-if",
  "rayon",
+]
+
+[[package]]
+name = "mediatype"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "120fa187be19d9962f0926633453784691731018a2bf936ddb4e29101b79c4a7"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -3661,6 +3689,7 @@ version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
+ "encoding_rs",
  "memchr",
 ]
 
@@ -4515,14 +4544,14 @@ dependencies = [
 
 [[package]]
 name = "shell-mac"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "image",
 ]
 
 [[package]]
 name = "shell-win"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "image",
  "windows 0.62.2",
