@@ -878,7 +878,5 @@ pub async fn update_check(use_proxy: bool) -> Result<serde_json::Value, String> 
         "release_title": info.release_title,
         "release_body": info.release_body,
         "error": info.error,
-        "release_title": info.release_title,
-        "release_body": info.release_body,
     }))
 }

@@ -3,8 +3,9 @@
  * 对齐原版 audit_page.py 的完整功能。
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import styled from 'styled-components';
+import { invoke } from '@tauri-apps/api/core';
 import {
   AccentButton, SecondaryButton, ObsPanel, ProgressBar, Badge, PageShell, Lead,
 } from '../components/ui';
@@ -78,7 +79,19 @@ export function AuditPage() {
   const [fixing, setFixing] = useState(false);
   const [versioning, setVersioning] = useState(false);
   const [fixingMismatch, setFixingMismatch] = useState(false);
+  const [mismatching, setMismatching] = useState(false);
   const [verProgress, setVerProgress] = useState(0);
+  const scanTaskRef = useRef<string | null>(null);
+  const fixTaskRef = useRef<string | null>(null);
+  const versionTaskRef = useRef<string | null>(null);
+  const mismatchTaskRef = useRef<string | null>(null);
+
+  async function cancelTask(ref: { current: string | null }, stop: () => void) {
+    if (ref.current) {
+      await invoke('cancel_task', { taskId: ref.current });
+      stop();
+    }
+  }
 
   async function runScan() {
     if (!boothRoot) return;
@@ -89,7 +102,7 @@ export function AuditPage() {
     setScanning(true);
     setStatus('巡检中…');
     try {
-      await runTask(
+      const taskId = await runTask(
         'audit',
         { base: boothRoot, dryRun: true, noFix: true },
         (evt) => {
@@ -102,12 +115,16 @@ export function AuditPage() {
             setMissing(miss);
             setStat(`共 ${total} 件，${miss} 件缺失三件套`);
             setScanning(false);
+            scanTaskRef.current = null;
             setStatus(`巡检完成：${total} 件，${miss} 件待修复`);
           } else if (evt.type === 'cancelled') {
             setScanning(false);
+            scanTaskRef.current = null;
+            setStat('已取消');
           }
         },
       );
+      scanTaskRef.current = taskId;
     } catch (e) {
       setStat(String(e));
       setScanning(false);
@@ -119,18 +136,23 @@ export function AuditPage() {
     setFixing(true);
     setScanList((l) => [...l, '── 修复日志 ──']);
     try {
-      await runTask(
+      const taskId = await runTask(
         'audit',
         { base: boothRoot, dryRun: false, noFix: false },
         (evt) => {
           if (evt.type === 'itemDone') {
             setScanList((l) => [...l, `已修复 ${evt.id} · ${evt.message}`]);
-          } else if (evt.type === 'finished' || evt.type === 'cancelled') {
+          } else if (evt.type === 'finished') {
             setFixing(false);
+            fixTaskRef.current = null;
             setStatus('三件套修复完成');
+          } else if (evt.type === 'cancelled') {
+            setFixing(false);
+            fixTaskRef.current = null;
           }
         },
       );
+      fixTaskRef.current = taskId;
     } catch (e) {
       setScanList((l) => [...l, String(e)]);
       setFixing(false);
@@ -144,7 +166,7 @@ export function AuditPage() {
     setVersioning(true);
     setVstat('版本巡检中…');
     try {
-      await runTask(
+      const taskId = await runTask(
         'version_audit',
         { base: boothRoot },
         (evt) => {
@@ -159,11 +181,15 @@ export function AuditPage() {
             setVstat(n > 0 ? `发现 ${n} 件可更新` : '未检测到更高版本');
             setVerProgress(100);
             setVersioning(false);
+            versionTaskRef.current = null;
           } else if (evt.type === 'cancelled') {
             setVersioning(false);
+            versionTaskRef.current = null;
+            setVstat('已取消');
           }
         },
       );
+      versionTaskRef.current = taskId;
     } catch (e) {
       setVstat(String(e));
       setVersioning(false);
@@ -174,8 +200,9 @@ export function AuditPage() {
     if (!boothRoot) return;
     setMismatchList([]);
     setMstat('错位检测中…');
+    setMismatching(true);
     try {
-      await runTask(
+      const taskId = await runTask(
         'mismatch_audit',
         { base: boothRoot },
         (evt) => {
@@ -184,11 +211,19 @@ export function AuditPage() {
           } else if (evt.type === 'finished') {
             const n = evt.failed ?? 0;
             setMstat(n > 0 ? `检测到 ${n} 件错位` : '无错位 ✓');
+            setMismatching(false);
+            mismatchTaskRef.current = null;
+          } else if (evt.type === 'cancelled') {
+            setMismatching(false);
+            mismatchTaskRef.current = null;
+            setMstat('已取消');
           }
         },
       );
+      mismatchTaskRef.current = taskId;
     } catch (e) {
       setMstat(String(e));
+      setMismatching(false);
     }
   }
 
@@ -197,7 +232,7 @@ export function AuditPage() {
     setFixingMismatch(true);
     setMstat('正在纠正…');
     try {
-      await runTask(
+      const taskId = await runTask(
         'fix_mismatch',
         { base: boothRoot },
         (evt) => {
@@ -209,12 +244,15 @@ export function AuditPage() {
             const n = evt.done ?? 0;
             setMstat(`纠正完成：${n} 件已重归档`);
             setFixingMismatch(false);
+            mismatchTaskRef.current = null;
             setStatus(`错位纠正完成：${n} 件`);
           } else if (evt.type === 'cancelled') {
             setFixingMismatch(false);
+            mismatchTaskRef.current = null;
           }
         },
       );
+      mismatchTaskRef.current = taskId;
     } catch (e) {
       setMstat(String(e));
       setFixingMismatch(false);
@@ -230,9 +268,19 @@ export function AuditPage() {
         <AccentButton onClick={() => void runScan()} disabled={scanning || !boothRoot}>
           {scanning ? '巡检中…' : '开始巡检'}
         </AccentButton>
+        {scanning && (
+          <SecondaryButton onClick={() => void cancelTask(scanTaskRef, () => setScanning(false))}>
+            取消
+          </SecondaryButton>
+        )}
         <SecondaryButton onClick={() => void runFix()} disabled={fixing || missing === 0}>
           修复缺失三件套
         </SecondaryButton>
+        {fixing && (
+          <SecondaryButton onClick={() => void cancelTask(fixTaskRef, () => setFixing(false))}>
+            取消
+          </SecondaryButton>
+        )}
         <StatText>{stat}</StatText>
       </Row>
       <ScanList>
@@ -253,12 +301,22 @@ export function AuditPage() {
 
       <Muted>错位纠正：扫描时同步联网比对官方分类，错位项目列于此。点下方按钮一键重归档。</Muted>
       <Row>
-        <AccentButton onClick={() => void runMismatch()} disabled={scanning || !boothRoot}>
-          检测错位
+        <AccentButton onClick={() => void runMismatch()} disabled={scanning || mismatching || !boothRoot}>
+          {mismatching ? '检测中…' : '检测错位'}
         </AccentButton>
+        {mismatching && (
+          <SecondaryButton onClick={() => void cancelTask(mismatchTaskRef, () => setMismatching(false))}>
+            取消
+          </SecondaryButton>
+        )}
         <AccentButton onClick={() => void runFixMismatch()} disabled={fixingMismatch || !boothRoot}>
           {fixingMismatch ? '纠正中…' : '一键纠正错位'}
         </AccentButton>
+        {fixingMismatch && (
+          <SecondaryButton onClick={() => void cancelTask(mismatchTaskRef, () => setFixingMismatch(false))}>
+            取消
+          </SecondaryButton>
+        )}
         <StatText>{mstat}</StatText>
       </Row>
       <MismatchList>
@@ -274,6 +332,11 @@ export function AuditPage() {
         <AccentButton onClick={() => void runVersion()} disabled={versioning || !boothRoot}>
           {versioning ? '版本巡检中…' : '开始版本巡检'}
         </AccentButton>
+        {versioning && (
+          <SecondaryButton onClick={() => void cancelTask(versionTaskRef, () => setVersioning(false))}>
+            取消
+          </SecondaryButton>
+        )}
         <StatText>{vstat}</StatText>
       </Row>
       <ProgressBar>

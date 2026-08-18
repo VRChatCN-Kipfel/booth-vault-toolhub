@@ -16,6 +16,7 @@ import { useUpdateStore } from '../store/updateStore';
 import { motifSidebarSrc, THEME_HINTS, THEME_NAMES, THEME_ORDER, THEMES } from '../theme/themes';
 import { brandMark } from '../theme/chrome';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { error, information } from '../components/Dialog';
 
 const ThemeGrid = styled.div`
   display: grid;
@@ -259,9 +260,9 @@ export function SettingsPage() {
       <Divider />
       <AccentButton
         onClick={() => {
-          void save().catch((e) => {
-            window.alert(`保存失败：${e}`);
-          });
+          void save()
+            .then(() => information('已保存', '设置已写入本地配置。'))
+            .catch((e) => error('保存失败', String(e)));
         }}
       >
         保存设置

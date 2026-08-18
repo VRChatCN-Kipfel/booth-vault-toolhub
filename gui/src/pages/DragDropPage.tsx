@@ -4,8 +4,9 @@
  * 拖入区麻叶纹（asa_no_ha）+ 高亮，对齐原版 dragdrop_page.py。
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import styled from 'styled-components';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { AccentButton, SecondaryButton, ObsPanel, ProgressBar, Badge, PanelLabel, PageShell, Lead } from '../components/ui';
 import { confirmation } from '../components/Dialog';
@@ -91,6 +92,7 @@ export function DragDropPage() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [running, setRunning] = useState(false);
   const [total, setTotal] = useState(0);
+  const taskIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -126,7 +128,7 @@ export function DragDropPage() {
     setTotal(pending.length);
     setRunning(true);
     try {
-      await runTask(
+      const taskId = await runTask(
         'organize',
         {
           archives: pending,
@@ -153,11 +155,20 @@ export function DragDropPage() {
             setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'err' }]);
           } else if (evt.type === 'finished' || evt.type === 'cancelled') {
             setRunning(false);
+            taskIdRef.current = null;
           }
         },
       );
+      taskIdRef.current = taskId;
     } catch (e) {
       setQueue([{ id: '-', message: String(e), status: 'err' }]);
+      setRunning(false);
+    }
+  }
+
+  async function cancel() {
+    if (taskIdRef.current) {
+      await invoke('cancel_task', { taskId: taskIdRef.current });
       setRunning(false);
     }
   }
@@ -199,6 +210,7 @@ export function DragDropPage() {
         <SecondaryButton onClick={clearAll} disabled={running}>
           清空
         </SecondaryButton>
+        {running && <SecondaryButton onClick={() => void cancel()}>取消</SecondaryButton>}
         <span style={{ color: 'var(--bvt-text2)', fontSize: 13 }}>
           队列 {pending.length} / 完成 {queue.filter((x) => x.status === 'ok').length}
         </span>
