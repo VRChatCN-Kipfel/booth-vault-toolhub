@@ -12,7 +12,7 @@ use tauri_plugin_window_state::StateFlags;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(TaskRegistry::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -27,10 +27,9 @@ pub fn run() {
                 )
                 .build(),
         );
+    // 用 cfg 影子绑定而非 mut：mut 只有 macOS 分支用得上，Windows/Linux 上会撞 unused_mut。
     #[cfg(target_os = "macos")]
-    {
-        builder = builder.plugin(tauri_plugin_liquid_glass::init());
-    }
+    let builder = builder.plugin(tauri_plugin_liquid_glass::init());
     builder
         .invoke_handler(tauri::generate_handler![
             download,
@@ -68,7 +67,9 @@ pub fn run() {
                     .hidden_title(true)
                     .title_bar_style(tauri::TitleBarStyle::Overlay)
                     .transparent(true)
-                    .traffic_light_position(tauri::LogicalPosition::new(14.0, 10.0));
+                    // y 不等于「距窗顶多少 pt」：实测带约 9.4pt 偏移（y=12 时灯顶只到 2.6pt，
+                    // y=4 直接跑出窗外）。22 是按斜率 1 拟合出的值，灯心正好压在 36pt 标题栏中线。
+                    .traffic_light_position(tauri::LogicalPosition::new(14.0, 22.0));
             }
             let window = builder.build()?;
             #[cfg(target_os = "macos")]

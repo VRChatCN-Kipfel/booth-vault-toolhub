@@ -9,9 +9,9 @@ import { useAppConfigStore } from './store/appConfigStore';
 import { useUpdateStore } from './store/updateStore';
 import { useUiStore } from './store/uiStore';
 import { useSystemTheme } from './hooks/useSystemTheme';
+import { Link2, MousePointerSquareDashed, Search, ClipboardCheck, Settings2 } from 'lucide-react';
 import { THEMES } from './theme/themes';
 import { GlobalStyle, paletteToVars } from './theme/global';
-import { contentFrame } from './theme/chrome';
 import { Sidebar, type NavItemDef } from './components/Sidebar';
 import { Titlebar } from './components/Titlebar';
 import { StatusBar } from './components/StatusBar';
@@ -25,12 +25,20 @@ import { AuditPage } from './pages/AuditPage';
 import { SettingsPage } from './pages/SettingsPage';
 
 const NAV_ITEMS: NavItemDef[] = [
-  { key: 'links', label: '批量链接' },
-  { key: 'drag', label: '拖拽分类' },
-  { key: 'search', label: '实验检索' },
-  { key: 'audit', label: '目录巡检' },
-  { key: 'settings', label: '设置' },
+  { key: 'links', label: '批量链接', icon: Link2 },
+  { key: 'drag', label: '拖拽分类', icon: MousePointerSquareDashed },
+  { key: 'search', label: '实验检索', icon: Search },
+  { key: 'audit', label: '目录巡检', icon: ClipboardCheck },
+  { key: 'settings', label: '设置', icon: Settings2 },
 ];
+
+/** 三端窗口形态差异只认这一处；其余靠 html[data-platform] 选择器分流。 */
+function detectPlatform(): 'mac' | 'win' | 'linux' {
+  const ua = navigator.userAgent;
+  if (/Mac|Macintosh/.test(ua)) return 'mac';
+  if (/Windows/.test(ua)) return 'win';
+  return 'linux';
+}
 
 const ROOT_STYLE: CSSProperties = {
   display: 'flex',
@@ -53,38 +61,33 @@ const ContentWrap = styled.div`
   overflow: hidden;
 `;
 
-const Content = styled.div`
-  position: relative;
-  z-index: 1;
+/** 册页：内容区整幅铺满，靠侧栏的界线分隔，不再套一层描边卡片。 */
+const Content = styled.main`
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  margin: 10px 12px 8px;
-  background: var(--bvt-surface);
-  border: 1px solid var(--bvt-glass-border);
-  border-radius: var(--bvt-radius, 0px);
-  box-shadow: ${({ theme }) => contentFrame(theme.theme)};
+  background: var(--bvt-shell-bg);
 `;
 
 /** 页面容器（key 变化重挂载 → 触发淡入动画）。 */
 const PageWrap = styled.div`
-  position: relative;
-  z-index: 1;
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  animation: bvtPageIn calc(0.28s / var(--bvt-anim)) ease both;
+  animation: bvtPageIn calc(0.24s / var(--bvt-anim)) var(--bvt-ease) both;
   @keyframes bvtPageIn {
-    from { opacity: 0; transform: translateY(6px); }
+    from { opacity: 0; transform: translateY(4px); }
     to { opacity: 1; transform: translateY(0); }
   }
 `;
 
 function App() {
-  const { theme, mode, systemTheme, animSpeed, setSystemTheme, hydrate: hydrateTheme } = useThemeStore();
+  const {
+    theme, mode, systemTheme, animSpeed, motifOpacity, setSystemTheme, hydrate: hydrateTheme,
+  } = useThemeStore();
   const { hydrate: hydrateConfig, proxy } = useAppConfigStore();
   const checkUpdate = useUpdateStore((s) => s.check);
   const pendingPage = useUiStore((s) => s.pendingPage);
@@ -147,17 +150,18 @@ function App() {
       root.style.setProperty(k, v);
     }
     root.style.setProperty('--bvt-anim', String(animSpeed));
+    root.style.setProperty('--bvt-motif-opacity', String(motifOpacity));
     root.dataset.theme = theme;
     root.dataset.mode = resolved;
-    if (/Mac|Macintosh/.test(navigator.userAgent)) {
-      root.dataset.platform = 'mac';
+    const platform = detectPlatform();
+    root.dataset.platform = platform;
+    if (platform === 'mac') {
       // 玻璃填色交给 CSS，别让 JS 色板把原生材质盖死。
       root.style.removeProperty('--bvt-glass');
       root.style.removeProperty('--bvt-glass-2');
       root.style.removeProperty('--bvt-glass-input');
-      root.style.setProperty('--bvt-glass-blur', '0px');
     }
-  }, [theme, resolved, animSpeed]);
+  }, [theme, resolved, animSpeed, motifOpacity]);
 
   return (
     <ThemeProvider theme={{ theme, mode: resolved }}>

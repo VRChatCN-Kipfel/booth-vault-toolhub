@@ -5,7 +5,8 @@
 import { useMemo, useState } from 'react';
 import styled from 'styled-components';
 import {
-  AccentButton, SecondaryButton, ObsPanel, ProgressBar, Badge, PageShell, Lead,
+  AccentButton, SecondaryButton, ObsPanel, ProgressBar, Badge, PageShell, PanelLabel,
+  Section, Row, ListRow, EmptyState, Checkbox, Muted,
 } from '../components/ui';
 import { QueueActions } from '../components/QueueActions';
 import { PageTitle } from '../components/PageTitle';
@@ -16,66 +17,23 @@ import { cancelTask, runTask } from '../lib/task';
 import { badgeKind, badgeLabel, extractBoothId } from '../lib/booth';
 import { isLinux } from '../lib/platform';
 
-const Row = styled.div`
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-`;
-
-const StatText = styled.span`
-  color: var(--bvt-text2);
-  font-size: 13px;
-  font-family: inherit;
-`;
-
-const Muted = styled.div`
-  color: var(--bvt-text3);
-  font-size: 12px;
-  line-height: 1.6;
-`;
-
-const BadgeRow = styled.div`
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-`;
-
 const FilterBtn = styled.button<{ $on: boolean }>`
-  border: 1px solid ${({ $on }) => ($on ? 'var(--bvt-accent)' : 'var(--bvt-border2)')};
+  height: 26px;
+  padding: 0 var(--bvt-s3);
+  border: 1px solid ${({ $on }) => ($on ? 'transparent' : 'var(--bvt-border)')};
+  border-radius: var(--bvt-pill);
   background: ${({ $on }) => ($on ? 'var(--bvt-accent-light)' : 'transparent')};
   color: ${({ $on }) => ($on ? 'var(--bvt-accent-deep)' : 'var(--bvt-text2)')};
-  border-radius: var(--bvt-radius, 2px);
   font: inherit;
-  font-size: 12px;
-  padding: 3px 8px;
+  font-size: var(--bvt-fz-sm);
   cursor: pointer;
-`;
-
-const SectionGap = styled.div`
-  height: 8px;
+  transition: background-color 0.16s var(--bvt-ease), border-color 0.16s var(--bvt-ease);
+  &:hover { background: ${({ $on }) => ($on ? 'var(--bvt-accent-light)' : 'var(--bvt-hover)')}; }
 `;
 
 const ScanList = styled(ObsPanel)`
-  min-height: 160px;
-  font-size: 13px;
-`;
-
-const ListRow = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--bvt-border2);
-  color: var(--bvt-text);
-  .msg { color: var(--bvt-text2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-`;
-
-const Checkbox = styled.input`
-  width: 14px;
-  height: 14px;
-  accent-color: var(--bvt-accent);
+  max-height: 320px;
+  min-height: 140px;
 `;
 
 type Filter = 'all' | 'missing' | 'updateable' | 'mismatch';
@@ -143,19 +101,32 @@ export function AuditPage() {
 
   return (
     <PageShell>
-      <PageTitle title="目录巡检" />
-      <Lead>封面、图标、目录名，一次扫完再决定修不修。</Lead>
-
-      <BadgeRow>
-        {(['all', 'missing', 'updateable', 'mismatch'] as Filter[]).map((k) => (
-          <FilterBtn key={k} $on={filter === k} onClick={() => setFilter(k)}>
-            {k === 'all' ? '全部' : k === 'missing' ? `缺失 ${missing}` : k === 'updateable' ? `可更新 ${verItems.length}` : `错位 ${misTask?.failed ?? misItems.length}`}
-          </FilterBtn>
-        ))}
-      </BadgeRow>
+      <PageTitle
+        title="目录巡检"
+        desc="封面、图标、目录名，一次扫完再决定修不修。"
+        actions={
+          <Row>
+            {(['all', 'missing', 'updateable', 'mismatch'] as Filter[]).map((k) => (
+              <FilterBtn key={k} type="button" $on={filter === k} onClick={() => setFilter(k)}>
+                {k === 'all' ? '全部' : k === 'missing' ? `缺失 ${missing}` : k === 'updateable' ? `可更新 ${verItems.length}` : `错位 ${misTask?.failed ?? misItems.length}`}
+              </FilterBtn>
+            ))}
+          </Row>
+        }
+      />
 
       {showScan && (
-        <>
+        <Section>
+          <PanelLabel
+            extra={
+              <Row>
+                <Badge kind="ok">完整 {full}</Badge>
+                <Badge kind="warn">缺失 {missing}</Badge>
+              </Row>
+            }
+          >
+            三件套完整性
+          </PanelLabel>
           <Row>
             <AccentButton
               onClick={() => void launch('audit', 'audit', { base: boothRoot, dryRun: true, noFix: true })}
@@ -180,13 +151,13 @@ export function AuditPage() {
               </>
             )}
             {linux && <Muted>当前系统无文件夹图标三件套，修复已隐藏。</Muted>}
-            <StatText>
+            <Muted>
               {scanTask?.status === 'done'
                 ? `共 ${scanItems.length} 件，${missing} 件缺失三件套`
                 : scanning
                   ? '巡检中…'
                   : ''}
-            </StatText>
+            </Muted>
           </Row>
           <ScanList>
             {scanView.map((it, i) => (
@@ -197,19 +168,17 @@ export function AuditPage() {
                 <QueueActions id={it.id} path={it.path} />
               </ListRow>
             ))}
-            {scanView.length === 0 && <ListRow>等待巡检…</ListRow>}
+            {scanView.length === 0 && (
+              <EmptyState title="还没有巡检结果" hint="点「开始巡检」扫描归档根目录" />
+            )}
           </ScanList>
-          <BadgeRow>
-            <Badge kind="ok">完整 {full}</Badge>
-            <Badge kind="warn">缺失 {missing}</Badge>
-          </BadgeRow>
-        </>
+        </Section>
       )}
 
       {showMis && (
-        <>
-          <SectionGap />
-          <Muted>错位纠正：联网比对官方分类。可勾选后只纠正选中项；不选则全量。</Muted>
+        <Section>
+          <PanelLabel>错位纠正</PanelLabel>
+          <Muted>联网比对官方分类。可勾选后只纠正选中项；不选则全量。</Muted>
           <Row>
             <AccentButton
               onClick={() => void launch('mismatch_audit', 'mismatch_audit', { base: boothRoot })}
@@ -234,15 +203,15 @@ export function AuditPage() {
             {fixingMismatch && fixingMis && (
               <SecondaryButton onClick={() => void cancelTask(fixingMis.id)}>取消</SecondaryButton>
             )}
-            <StatText>
+            <Muted>
               {fixMisTask?.status === 'done'
                 ? `纠正完成：${fixMisTask.done} 件`
                 : misTask?.status === 'done'
                   ? misTask.failed > 0
                     ? `检测到 ${misTask.failed} 件错位`
-                    : '无错位 ✓'
+                    : '无错位'
                   : ''}
-            </StatText>
+            </Muted>
           </Row>
           <ScanList>
             {misItems.map((it, i) => {
@@ -251,9 +220,9 @@ export function AuditPage() {
                 <ListRow key={`${it.id}-${i}`}>
                   {id && (
                     <Checkbox
-                      type="checkbox"
                       checked={picked.includes(id)}
                       onChange={() => togglePick(id)}
+                      aria-label={`选中 ${id}`}
                     />
                   )}
                   <Badge kind={badgeKind(it.status || 'warn')}>{it.status === 'ok' ? '已纠正' : badgeLabel(it.status || 'warn')}</Badge>
@@ -263,13 +232,16 @@ export function AuditPage() {
                 </ListRow>
               );
             })}
+            {misItems.length === 0 && (
+              <EmptyState title="还没有检测错位" hint="点「检测错位」比对官方分类" />
+            )}
           </ScanList>
-        </>
+        </Section>
       )}
 
       {showVer && (
-        <>
-          <SectionGap />
+        <Section>
+          <PanelLabel>版本巡检</PanelLabel>
           <Muted>实验性功能：联网比对官方商品名中的版本号，可能不准确，更新前请人工核对。</Muted>
           <Row>
             <AccentButton
@@ -281,7 +253,7 @@ export function AuditPage() {
             {versioning && version && (
               <SecondaryButton onClick={() => void cancelTask(version.id)}>取消</SecondaryButton>
             )}
-            <StatText>
+            <Muted>
               {verTask?.status === 'done'
                 ? (verTask.updateable || verItems.length) > 0
                   ? `发现 ${verTask.updateable || verItems.length} 件可更新`
@@ -289,7 +261,7 @@ export function AuditPage() {
                 : versioning
                   ? '版本巡检中…'
                   : ''}
-            </StatText>
+            </Muted>
           </Row>
           <ProgressBar>
             <div style={{ width: `${verPct}%` }} />
@@ -303,8 +275,11 @@ export function AuditPage() {
                 <QueueActions id={it.id} path={it.path} />
               </ListRow>
             ))}
+            {verItems.length === 0 && (
+              <EmptyState title="还没有版本巡检结果" hint="点「开始版本巡检」比对官方版本号" />
+            )}
           </ScanList>
-        </>
+        </Section>
       )}
     </PageShell>
   );

@@ -1,23 +1,12 @@
 import styled from 'styled-components';
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { boothItemUrl, extractBoothId } from '../lib/booth';
+import { TextButton } from './ui';
 
 const Wrap = styled.span`
   display: inline-flex;
-  gap: 4px;
+  gap: var(--bvt-s2);
   flex: none;
-`;
-
-const LinkBtn = styled.button`
-  border: none;
-  background: transparent;
-  color: var(--bvt-accent);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  padding: 0 2px;
-  &:hover { text-decoration: underline; }
-  &:disabled { opacity: 0.4; cursor: not-allowed; }
 `;
 
 export function QueueActions({ id, path }: { id: string; path?: string }) {
@@ -27,18 +16,18 @@ export function QueueActions({ id, path }: { id: string; path?: string }) {
     <Wrap>
       {boothId && (
         <>
-          <LinkBtn type="button" onClick={() => void navigator.clipboard.writeText(boothId)}>
+          <TextButton type="button" onClick={() => void navigator.clipboard.writeText(boothId)}>
             复制
-          </LinkBtn>
-          <LinkBtn type="button" onClick={() => void openUrl(boothItemUrl(boothId))}>
+          </TextButton>
+          <TextButton type="button" onClick={() => void openUrl(boothItemUrl(boothId))}>
             打开
-          </LinkBtn>
+          </TextButton>
         </>
       )}
       {path && (
-        <LinkBtn type="button" onClick={() => void revealItemInDir(path)}>
+        <TextButton type="button" onClick={() => void revealItemInDir(path)}>
           文件夹
-        </LinkBtn>
+        </TextButton>
       )}
     </Wrap>
   );

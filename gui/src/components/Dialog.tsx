@@ -9,8 +9,6 @@
 import { useEffect, useRef, useState } from 'react';
 import styled from 'styled-components';
 import { createPortal } from 'react-dom';
-import { useThemeStore, resolveMode } from '../store/themeStore';
-import { THEMES } from '../theme/themes';
 import { AccentButton, SecondaryButton } from './ui';
 
 export type DialogKind = 'info' | 'warn' | 'error' | 'ask';
@@ -72,11 +70,10 @@ const Dialog = styled.div`
   min-width: 420px;
   max-width: 620px;
   background: var(--bvt-surface);
-  border: 1.5px solid var(--bvt-accent-deep);
-  border-top: 3px solid var(--bvt-accent);
-  border-radius: var(--bvt-radius, 0px);
-  padding: 18px 22px;
-  box-shadow: var(--bvt-glass-highlight);
+  border: 1px solid var(--bvt-border);
+  border-radius: var(--bvt-radius);
+  padding: var(--bvt-s5);
+  box-shadow: var(--bvt-shadow-2);
   animation: bvtDialogIn calc(0.18s / var(--bvt-anim)) ease both;
   @keyframes bvtDialogIn {
     from { opacity: 0; transform: translateY(-8px); }
@@ -85,21 +82,20 @@ const Dialog = styled.div`
 `;
 
 const Title = styled.div`
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--bvt-text);
   font-family: var(--bvt-serif);
-  letter-spacing: var(--bvt-title-track, 0.1em);
-  border-bottom: 1px solid var(--bvt-border);
-  padding: 4px 0 8px;
-  margin-bottom: 10px;
+  font-size: var(--bvt-fz-lg);
+  font-weight: 600;
+  letter-spacing: var(--bvt-title-track);
+  color: var(--bvt-text);
+  border-left: var(--bvt-mark-w) solid var(--bvt-accent);
+  padding-left: var(--bvt-s3);
+  margin-bottom: var(--bvt-s4);
 `;
 
 const Body = styled.div`
-  font-size: 13px;
-  color: var(--bvt-text);
-  line-height: 1.55;
-  padding: 4px 0;
+  font-size: var(--bvt-fz-md);
+  color: var(--bvt-text2);
+  line-height: 1.75;
   white-space: pre-wrap;
   word-break: break-word;
 `;
@@ -107,17 +103,14 @@ const Body = styled.div`
 const Buttons = styled.div`
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 16px;
+  gap: var(--bvt-s2);
+  margin-top: var(--bvt-s5);
 `;
 
 /** 弹窗宿主（App 挂载一次）。 */
 export function DialogHost() {
   const [state, setState] = useState<ThemeDialogState | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const { theme, mode, systemTheme } = useThemeStore();
-  const resolved = resolveMode(mode, systemTheme);
-  const pal = THEMES[theme][resolved];
 
   useEffect(() => {
     registerDialogOpener((s) => {
@@ -164,7 +157,6 @@ export function DialogHost() {
 
   if (!state) return null;
   const isAsk = state.kind === 'ask';
-  const accent = pal.accent;
   const close = (result: string | null) => {
     dialogOpen = false;
     state.resolve(result);
@@ -183,7 +175,7 @@ export function DialogHost() {
               <AccentButton onClick={() => close('确定')}>确定</AccentButton>
             </>
           ) : (
-            <AccentButton style={{ borderColor: accent }} onClick={() => close('OK')}>OK</AccentButton>
+            <AccentButton onClick={() => close('OK')}>确定</AccentButton>
           )}
         </Buttons>
       </Dialog>

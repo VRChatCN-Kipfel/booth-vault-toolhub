@@ -8,85 +8,54 @@ import { useUiStore } from '../store/uiStore';
 import { useUpdateStore } from '../store/updateStore';
 import { failedItems, runningCount, useTaskStore } from '../store/taskStore';
 import { cancelTask, retryFailed } from '../lib/task';
+import { TextButton } from './ui';
 
-const Bar = styled.div`
+const Bar = styled.footer`
   position: relative;
-  height: 26px;
+  flex: none;
   display: flex;
   align-items: center;
-  padding: 0 16px;
-  background: var(--bvt-surface2);
-  border-top: 1px solid var(--bvt-glass-border);
-  box-shadow: var(--bvt-glass-highlight), inset 0 1px 0 color-mix(in srgb, var(--bvt-accent) 16%, transparent);
-  color: var(--bvt-text3);
-  font-size: 11px;
-  letter-spacing: 0.1em;
+  gap: var(--bvt-s4);
   width: 100%;
+  height: 28px;
+  padding: 0 var(--bvt-s4);
+  background: var(--bvt-rail-bg);
+  border-top: 1px solid var(--bvt-border);
+  color: var(--bvt-text3);
+  font-size: var(--bvt-fz-xs);
 `;
 
 const StatusText = styled.span`
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  min-width: 0;
-`;
-
-const Hint = styled.button`
-  margin-left: auto;
-  border: none;
-  background: transparent;
-  color: var(--bvt-accent);
-  font: inherit;
-  letter-spacing: 0.08em;
-  cursor: pointer;
-  flex: none;
-`;
-
-const TaskHint = styled.button`
-  margin-left: 12px;
-  border: none;
-  background: transparent;
-  color: var(--bvt-accent);
-  font: inherit;
-  letter-spacing: 0.08em;
-  cursor: pointer;
-  flex: none;
 `;
 
 const Pop = styled.div`
   position: absolute;
-  right: 12px;
-  bottom: 28px;
-  min-width: 280px;
-  max-width: 420px;
-  background: var(--bvt-surface);
-  border: 1px solid var(--bvt-accent);
-  border-radius: var(--bvt-radius, 0px);
-  box-shadow: var(--bvt-glass-highlight);
-  padding: 8px 10px;
+  right: var(--bvt-s3);
+  bottom: 32px;
   z-index: 20;
+  min-width: 300px;
+  max-width: 440px;
+  padding: var(--bvt-s2);
+  background: var(--bvt-surface);
+  border: 1px solid var(--bvt-border);
+  border-radius: var(--bvt-radius);
+  box-shadow: var(--bvt-shadow-2);
 `;
 
 const PopRow = styled.div`
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 0;
+  gap: var(--bvt-s2);
+  padding: var(--bvt-s1) var(--bvt-s2);
   color: var(--bvt-text);
-  font-size: 12px;
-  letter-spacing: 0;
-  .lab { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .meta { color: var(--bvt-text2); flex: none; }
-`;
-
-const PopBtn = styled.button`
-  border: none;
-  background: transparent;
-  color: var(--bvt-accent);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  flex: none;
+  font-size: var(--bvt-fz-sm);
+  .lab { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { flex: none; color: var(--bvt-text2); font-variant-numeric: tabular-nums; }
 `;
 
 export function StatusBar() {
@@ -105,19 +74,19 @@ export function StatusBar() {
     <Bar>
       <StatusText>{status || '\u00A0'}</StatusText>
       {n > 0 && (
-        <TaskHint type="button" onClick={() => setOpen((v) => !v)}>
+        <TextButton type="button" onClick={() => setOpen((v) => !v)}>
           {n} 个任务进行中
-        </TaskHint>
+        </TextButton>
       )}
       {n === 0 && list.length > 0 && (
-        <TaskHint type="button" onClick={() => setOpen((v) => !v)}>
+        <TextButton type="button" onClick={() => setOpen((v) => !v)}>
           {list.length} 个任务可重试
-        </TaskHint>
+        </TextButton>
       )}
       {info?.has_update && (
-        <Hint type="button" onClick={() => goTo('settings')}>
+        <TextButton type="button" onClick={() => goTo('settings')}>
           {info.remote_version} 可更新
-        </Hint>
+        </TextButton>
       )}
       {open && (
         <Pop>
@@ -127,10 +96,10 @@ export function StatusBar() {
               <span className="lab">{t.label}</span>
               <span className="meta">{t.done}/{t.total || '?'}</span>
               {t.status === 'running' && (
-                <PopBtn type="button" onClick={() => void cancelTask(id)}>取消</PopBtn>
+                <TextButton type="button" onClick={() => void cancelTask(id)}>取消</TextButton>
               )}
               {t.status === 'done' && failedItems(t).length > 0 && (
-                <PopBtn type="button" onClick={() => void retryFailed(id)}>重试</PopBtn>
+                <TextButton type="button" onClick={() => void retryFailed(id)}>重试</TextButton>
               )}
             </PopRow>
           ))}

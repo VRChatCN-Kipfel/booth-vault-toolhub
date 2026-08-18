@@ -38,81 +38,84 @@ export interface SupportConfig {
   note?: string;
 }
 
-const Section = styled.div`
-  margin-top: 4px;
+const Wrap = styled.section`
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bvt-s3);
 `;
 
 const Intro = styled.div`
   color: var(--bvt-text2);
-  font-size: 12px;
-  line-height: 1.6;
+  font-size: var(--bvt-fz-sm);
+  line-height: 1.75;
   white-space: pre-wrap;
 `;
 
 /** 作者条目卡片。 */
 const AuthorCard = styled.div`
   display: flex;
-  gap: 14px;
+  gap: var(--bvt-s4);
   align-items: center;
-  padding: 10px 0;
+  padding: var(--bvt-s3) 0;
   border-bottom: 1px solid var(--bvt-border2);
   &:last-of-type { border-bottom: none; }
 `;
 
 const Qr = styled.img`
-  width: 96px;
-  height: 96px;
-  border: 1.5px solid var(--bvt-text3);
-  border-radius: var(--bvt-radius, 0px);
-  object-fit: cover;
+  width: 92px;
+  height: 92px;
   flex: none;
+  object-fit: cover;
+  border: 1px solid var(--bvt-border);
+  border-radius: var(--bvt-radius);
 `;
 
 const Info = styled.div`
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  min-width: 0;
+  gap: 2px;
 `;
 
 const Name = styled.div`
-  font-size: 14px;
+  font-size: var(--bvt-fz-md);
   font-weight: 600;
   color: var(--bvt-text);
 `;
 
 const Title = styled.div`
-  font-size: 12px;
+  font-size: var(--bvt-fz-sm);
   color: var(--bvt-text2);
 `;
 
 const Desc = styled.div`
-  font-size: 12px;
+  font-size: var(--bvt-fz-sm);
   color: var(--bvt-text3);
 `;
 
 const Link = styled.a`
+  margin-top: var(--bvt-s1);
   color: var(--bvt-accent);
-  font-size: 12px;
+  font-size: var(--bvt-fz-sm);
   text-decoration: none;
   &:hover { text-decoration: underline; }
 `;
 
 const Fallback = styled.div`
   color: var(--bvt-text3);
-  font-size: 12px;
+  font-size: var(--bvt-fz-sm);
 `;
 
 const Note = styled.div`
   color: var(--bvt-text3);
-  font-size: 11px;
-  line-height: 1.5;
-  margin-top: 8px;
+  font-size: var(--bvt-fz-xs);
+  line-height: 1.6;
   white-space: pre-wrap;
 `;
 
-const DEFAULT_INTRO = '本工具由主上自用分享，永久免费开源。\n如果帮到了你，欢迎支持继续维护 ✨';
+const DEFAULT_INTRO = '本工具由主上自用分享，永久免费开源。\n如果帮到了你，欢迎支持继续维护。';
 const DEFAULT_NOTE = '赞助全部用于支付 LLM API 费用 + 服务器，\n本工具永不开源化收费。';
 
 /** 解析 image 字段 → src（data URL 原样；相对路径加 BASE_URL）。 */
@@ -144,8 +147,8 @@ export function SupportSection() {
   const authors = config?.authors ?? [];
 
   return (
-    <Section>
-      <PanelLabel>☕ 支持作者</PanelLabel>
+    <Wrap>
+      <PanelLabel>支持作者</PanelLabel>
       <Intro>{DEFAULT_INTRO}</Intro>
       {authors.length === 0 ? (
         <Fallback>（构建时未注入支持作者数据，见 SupportSection 注释）</Fallback>
@@ -165,6 +168,6 @@ export function SupportSection() {
         ))
       )}
       <Note>{config?.note ?? DEFAULT_NOTE}</Note>
-    </Section>
+    </Wrap>
   );
 }

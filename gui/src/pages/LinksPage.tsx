@@ -4,7 +4,10 @@
 
 import { useState } from 'react';
 import styled from 'styled-components';
-import { AccentButton, SecondaryButton, TextArea, Input, ObsPanel, ProgressBar, Badge, PanelLabel, PageShell, Lead } from '../components/ui';
+import {
+  AccentButton, SecondaryButton, TextArea, Input, ObsPanel, ProgressBar, Badge, PanelLabel,
+  PageShell, Section, FlexSection, Row, ListRow, EmptyState, Counter, Checkbox, CheckLabel, Muted,
+} from '../components/ui';
 import { QueueActions } from '../components/QueueActions';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
@@ -12,38 +15,8 @@ import { failedItems, useLatestTask } from '../store/taskStore';
 import { cancelTask, retryFailed, runTask } from '../lib/task';
 import { badgeKind, badgeLabel } from '../lib/booth';
 
-const Row = styled.div`
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-`;
-
-const CountLabel = styled.span`
-  color: var(--bvt-text2);
-  font-size: 13px;
-`;
-
 const QueueList = styled(ObsPanel)`
   flex: 1;
-  min-height: 0;
-`;
-
-const QueueRow = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  border-bottom: 1px solid var(--bvt-border2);
-  font-size: 13px;
-  color: var(--bvt-text);
-  .msg { color: var(--bvt-text2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-`;
-
-const Checkbox = styled.input`
-  width: 16px;
-  height: 16px;
-  accent-color: var(--bvt-accent);
 `;
 
 export function LinksPage() {
@@ -104,69 +77,79 @@ export function LinksPage() {
 
   return (
     <PageShell>
-      <PageTitle title="批量链接" />
-      <Lead>把聊天记录或散链贴进来，按商品 ID 下载免费文件。也可填店铺 URL 整店拉取。</Lead>
-      <TextArea
-        rows={6}
-        placeholder={'粘贴含 BOOTH 商品链接的文本（如聊天记录）…\n支持全 locale 链接：https://booth.pm/ja/items/1234567\n也支持裸 ID：1234567'}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
+      <PageTitle
+        title="批量链接"
+        desc="把聊天记录或散链贴进来，按商品 ID 下载免费文件。也可填店铺 URL 整店拉取。"
       />
-      <Row>
-        <Input
-          value={shop}
-          onChange={(e) => setShop(e.target.value)}
-          placeholder="店铺 URL 或子域名（可选）"
-          style={{ flex: 1, minWidth: 180 }}
-          disabled={running}
+
+      <Section>
+        <PanelLabel>来源</PanelLabel>
+        <TextArea
+          rows={6}
+          placeholder={'粘贴含 BOOTH 商品链接的文本（如聊天记录）…\n支持全 locale 链接：https://booth.pm/ja/items/1234567\n也支持裸 ID：1234567'}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
         />
-        <Input
-          value={limit}
-          onChange={(e) => setLimit(e.target.value.replace(/[^\d]/g, ''))}
-          placeholder="limit"
-          style={{ width: 88 }}
-          disabled={running}
-        />
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--bvt-text2)', fontSize: 13 }}>
-          <Checkbox type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} disabled={running} />
-          预览（不下载）
-        </label>
-      </Row>
-      <Row>
-        <AccentButton onClick={() => void start()} disabled={running || (!text.trim() && !shop.trim())}>
-          {dryRun ? '预览' : '开始归档'}
-        </AccentButton>
-        <SecondaryButton onClick={() => { setText(''); setShop(''); setLimit(''); }} disabled={running}>
-          清空
-        </SecondaryButton>
-        {running && latest && (
-          <SecondaryButton onClick={() => void cancelTask(latest.id)}>取消</SecondaryButton>
-        )}
-        {latest && task?.status === 'done' && failed.length > 0 && (
-          <SecondaryButton onClick={() => void retryFailed(latest.id)}>重试失败（{failed.length}）</SecondaryButton>
-        )}
-        <CountLabel>{done}/{total}</CountLabel>
-        {hint && <CountLabel>{hint}</CountLabel>}
-      </Row>
-      <ProgressBar>
-        <div style={{ width: `${total ? (done / total) * 100 : 0}%` }} />
-      </ProgressBar>
-      <PanelLabel>下载队列</PanelLabel>
-      <QueueList>
-        {queue.map((it, i) => (
-          <QueueRow key={`${it.id}-${i}`}>
-            <Badge kind={badgeKind(it.status)}>{badgeLabel(it.status)}</Badge>
-            <span>{it.id}</span>
-            <span className="msg">{it.message}</span>
-            <QueueActions id={it.id} />
-          </QueueRow>
-        ))}
-        {queue.length === 0 && (
-          <div style={{ color: 'var(--bvt-text3)', padding: 8 }}>
-            {hint || '等待解析链接…'}
-          </div>
-        )}
-      </QueueList>
+        <Row>
+          <Input
+            value={shop}
+            onChange={(e) => setShop(e.target.value)}
+            placeholder="店铺 URL 或子域名（可选）"
+            style={{ flex: 1, minWidth: 180 }}
+            disabled={running}
+          />
+          <Input
+            value={limit}
+            onChange={(e) => setLimit(e.target.value.replace(/[^\d]/g, ''))}
+            placeholder="上限"
+            style={{ width: 88 }}
+            disabled={running}
+          />
+          <CheckLabel>
+            <Checkbox checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} disabled={running} />
+            预览（不下载）
+          </CheckLabel>
+        </Row>
+      </Section>
+
+      <Section>
+        <Row>
+          <AccentButton onClick={() => void start()} disabled={running || (!text.trim() && !shop.trim())}>
+            {dryRun ? '预览' : '开始归档'}
+          </AccentButton>
+          <SecondaryButton onClick={() => { setText(''); setShop(''); setLimit(''); }} disabled={running}>
+            清空
+          </SecondaryButton>
+          {running && latest && (
+            <SecondaryButton onClick={() => void cancelTask(latest.id)}>取消</SecondaryButton>
+          )}
+          {latest && task?.status === 'done' && failed.length > 0 && (
+            <SecondaryButton onClick={() => void retryFailed(latest.id)}>重试失败（{failed.length}）</SecondaryButton>
+          )}
+          <Counter>{done}/{total}</Counter>
+          {hint && <Muted>{hint}</Muted>}
+        </Row>
+        <ProgressBar>
+          <div style={{ width: `${total ? (done / total) * 100 : 0}%` }} />
+        </ProgressBar>
+      </Section>
+
+      <FlexSection>
+        <PanelLabel>下载队列</PanelLabel>
+        <QueueList>
+          {queue.map((it, i) => (
+            <ListRow key={`${it.id}-${i}`}>
+              <Badge kind={badgeKind(it.status)}>{badgeLabel(it.status)}</Badge>
+              <span>{it.id}</span>
+              <span className="msg">{it.message}</span>
+              <QueueActions id={it.id} />
+            </ListRow>
+          ))}
+          {queue.length === 0 && (
+            <EmptyState title={hint || '还没有队列'} hint="贴入链接或填写店铺后开始归档" />
+          )}
+        </QueueList>
+      </FlexSection>
     </PageShell>
   );
 }
