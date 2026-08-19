@@ -652,7 +652,7 @@ fn cmd_version_audit(
                         continue;
                     }
                 };
-                let n = engine::organize::backfill_free_files(
+                let (n, errs) = engine::organize::backfill_free_files(
                     &client,
                     &r.path,
                     &item,
@@ -661,6 +661,7 @@ fn cmd_version_audit(
                 if n > 0 {
                     fixed += n;
                 }
+                failures.extend(errs.into_iter().map(|e| format!("{}: {e}", r.id)));
             }
         }
     }

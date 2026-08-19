@@ -1001,24 +1001,37 @@ pub fn backfill_free(
             }
             match engine::fetch::fetch_item(&client, &item_id) {
                 Ok(item) => {
-                    let n = engine::organize::backfill_free_files(
+                    let (n, errs) = engine::organize::backfill_free_files(
                         &client,
                         &path,
                         &item,
                         cookie.as_deref(),
                     );
-                    done += 1;
-                    let _ = on_event.send(ProgressEvent::ItemDone {
-                        id: item_id,
-                        message: if n > 0 {
-                            format!("补免费文件 +{n}")
-                        } else {
-                            "无需补全或下载失败".to_string()
-                        },
-                        status: "ok".to_string(),
-                        path: Some(folder),
-                        price: None,
-                    });
+                    if errs.is_empty() {
+                        done += 1;
+                        let _ = on_event.send(ProgressEvent::ItemDone {
+                            id: item_id,
+                            message: if n > 0 {
+                                format!("补免费文件 +{n}")
+                            } else {
+                                "无需补全".to_string()
+                            },
+                            status: "ok".to_string(),
+                            path: Some(folder),
+                            price: None,
+                        });
+                    } else {
+                        failed += 1;
+                        let detail = errs.join("；");
+                        let _ = on_event.send(ProgressEvent::ItemError {
+                            id: item_id,
+                            message: if n > 0 {
+                                format!("补免费文件 +{n}；{detail}")
+                            } else {
+                                detail
+                            },
+                        });
+                    }
                 }
                 Err(e) => {
                     failed += 1;

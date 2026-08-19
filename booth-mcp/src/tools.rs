@@ -495,12 +495,14 @@ impl BoothServer {
                             continue;
                         }
                     };
-                    fixed += engine::organize::backfill_free_files(
+                    let (n, errs) = engine::organize::backfill_free_files(
                         &client,
                         &r.path,
                         &item,
                         params.cookie.as_deref(),
                     );
+                    fixed += n;
+                    failures.extend(errs.into_iter().map(|e| format!("{}: {e}", r.id)));
                 }
             }
         }
@@ -515,7 +517,9 @@ impl BoothServer {
     }
 
     /// 列出归档库存（只读）。
-    #[tool(description = "列出归档库存：ID / 标题 / 类目 / 路径。类目取路径第一段，不联网。")]
+    #[tool(
+        description = "列出归档库存：ID / 标题 / 类目 / 路径。类目取 ID 目录的父文件夹名，不联网。"
+    )]
     async fn library(&self, Parameters(params): Parameters<LibraryParams>) -> CallToolResult {
         let config = load_config();
         let base = match params.base.or(config.download_root.clone()) {

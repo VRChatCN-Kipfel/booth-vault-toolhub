@@ -189,32 +189,34 @@ pub fn missing_free_files(dest_dir: &Path, item: &ItemJson) -> Vec<(String, Stri
     missing
 }
 
-/// 免费版本补全：下载 `dest_dir` 缺失的免费文件，返回补全数。
+/// 免费版本补全：下载 `dest_dir` 缺失的免费文件。
 ///
-/// 无 cookie 时不下载（BOOTH 免费文件也需登录），仅返回 0，缺失数量由
-/// `missing_free_files` 另行报告。
+/// 返回 `(补全数, 失败列表)`。无 cookie 时不下载，返回 `(0, [])`，缺失数量由
+/// `missing_free_files` 另行报告。下载失败（含过期 Cookie / 假文件）写入失败列表。
 pub fn backfill_free_files(
     client: &Client,
     dest_dir: &Path,
     item: &ItemJson,
     cookie: Option<&str>,
-) -> usize {
+) -> (usize, Vec<String>) {
     let missing = missing_free_files(dest_dir, item);
     if missing.is_empty() {
-        return 0;
+        return (0, Vec::new());
     }
     let has_cookie = cookie.map(|c| !c.trim().is_empty()).unwrap_or(false);
     if !has_cookie {
-        return 0;
+        return (0, Vec::new());
     }
     let mut added = 0;
+    let mut errors = Vec::new();
     for (url, fname) in missing {
         let dest = dest_dir.join(sanitize(&fname, 120));
-        if download::download(client, &url, &dest, true, BACKFILL_RATE_LIMIT).is_ok() {
-            added += 1;
+        match download::download(client, &url, &dest, true, BACKFILL_RATE_LIMIT) {
+            Ok(()) => added += 1,
+            Err(e) => errors.push(format!("{fname}: {}", download::with_cookie_hint(e))),
         }
     }
-    added
+    (added, errors)
 }
 
 /// 整理单个 archive 文件。
@@ -344,10 +346,13 @@ fn finalize_folder(
     write_booth_txt(folder, item);
 
     // 免费版本补全。
-    let backfilled = backfill_free_files(client, folder, item, opts.cookie);
+    let (backfilled, backfill_errors) = backfill_free_files(client, folder, item, opts.cookie);
     if backfilled > 0 {
         message.push_str(&format!("；免费版本补全 +{backfilled}"));
-    } else {
+    }
+    if !backfill_errors.is_empty() {
+        message.push_str(&format!("；补全失败: {}", backfill_errors.join("；")));
+    } else if backfilled == 0 {
         let missing = missing_free_files(folder, item).len();
         if missing > 0 {
             let hint = if opts.cookie.map(|c| !c.trim().is_empty()).unwrap_or(false) {
@@ -752,8 +757,9 @@ mod tests {
         };
         let client = crate::session::make_session(&crate::config::AppConfig::default(), None);
         // 无 cookie：不触发任何下载。
-        let added = backfill_free_files(&client, &dir, &item, None);
+        let (added, errors) = backfill_free_files(&client, &dir, &item, None);
         assert_eq!(added, 0);
+        assert!(errors.is_empty());
         assert!(!dir.join("a.zip").is_file());
         let _ = std::fs::remove_dir_all(&dir);
     }

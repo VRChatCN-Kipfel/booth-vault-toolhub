@@ -68,7 +68,7 @@ export function LibraryPage() {
     <PageShell>
       <PageTitle
         title="库存"
-        desc="已归档的商品目录。类目取路径第一段，不联网。"
+        desc="已归档的商品目录。类目取 ID 目录的父文件夹名，不联网。"
         actions={<Counter>{view.length}/{items.length}</Counter>}
       />
 

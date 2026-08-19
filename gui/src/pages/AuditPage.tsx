@@ -318,7 +318,7 @@ export function AuditPage() {
               </ListRow>
             ))}
             {verItems.length === 0 && (
-              <EmptyState title="还没有版本巡检结果" hint="点「开始版本巡检」比对官方版本号" />
+              <EmptyState title="还没有版本巡检结果" hint="点「开始版本巡检」比对本地与远程免费文件名版本" />
             )}
           </ScanList>
         </Section>
