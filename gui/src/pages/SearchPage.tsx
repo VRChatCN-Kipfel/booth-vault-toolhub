@@ -2,7 +2,7 @@
  * 实验检索页：文件名 → score_and_pick 候选 → 歧义人工选 → 原路径+forceId 归档。
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import styled from 'styled-components';
 import {
   AccentButton, SecondaryButton, TextArea, ObsPanel, ProgressBar, Badge, PanelLabel, PageShell,
@@ -11,6 +11,7 @@ import {
 import { QueueActions } from '../components/QueueActions';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
+import { useUiStore } from '../store/uiStore';
 import { failedItems, useLatestTask } from '../store/taskStore';
 import { cancelTask, retryFailed, runTask } from '../lib/task';
 import { badgeKind, badgeLabel, formatPrice } from '../lib/booth';
@@ -59,6 +60,7 @@ function parseFiles(blob: string): string[] {
 export function SearchPage() {
   const boothRoot = useAppConfigStore((s) => s.boothRoot);
   const cookie = useAppConfigStore((s) => s.cookie);
+  const consumeSearchPaths = useUiStore((s) => s.consumeSearchPaths);
   const preview = useLatestTask('search');
   const archive = useLatestTask('search_archive');
   const [text, setText] = useState('');
@@ -141,6 +143,17 @@ export function SearchPage() {
       setStarting(false);
     }
   }
+
+  useEffect(() => {
+    const paths = consumeSearchPaths();
+    if (paths.length === 0) return;
+    setText((prev) => {
+      const have = new Set(parseFiles(prev));
+      const extra = paths.filter((p) => !have.has(p));
+      if (extra.length === 0) return prev;
+      return [...parseFiles(prev), ...extra].join('\n');
+    });
+  }, [consumeSearchPaths]);
 
   const running = searching || archiving;
 

@@ -20,6 +20,7 @@ const KIND_LABEL: Partial<Record<TaskKind, string>> = {
   audit: '目录巡检',
   audit_fix: '修复三件套',
   version_audit: '版本巡检',
+  backfill_free: '补免费文件',
   mismatch_audit: '错位检测',
   fix_mismatch: '错位纠正',
 };

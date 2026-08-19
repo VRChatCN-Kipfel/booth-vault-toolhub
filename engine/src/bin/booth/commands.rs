@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use crate::{Cli, Command, GroupBy, ShellCmd};
+use crate::{Cli, Command, ShellCmd};
 use engine::config::{AppConfig, default_rate_limit_secs, load_config, resolve_cookie};
 use engine::session::make_session;
 
@@ -21,9 +21,7 @@ pub fn run(cli: Cli) -> u8 {
             out,
             dry_run,
             limit,
-            folder_by,
             cookie,
-            ua,
         } => cmd_download(
             &config,
             shop.as_deref(),
@@ -31,9 +29,7 @@ pub fn run(cli: Cli) -> u8 {
             out.as_deref(),
             dry_run,
             limit,
-            folder_by,
             cookie.as_deref(),
-            ua.as_deref(),
             cli.json,
         ),
         Command::Organize {
@@ -55,8 +51,6 @@ pub fn run(cli: Cli) -> u8 {
             files,
             base_dir,
             dry_run,
-            keep,
-            auto,
             id,
             cookie,
         } => cmd_search(
@@ -64,8 +58,6 @@ pub fn run(cli: Cli) -> u8 {
             &files,
             base_dir.as_deref(),
             dry_run,
-            keep,
-            auto,
             id.as_deref(),
             cookie.as_deref(),
             cli.json,
@@ -75,6 +67,10 @@ pub fn run(cli: Cli) -> u8 {
             dry_run,
             no_fix,
         } => cmd_audit(&config, base.as_deref(), dry_run, no_fix, cli.json),
+        Command::VersionAudit { base, fix, cookie } => {
+            cmd_version_audit(&config, base.as_deref(), fix, cookie.as_deref(), cli.json)
+        }
+        Command::Library { base } => cmd_library(&config, base.as_deref(), cli.json),
         Command::Shell { command } => cmd_shell(command),
         Command::UpdateCheck { proxy } => cmd_update_check(proxy, cli.json),
     }
@@ -94,12 +90,9 @@ fn cmd_download(
     out: Option<&Path>,
     dry_run: bool,
     limit: usize,
-    _folder_by: GroupBy,
     cookie: Option<&str>,
-    ua: Option<&str>,
     json: bool,
 ) -> u8 {
-    let _ = ua;
     let out_root = match download_root(config, out) {
         Some(p) => p.to_path_buf(),
         None => {
@@ -199,36 +192,29 @@ fn process_download_one(
     if files.is_empty() {
         return Ok(false);
     }
-    let title = if item.name.is_empty() {
-        item_id.to_string()
-    } else {
-        item.name.clone()
-    };
-    let cat = if item.category.name.is_empty() {
-        "その他"
-    } else {
-        item.category.name.as_str()
-    };
-    let group = engine::classify::classify(cat, "");
-    let folder = out_root
-        .join(engine::clean::sanitize(&group, 40))
-        .join(format!("{item_id}_{}", engine::clean::sanitize(&title, 70)));
+    let folder = engine::organize::target_folder(out_root, &item, item_id);
     if dry_run {
         println!(
-            "[dry-run] {item_id} | {group} | {title} ({} files)",
+            "[dry-run] {item_id} | {} ({} files)",
+            folder.display(),
             files.len()
         );
         return Ok(true);
     }
     std::fs::create_dir_all(&folder).map_err(|e| format!("建目录失败: {e}"))?;
+    engine::organize::write_booth_txt(&folder, &item);
     for (url, fname) in files {
         let dest = folder.join(engine::clean::sanitize(&fname, 120));
         // 幂等：已存在且有效则跳过。
         if dest.exists() && !engine::cover::looks_html(&std::fs::read(&dest).unwrap_or_default()) {
             continue;
         }
-        engine::download::download(client, &url, &dest, true, 0.0)
-            .map_err(|e| format!("下载失败 {fname}: {e}"))?;
+        engine::download::download(client, &url, &dest, true, 0.0).map_err(|e| {
+            format!(
+                "下载失败 {fname}: {}",
+                engine::download::with_cookie_hint(e)
+            )
+        })?;
         println!("   -> {fname}");
     }
     // 封面 + 图标。
@@ -340,13 +326,10 @@ fn cmd_search(
     files: &[std::path::PathBuf],
     base_dir: Option<&Path>,
     dry_run: bool,
-    keep: bool,
-    _auto: bool,
     force_id: Option<&str>,
     cookie: Option<&str>,
     json: bool,
 ) -> u8 {
-    let _ = keep;
     let base = match download_root(config, base_dir) {
         Some(p) => p.to_path_buf(),
         None => {
@@ -439,12 +422,13 @@ fn process_search_file(
                     price: r.price,
                 })
                 .collect();
+            let names = engine::unitypackage::names_for_score(path);
             let (picked, _) = engine::score::score_and_pick(
                 &q,
                 &items,
                 false,
                 |id| canonical_name(client, id),
-                None,
+                names.as_deref(),
             );
             if let Some(p) = picked {
                 best = Some(p.clone());
@@ -458,34 +442,16 @@ fn process_search_file(
         }
     };
 
-    // 整理（直接复用 organize 逻辑：目标目录 + 移动 + 封面 + 图标 + 补全）。
-    let title = if item.name.is_empty() {
-        item.id.clone()
-    } else {
-        item.name.clone()
-    };
-    let cat = if item.category.name.is_empty() {
-        "その他"
-    } else {
-        item.category.name.as_str()
-    };
-    let group = engine::classify::classify(cat, "");
-    let folder = base.join(engine::clean::sanitize(&group, 40)).join(format!(
-        "{}_{}",
-        item.id,
-        engine::clean::sanitize(&title, 70)
-    ));
     let opts = engine::organize::OrganizeOptions {
         out_root: base,
         dry_run: false,
         cookie,
     };
-    // 用统一 organize_archive 处理移动/封面/图标（但 source 是任意文件，ID 已定）。
     let outcome = engine::organize::organize_archive(client, path, &item.id, &opts, icon_fn);
     if !outcome.ok {
         return Err(outcome.message);
     }
-    println!("   -> 归档: {}", folder.display());
+    println!("   -> 归档: {}", outcome.target_dir.display());
     Ok(Some(item.id))
 }
 
@@ -648,6 +614,161 @@ fn cmd_shell(cmd: ShellCmd) -> u8 {
             }
         }
     }
+}
+
+/// version-audit：文件名版本巡检，可选补免费文件。
+fn cmd_version_audit(
+    config: &AppConfig,
+    base: Option<&Path>,
+    fix: bool,
+    cookie: Option<&str>,
+    json: bool,
+) -> u8 {
+    let base = match download_root(config, base) {
+        Some(p) => p.to_path_buf(),
+        None => {
+            return fail(json, "未指定巡检根目录：用 --base 或配置文件 download_root");
+        }
+    };
+    if !base.is_dir() {
+        return fail(json, &format!("FATAL: {} 不存在", base.display()));
+    }
+    let cookie = resolve_cookie(cookie, config);
+    let client = make_session(config, cookie.as_deref());
+    let rows =
+        engine::audit::version_audit(&base, |id| engine::fetch::fetch_item(&client, id).ok());
+    let mut fixed = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    if fix {
+        let has_cookie = cookie.as_deref().is_some_and(|c| !c.trim().is_empty());
+        if !has_cookie && rows.iter().any(|r| r.missing > 0) {
+            failures.push(engine::download::cookie_required_msg().to_string());
+        } else {
+            for r in &rows {
+                let item = match engine::fetch::fetch_item(&client, &r.id) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        failures.push(format!("{}: {e}", r.id));
+                        continue;
+                    }
+                };
+                let n = engine::organize::backfill_free_files(
+                    &client,
+                    &r.path,
+                    &item,
+                    cookie.as_deref(),
+                );
+                if n > 0 {
+                    fixed += n;
+                }
+            }
+        }
+    }
+    let items: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id,
+                "name": r.name,
+                "local": r.local_tag,
+                "remote": r.official_tag,
+                "path": r.path.display().to_string(),
+                "missing": r.missing,
+            })
+        })
+        .collect();
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "command": "version-audit",
+                "updateable": rows.len(),
+                "fixed": fixed,
+                "failures": failures,
+                "items": items,
+            }))
+            .unwrap()
+        );
+    } else {
+        println!("可更新 {} 件", rows.len());
+        for r in &rows {
+            println!(
+                "  {} · {}  本地 {} → 远程 {}  缺 {}",
+                r.id,
+                r.name,
+                if r.local_tag.is_empty() {
+                    "-"
+                } else {
+                    &r.local_tag
+                },
+                if r.official_tag.is_empty() {
+                    "-"
+                } else {
+                    &r.official_tag
+                },
+                r.missing
+            );
+        }
+        if fix {
+            println!("补全文件 +{fixed}");
+        }
+        for f in &failures {
+            println!("   ! {f}");
+        }
+    }
+    if !failures.is_empty() || (!fix && !rows.is_empty()) {
+        1
+    } else {
+        0
+    }
+}
+
+/// library：列出库存。
+fn cmd_library(config: &AppConfig, base: Option<&Path>, json: bool) -> u8 {
+    let base = match download_root(config, base) {
+        Some(p) => p.to_path_buf(),
+        None => {
+            return fail(json, "未指定归档根目录：用 --base 或配置文件 download_root");
+        }
+    };
+    if !base.is_dir() {
+        return fail(json, &format!("FATAL: {} 不存在", base.display()));
+    }
+    let items = engine::audit::list_library(&base);
+    if json {
+        let rows: Vec<serde_json::Value> = items
+            .iter()
+            .map(|i| {
+                serde_json::json!({
+                    "id": i.id,
+                    "name": i.name,
+                    "category": i.category,
+                    "path": i.path.display().to_string(),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "command": "library",
+                "total": items.len(),
+                "items": rows,
+            }))
+            .unwrap()
+        );
+    } else {
+        println!("库存 {} 件", items.len());
+        for i in &items {
+            println!(
+                "  {}  [{}]  {}  {}",
+                i.id,
+                i.category,
+                i.name,
+                i.path.display()
+            );
+        }
+    }
+    0
 }
 
 /// update_check 命令（检查工具自更新）。

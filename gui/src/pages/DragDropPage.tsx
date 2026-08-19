@@ -14,6 +14,7 @@ import { information } from '../components/Dialog';
 import { QueueActions } from '../components/QueueActions';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
+import { useUiStore } from '../store/uiStore';
 import { failedItems, useLatestTask } from '../store/taskStore';
 import { cancelTask, retryFailed, runTask } from '../lib/task';
 import { useThemeStore, resolveMode } from '../store/themeStore';
@@ -21,9 +22,9 @@ import { THEMES } from '../theme/themes';
 import { dropTile } from '../theme/motifs';
 import { badgeKind, badgeLabel } from '../lib/booth';
 
-const DROP_KIND: Record<string, 'zhuyin' | 'gold' | 'guwen'> = {
+const DROP_KIND: Record<string, 'zhuyin' | 'liujin' | 'guwen'> = {
   zhuyin: 'zhuyin',
-  liujin: 'gold',
+  liujin: 'liujin',
   guwen: 'guwen',
 };
 
@@ -85,6 +86,7 @@ function ingest(paths: string[]): { good: string[]; bad: string[] } {
 export function DragDropPage() {
   const boothRoot = useAppConfigStore((s) => s.boothRoot);
   const cookie = useAppConfigStore((s) => s.cookie);
+  const sendToSearch = useUiStore((s) => s.sendToSearch);
   const { theme, mode, systemTheme } = useThemeStore();
   const resolved = resolveMode(mode, systemTheme);
   const pal = THEMES[theme][resolved];
@@ -188,7 +190,13 @@ export function DragDropPage() {
 
         {noId.length > 0 && (
           <>
-            <PanelLabel>缺少 ID 的文件 · 补名后重拖</PanelLabel>
+            <PanelLabel extra={
+              <SecondaryButton onClick={() => sendToSearch(noId)}>
+                去实验检索
+              </SecondaryButton>
+            }>
+              缺少 ID 的文件
+            </PanelLabel>
             <NoList>
               {noId.map((p, i) => (
                 <div className="path" key={i}>{p}</div>

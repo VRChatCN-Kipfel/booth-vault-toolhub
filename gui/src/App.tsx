@@ -9,7 +9,8 @@ import { useAppConfigStore } from './store/appConfigStore';
 import { useUpdateStore } from './store/updateStore';
 import { useUiStore } from './store/uiStore';
 import { useSystemTheme } from './hooks/useSystemTheme';
-import { Link2, MousePointerSquareDashed, Search, ClipboardCheck, Settings2 } from 'lucide-react';
+import { Link2, MousePointerSquareDashed, Search, Archive, ClipboardCheck, Settings2 } from 'lucide-react';
+import { applyAppIcon } from './theme/appIcon';
 import { THEMES } from './theme/themes';
 import { GlobalStyle, paletteToVars } from './theme/global';
 import { Sidebar, type NavItemDef } from './components/Sidebar';
@@ -22,12 +23,14 @@ import { LinksPage } from './pages/LinksPage';
 import { DragDropPage } from './pages/DragDropPage';
 import { SearchPage } from './pages/SearchPage';
 import { AuditPage } from './pages/AuditPage';
+import { LibraryPage } from './pages/LibraryPage';
 import { SettingsPage } from './pages/SettingsPage';
 
 const NAV_ITEMS: NavItemDef[] = [
   { key: 'links', label: '批量链接', icon: Link2 },
   { key: 'drag', label: '拖拽分类', icon: MousePointerSquareDashed },
   { key: 'search', label: '实验检索', icon: Search },
+  { key: 'library', label: '库存', icon: Archive },
   { key: 'audit', label: '目录巡检', icon: ClipboardCheck },
   { key: 'settings', label: '设置', icon: Settings2 },
 ];
@@ -86,7 +89,7 @@ const PageWrap = styled.div`
 
 function App() {
   const {
-    theme, mode, systemTheme, animSpeed, motifOpacity, setSystemTheme, hydrate: hydrateTheme,
+    theme, mode, systemTheme, animSpeed, motifOpacity, appIcon, setSystemTheme, hydrate: hydrateTheme,
   } = useThemeStore();
   const { hydrate: hydrateConfig, proxy } = useAppConfigStore();
   const checkUpdate = useUpdateStore((s) => s.check);
@@ -112,7 +115,7 @@ function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key >= '1' && e.key <= '5') {
+      if ((e.metaKey || e.ctrlKey) && e.key >= '1' && e.key <= '6') {
         const item = NAV_ITEMS[Number(e.key) - 1];
         if (!item) return;
         e.preventDefault();
@@ -163,6 +166,10 @@ function App() {
     }
   }, [theme, resolved, animSpeed, motifOpacity]);
 
+  useEffect(() => {
+    void applyAppIcon(appIcon);
+  }, [appIcon]);
+
   return (
     <ThemeProvider theme={{ theme, mode: resolved }}>
       <GlobalStyle />
@@ -176,6 +183,7 @@ function App() {
                 {page === 'links' && <LinksPage />}
                 {page === 'drag' && <DragDropPage />}
                 {page === 'search' && <SearchPage />}
+                {page === 'library' && <LibraryPage />}
                 {page === 'audit' && <AuditPage />}
                 {page === 'settings' && <SettingsPage />}
               </PageWrap>

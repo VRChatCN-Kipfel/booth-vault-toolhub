@@ -4,8 +4,8 @@
  */
 
 import { create } from 'zustand';
-import type { ThemeName } from '../theme/themes';
-import { DEFAULT_MODE_PER_THEME, DEFAULT_THEME, THEMES } from '../theme/themes';
+import type { AppIconId, ThemeName } from '../theme/themes';
+import { DEFAULT_APP_ICON, DEFAULT_MODE_PER_THEME, DEFAULT_THEME, THEMES, isAppIconId } from '../theme/themes';
 
 /** 明暗偏好：light / dark / system（跟随系统）。 */
 export type ModePref = 'light' | 'dark' | 'system';
@@ -23,7 +23,10 @@ interface ThemeState {
   motifOpacity: number;
   /** 自定义花纹图（data URL）；null 用主题自带图。 */
   motifImage: string | null;
+  /** 程序图标，与主题解耦。 */
+  appIcon: AppIconId;
   setTheme: (t: ThemeName) => void;
+  setAppIcon: (id: AppIconId) => void;
   setMode: (m: ModePref) => void;
   cycleTheme: () => void;
   /** 三态循环明暗：light → system → dark → light。 */
@@ -73,9 +76,9 @@ export function stopIndex(v: number): number {
   return Math.max(0, idx);
 }
 
-/** 花纹不透明度默认值与上限（越界会把界面糊掉，卡在可用区间内）。 */
-export const MOTIF_DEFAULT = 0.08;
-export const MOTIF_MAX = 0.6;
+/** 花纹不透明度：默认即上限 50%。 */
+export const MOTIF_DEFAULT = 0.5;
+export const MOTIF_MAX = 0.5;
 
 interface Prefs {
   theme?: string;
@@ -83,6 +86,7 @@ interface Prefs {
   anim_speed?: number;
   motif_opacity?: number;
   motif_image?: string;
+  app_icon?: string;
 }
 
 /** 从 plugin-store 读取配置。 */
@@ -96,6 +100,7 @@ async function loadPrefs(): Promise<Prefs | null> {
       anim_speed: (await store.get<number>('anim_speed')) ?? undefined,
       motif_opacity: (await store.get<number>('motif_opacity')) ?? undefined,
       motif_image: (await store.get<string>('motif_image')) ?? undefined,
+      app_icon: (await store.get<string>('app_icon')) ?? undefined,
     };
   } catch {
     return null;
@@ -112,6 +117,7 @@ async function savePrefs(s: ThemeState) {
     await store.set('anim_speed', s.animSpeed);
     await store.set('motif_opacity', s.motifOpacity);
     await store.set('motif_image', s.motifImage ?? '');
+    await store.set('app_icon', s.appIcon);
     await store.save();
   } catch {
     // 非 Tauri 环境（浏览器 dev）静默失败
@@ -125,9 +131,15 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
   animSpeed: ANIM_DEFAULT,
   motifOpacity: MOTIF_DEFAULT,
   motifImage: null,
+  appIcon: DEFAULT_APP_ICON,
 
   setTheme: (t) => {
     set({ theme: t });
+    void savePrefs(get());
+  },
+
+  setAppIcon: (id) => {
+    set({ appIcon: id });
     void savePrefs(get());
   },
 
@@ -138,7 +150,8 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
 
   cycleTheme: () => {
     const idx = THEME_ORDER.indexOf(get().theme);
-    set({ theme: THEME_ORDER[(idx + 1) % THEME_ORDER.length] });
+    const theme = THEME_ORDER[(idx + 1) % THEME_ORDER.length];
+    set({ theme });
     void savePrefs(get());
   },
 
@@ -181,5 +194,6 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
     if (typeof o === 'number' && o >= 0) set({ motifOpacity: Math.min(MOTIF_MAX, o) });
     // 只认 data URL：路径在 webview 里加载不到，脏值当没设过。
     if (prefs.motif_image?.startsWith('data:image/')) set({ motifImage: prefs.motif_image });
+    if (prefs.app_icon && isAppIconId(prefs.app_icon)) set({ appIcon: prefs.app_icon });
   },
 }));

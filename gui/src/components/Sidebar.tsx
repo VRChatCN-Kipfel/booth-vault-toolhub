@@ -8,7 +8,7 @@
 import styled from 'styled-components';
 import type { LucideIcon } from 'lucide-react';
 import { useThemeStore, resolveMode } from '../store/themeStore';
-import { FONTS, motifSidebarSrc, THEME_NAMES, THEMES } from '../theme/themes';
+import { APP_ICON_SRC, FONTS, motifSidebarSrc, THEME_NAMES, THEMES } from '../theme/themes';
 import { brandMark } from '../theme/chrome';
 import { ModeToggle } from './ModeToggle';
 
@@ -60,11 +60,12 @@ const Brand = styled.div`
   }
 `;
 
-const Seal = styled.div`
+const Seal = styled.img`
   width: 26px;
   height: 26px;
   flex: none;
-  svg { width: 100%; height: 100%; display: block; }
+  border-radius: 6px;
+  object-fit: cover;
 `;
 
 const BrandText = styled.div`
@@ -209,7 +210,7 @@ export function Sidebar({
   active: string;
   onNavigate: (key: string) => void;
 }) {
-  const { theme, mode, systemTheme, motifImage, cycleTheme } = useThemeStore();
+  const { theme, mode, systemTheme, motifImage, appIcon, cycleTheme } = useThemeStore();
   const resolved = resolveMode(mode, systemTheme);
   const pal = THEMES[theme][resolved];
   const mod = /Mac|Macintosh/.test(navigator.userAgent) ? '⌘' : 'Ctrl ';
@@ -220,7 +221,7 @@ export function Sidebar({
       <Motif $src={motifImage ?? motifSidebarSrc(theme, resolved)} />
       <Inner>
         <Brand>
-          <Seal dangerouslySetInnerHTML={{ __html: brandMark(theme, pal.accent) }} />
+          <Seal src={APP_ICON_SRC[appIcon]} alt="" />
           <BrandText>
             <span className="zh">展位库</span>
             <span className="en">BOOTH VAULT</span>

@@ -8,6 +8,7 @@ import {
   AccentButton, SecondaryButton, ObsPanel, ProgressBar, Badge, PageShell, PanelLabel,
   Section, Row, ListRow, EmptyState, Checkbox, Muted,
 } from '../components/ui';
+import { information } from '../components/Dialog';
 import { QueueActions } from '../components/QueueActions';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
@@ -40,10 +41,12 @@ type Filter = 'all' | 'missing' | 'updateable' | 'mismatch';
 
 export function AuditPage() {
   const boothRoot = useAppConfigStore((s) => s.boothRoot);
+  const cookie = useAppConfigStore((s) => s.cookie);
   const setStatus = useUiStore((s) => s.setStatus);
   const scan = useLatestTask('audit');
   const fix = useLatestTask('audit_fix');
   const version = useLatestTask('version_audit');
+  const backfill = useLatestTask('backfill_free');
   const mismatch = useLatestTask('mismatch_audit');
   const fixingMis = useLatestTask('fix_mismatch');
   const [starting, setStarting] = useState<TaskKind | null>(null);
@@ -54,12 +57,14 @@ export function AuditPage() {
   const scanTask = scan?.task;
   const fixTask = fix?.task;
   const verTask = version?.task;
+  const backfillTask = backfill?.task;
   const misTask = mismatch?.task;
   const fixMisTask = fixingMis?.task;
 
   const scanning = starting === 'audit' || scanTask?.status === 'running';
   const fixing = starting === 'audit_fix' || fixTask?.status === 'running';
   const versioning = starting === 'version_audit' || verTask?.status === 'running';
+  const backfilling = starting === 'backfill_free' || backfillTask?.status === 'running';
   const mismatching = starting === 'mismatch_audit' || misTask?.status === 'running';
   const fixingMismatch = starting === 'fix_mismatch' || fixMisTask?.status === 'running';
 
@@ -242,7 +247,7 @@ export function AuditPage() {
       {showVer && (
         <Section>
           <PanelLabel>版本巡检</PanelLabel>
-          <Muted>实验性功能：联网比对官方商品名中的版本号，可能不准确，更新前请人工核对。</Muted>
+          <Muted>比对远程免费文件名与本地文件名版本。付费缺口只开商品页，不自动下。</Muted>
           <Row>
             <AccentButton
               onClick={() => void launch('version_audit', 'version_audit', { base: boothRoot })}
@@ -252,6 +257,26 @@ export function AuditPage() {
             </AccentButton>
             {versioning && version && (
               <SecondaryButton onClick={() => void cancelTask(version.id)}>取消</SecondaryButton>
+            )}
+            <AccentButton
+              onClick={() => {
+                const folders = verItems.map((i) => i.path).filter((p): p is string => Boolean(p));
+                if (folders.length === 0) return;
+                if (!cookie.trim()) {
+                  void information('需要 Cookie', '免费文件补全需要登录 Cookie，请到设置页填写。');
+                  return;
+                }
+                void launch('backfill_free', 'backfill_free', {
+                  folders,
+                  cookie: cookie || null,
+                });
+              }}
+              disabled={backfilling || verItems.length === 0}
+            >
+              {backfilling ? '补全中…' : `补免费文件（${verItems.length}）`}
+            </AccentButton>
+            {backfilling && backfill && (
+              <SecondaryButton onClick={() => void cancelTask(backfill.id)}>取消</SecondaryButton>
             )}
             <Muted>
               {verTask?.status === 'done'
@@ -273,6 +298,23 @@ export function AuditPage() {
                 <span>{it.id}</span>
                 <span className="msg">{it.message}</span>
                 <QueueActions id={it.id} path={it.path} />
+                {it.path && (
+                  <SecondaryButton
+                    onClick={() => {
+                      if (!cookie.trim()) {
+                        void information('需要 Cookie', '免费文件补全需要登录 Cookie，请到设置页填写。');
+                        return;
+                      }
+                      void launch('backfill_free', 'backfill_free', {
+                        folders: [it.path],
+                        cookie: cookie || null,
+                      });
+                    }}
+                    disabled={backfilling}
+                  >
+                    补免费文件
+                  </SecondaryButton>
+                )}
               </ListRow>
             ))}
             {verItems.length === 0 && (

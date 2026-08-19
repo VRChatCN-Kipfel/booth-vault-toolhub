@@ -4,8 +4,9 @@ mod commands;
 pub mod portable;
 
 use commands::{
-    TaskRegistry, audit, cancel_task, download, fix_mismatch, load_app_config, mismatch_audit,
-    organize, save_app_config, search, update_check, version_audit,
+    TaskRegistry, audit, backfill_free, cancel_task, download, fix_mismatch, list_library,
+    load_app_config, mismatch_audit, organize, save_app_config, search, set_app_icon, update_check,
+    version_audit,
 };
 use tauri::Manager;
 use tauri_plugin_window_state::StateFlags;
@@ -37,12 +38,15 @@ pub fn run() {
             search,
             audit,
             version_audit,
+            backfill_free,
+            list_library,
             mismatch_audit,
             fix_mismatch,
             update_check,
             cancel_task,
             load_app_config,
             save_app_config,
+            set_app_icon,
         ])
         .setup(|app| {
             if app.handle().get_webview_window("main").is_some() {

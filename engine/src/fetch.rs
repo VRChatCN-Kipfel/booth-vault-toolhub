@@ -16,6 +16,8 @@ pub struct ItemJson {
     #[serde(deserialize_with = "de_id")]
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub description: String,
     pub price: serde_json::Value,
     pub category: CategoryJson,
     pub shop: ShopJson,
@@ -190,6 +192,23 @@ mod tests {
     #[test]
     fn thumb_empty_when_no_images() {
         assert_eq!(thumb_from_json(&ItemJson::default()), "");
+    }
+
+    #[test]
+    fn description_defaults_empty() {
+        let item: ItemJson = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "name": "n"
+        }))
+        .unwrap();
+        assert!(item.description.is_empty());
+        let item: ItemJson = serde_json::from_value(serde_json::json!({
+            "id": "2",
+            "name": "n",
+            "description": "条款原文"
+        }))
+        .unwrap();
+        assert_eq!(item.description, "条款原文");
     }
 
     #[test]
