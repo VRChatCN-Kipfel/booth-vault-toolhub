@@ -138,6 +138,38 @@ jobs:
         working-directory: gui
         run: npm ci
 
+      # ---- 支持作者栏位注入（每作者一个 secret，值为完整 raw JSON，图片 base64 内嵌 data: URL）----
+      #   AUTHOR_1_JSON: {"name":"主上","title":"LinnYue","desc":"...","avatar":"data:image/png;base64,...","links":[{"url":"...","label":"爱发电"}],"image":"data:image/png;base64,..."}
+      #   AUTHOR_2_JSON: {"name":"作者B","image":"data:image/png;base64,..."}
+      #   AUTHOR_3_JSON: {"name":"作者C","image":"data:image/png;base64,..."}
+      #   SUPPORT_NOTE:  底部说明文字（可选，覆盖内置文案）
+      # 未配置 secrets 时保持仓库默认模板（单占位作者）。空值自动跳过，当前最多 3 位。
+      # 通过 env 传值而非内联到 run（secret 含双引号/base64，内联会破坏 bash 引号解析）。
+      - name: Inject support authors
+        shell: bash
+        working-directory: gui
+        env:
+          AUTHOR_1_JSON: ${{ secrets.AUTHOR_1_JSON }}
+          AUTHOR_2_JSON: ${{ secrets.AUTHOR_2_JSON }}
+          AUTHOR_3_JSON: ${{ secrets.AUTHOR_3_JSON }}
+          SUPPORT_NOTE: ${{ secrets.SUPPORT_NOTE }}
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp)
+          for v in "$AUTHOR_1_JSON" "$AUTHOR_2_JSON" "$AUTHOR_3_JSON"
+          do
+            [ -z "$v" ] || echo "$v" >> "$tmp"
+          done
+          if [ -s "$tmp" ]; then
+            note="$SUPPORT_NOTE"
+            if [ -z "$note" ]; then
+              jq -s '{authors: .}' "$tmp" > public/support.json
+            else
+              jq -s --arg note "$note" '{authors: ., note: $note}' "$tmp" > public/support.json
+            fi
+          fi
+          rm -f "$tmp"
+
       # ---- Windows：把 CI booth 三二进制放回 release target ----
       # beforeBundleCommand 钩子（gui/scripts/stage-cli.mjs）据此生成 MSI fragment / NSIS generated.nsh。
       - name: Stage booth binaries (Windows)

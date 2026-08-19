@@ -5,11 +5,16 @@
  * 结构：
  *   {
  *     "authors": [
- *       { "name", "title", "url", "desc", "image" }
+ *       { "name", "title", "url", "links", "desc", "avatar", "avatarAlt", "image", "imageAlt" }
  *     ],
  *     "note": "底部说明文字（可选）"
  *   }
+ *  - url：个人链接（可选，旧字段，等价单条 links）。
+ *  - links：个人链接数组（可选，最多渲染 6 条）：[{ "url", "label" }]，label 作悬浮提示。
+ *  - avatar：作者头像，显示在名字左侧（可选）。
+ *  - avatarAlt：头像描述（可选，缺省回退 desc）。
  *  - image：二维码图，base64 data URL（secrets 注入时已编码）或 public 下相对路径。
+ *  - imageAlt：二维码描述（可选，缺省回退 desc）。
  *  - 排序：由应用端决定（保持注入顺序），不在数据中硬编码。
  *
  * 未配置（文件缺失/空/拉取失败）时优雅降级为内置文案。
@@ -19,17 +24,32 @@ import { useEffect, useState } from 'react';
 import styled from 'styled-components';
 import { PanelLabel } from './ui';
 
+export interface SupportLink {
+  /** 链接地址。 */
+  url: string;
+  /** 悬浮提示（可选）。 */
+  label?: string;
+}
+
 export interface SupportAuthor {
   /** 作者名。 */
   name: string;
   /** 昵称/标题（可选）。 */
   title?: string;
-  /** 支持链接（可选）。 */
+  /** 个人链接（可选，等价单条 links）。 */
   url?: string;
+  /** 个人链接数组（可选，最多渲染 6 条）。 */
+  links?: SupportLink[];
   /** 一句话说明（可选）。 */
   desc?: string;
+  /** 头像：data URL 或 public 相对路径（可选）。 */
+  avatar?: string;
+  /** 头像描述（可选，缺省回退 desc 再回退默认）。 */
+  avatarAlt?: string;
   /** 二维码：base64 data URL 或 public 相对路径。 */
   image?: string;
+  /** 二维码描述（可选，缺省回退 desc 再回退默认）。 */
+  imageAlt?: string;
 }
 
 export interface SupportConfig {
@@ -63,10 +83,10 @@ const AuthorCard = styled.div`
 `;
 
 const Qr = styled.img`
-  width: 92px;
-  height: 92px;
+  width: 96px;
+  height: 96px;
   flex: none;
-  object-fit: cover;
+  object-fit: fill;
   border: 1px solid var(--bvt-border);
   border-radius: var(--bvt-radius);
 `;
@@ -77,6 +97,21 @@ const Info = styled.div`
   display: flex;
   flex-direction: column;
   gap: 2px;
+`;
+
+const Head = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+
+const Avatar = styled.img`
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: contain;
+  flex: none;
+  border: 1px solid var(--bvt-border2);
 `;
 
 const Name = styled.div`
@@ -95,13 +130,52 @@ const Desc = styled.div`
   color: var(--bvt-text3);
 `;
 
-const Link = styled.a`
+const Links = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-top: var(--bvt-s1);
-  color: var(--bvt-accent);
-  font-size: var(--bvt-fz-sm);
-  text-decoration: none;
-  &:hover { text-decoration: underline; }
 `;
+
+const LinkBtn = styled.a`
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--bvt-border2);
+  background: var(--bvt-surface2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  transition: border-color calc(0.2s / var(--bvt-anim)) ease, transform calc(0.2s / var(--bvt-anim)) ease;
+  &:hover { border-color: var(--bvt-accent); transform: translateY(-1px); }
+  img { width: 14px; height: 14px; display: block; }
+`;
+
+/** 每作者可渲染的链接数上限（flex-wrap 溢出会换行，6 条内布局稳定）。 */
+const MAX_LINKS = 6;
+
+/** 站点头像内存缓存（按 host，防重复请求）。 */
+const faviconCache = new Map<string, string>();
+
+/** 站点头像 CDN 兜底：favicon 拉不到时用默认地球图标，避免破图。 */
+const FAVICON_FALLBACK = 'data:image/svg+xml;base64,' + btoa(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="none" stroke="#8a7b6a" stroke-width="1.5"/><ellipse cx="8" cy="8" rx="3.4" ry="7" fill="none" stroke="#8a7b6a" stroke-width="1.5"/><line x1="1" y1="8" x2="15" y2="8" stroke="#8a7b6a" stroke-width="1.5"/></svg>'
+);
+
+/** 实时懒加载站点 favicon（google 兜底），内存缓存防重复请求。 */
+function faviconSrc(url: string): string {
+  try {
+    const host = new URL(url).hostname;
+    const cached = faviconCache.get(host);
+    if (cached) return cached;
+    const src = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`;
+    faviconCache.set(host, src);
+    return src;
+  } catch {
+    return FAVICON_FALLBACK;
+  }
+}
 
 const Fallback = styled.div`
   color: var(--bvt-text3);
@@ -124,18 +198,17 @@ const GraphSection = styled.div`
   gap: var(--bvt-s3);
 `;
 
-/** 贡献者图谱：页面限制内自动等比缩放，不拉伸不平铺。 */
+const CONTRIBUTOR_URL =
+  'https://contrib.rocks/image?repo=VRChatCN-Kipfel/booth-vault-toolhub&columns=12';
+
+/** 贡献者图谱：锁 12 列扁形横排，按原始尺寸渲染（不缩放），仅溢出时等比缩小兜底。 */
 const Graph = styled.img`
   display: block;
   max-width: 100%;
-  max-height: 240px;
   width: auto;
   height: auto;
   object-fit: contain;
 `;
-
-const CONTRIBUTOR_URL =
-  'https://contrib.rocks/image?repo=VRChatCN-Kipfel/booth-vault-toolhub';
 
 function ContributorGraph() {
   return (
@@ -151,6 +224,11 @@ function ContributorGraph() {
 function resolveImage(image: string): string {
   if (image.startsWith('data:') || image.startsWith('http')) return image;
   return `${import.meta.env.BASE_URL}${image}`;
+}
+
+/** 图像描述：自定义 alt → desc → 默认文案。 */
+function imageAlt(a: SupportAuthor, kind: 'avatar' | 'image'): string {
+  return a[`${kind}Alt`] || a.desc || (kind === 'avatar' ? '作者头像' : '收款码');
 }
 
 export function SupportSection() {
@@ -174,6 +252,11 @@ export function SupportSection() {
   }, []);
 
   const authors = config?.authors ?? [];
+  const linksOf = (a: SupportAuthor): SupportLink[] => {
+    const merged = [...(a.links ?? [])];
+    if (a.url) merged.push({ url: a.url });
+    return merged.slice(0, MAX_LINKS);
+  };
 
   return (
     <Wrap>
@@ -182,19 +265,42 @@ export function SupportSection() {
       {authors.length === 0 ? (
         <Fallback>（构建时未注入支持作者数据，见 SupportSection 注释）</Fallback>
       ) : (
-        authors.map((a) => (
-          <AuthorCard key={a.name + (a.title ?? '')}>
-            {a.image && <Qr src={resolveImage(a.image)} alt={`${a.name} 收款码`} />}
-            <Info>
-              <Name>{a.name}</Name>
-              {a.title && <Title>{a.title}</Title>}
-              {a.desc && <Desc>{a.desc}</Desc>}
-              {a.url && (
-                <Link href={a.url} target="_blank" rel="noreferrer">支持链接 ↗</Link>
-              )}
-            </Info>
-          </AuthorCard>
-        ))
+        authors.map((a) => {
+          const links = linksOf(a);
+          return (
+            <AuthorCard key={a.name + (a.title ?? '')}>
+              {a.image && <Qr src={resolveImage(a.image)} alt={imageAlt(a, 'image')} />}
+              <Info>
+                <Head>
+                  {a.avatar && <Avatar src={resolveImage(a.avatar)} alt={imageAlt(a, 'avatar')} />}
+                  <Name>{a.name}</Name>
+                </Head>
+                {a.title && <Title>{a.title}</Title>}
+                {a.desc && <Desc>{a.desc}</Desc>}
+                {links.length > 0 && (
+                  <Links>
+                    {links.map((l) => (
+                      <LinkBtn
+                        key={l.url}
+                        href={l.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        title={l.label ?? l.url}
+                      >
+                        <img
+                          src={faviconSrc(l.url)}
+                          alt=""
+                          loading="lazy"
+                          onError={(e) => { e.currentTarget.src = FAVICON_FALLBACK; }}
+                        />
+                      </LinkBtn>
+                    ))}
+                  </Links>
+                )}
+              </Info>
+            </AuthorCard>
+          );
+        })
       )}
       <Note>{config?.note ?? DEFAULT_NOTE}</Note>
       <ContributorGraph />
