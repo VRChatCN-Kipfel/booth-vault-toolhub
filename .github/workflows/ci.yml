@@ -17,7 +17,7 @@ jobs:
   encoding:
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Reject non-UTF-8 / UTF-8 BOM in changed text files
@@ -82,7 +82,7 @@ jobs:
             wv2: arm64
     runs-on: ${{ matrix.runs_on }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 配置 MSVC 开发环境（vcvarsall 官方 PATH/INCLUDE/LIB；
       # 复用 VS 自带工具集，避免 Git Bash /usr/bin/link.exe 遮蔽）
@@ -96,7 +96,7 @@ jobs:
           components: rustfmt, clippy
           targets: ${{ matrix.rust_target }}
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -182,7 +182,7 @@ jobs:
       # 上传 booth 三二进制（统一命名：booth-binaries-{平台}-{架构}；含 version.txt）
       # release 工作流下载后做最终打包（tauri bundle + 便携版）
       - name: Upload booth binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: booth-binaries-windows-${{ matrix.arch }}
           path: |
@@ -212,7 +212,7 @@ jobs:
             artifact: booth-binaries-macos-x64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -235,7 +235,7 @@ jobs:
           cp target/release/booth stage/
           cp target/release/booth-mcp stage/
       - name: Upload booth binaries (macOS)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: stage/**
@@ -248,7 +248,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
