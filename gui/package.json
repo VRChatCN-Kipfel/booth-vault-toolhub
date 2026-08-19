@@ -21,16 +21,16 @@
     "lucide-react": "^1.31.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "styled-components": "^6.5.2",
+    "styled-components": "^6.5.3",
     "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
-    "@vitejs/plugin-react": "^4.6.0",
-    "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "@vitejs/plugin-react": "^6.0.5",
+    "typescript": "~7.0.2",
+    "vite": "^8.2.1"
   },
   "allowScripts": {
     "esbuild@0.28.2": true
