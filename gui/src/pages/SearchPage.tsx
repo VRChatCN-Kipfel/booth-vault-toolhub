@@ -2,8 +2,10 @@
  * 实验检索页：文件名/路径/关键词 → 搜索候选 → 评分选优 → 归档。
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import styled from 'styled-components';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { AccentButton, SecondaryButton, TextArea, ObsPanel, ProgressBar, Badge, PanelLabel, PageShell, Lead } from '../components/ui';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
@@ -57,8 +59,33 @@ export function SearchPage() {
   const [archiving, setArchiving] = useState(false);
   const [total, setTotal] = useState(0);
 
+  // 输入框支持文件/文件夹拖放：拖入即把本地绝对路径按行追加（对齐拖拽分类页既有模式）。
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    const setup = async () => {
+      unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+        const t = event.payload.type;
+        if (t !== 'drop') return;
+        const paths = event.payload.paths ?? [];
+        if (paths.length === 0) return;
+        setText((cur) => {
+          const lines = [
+            ...(cur ? cur.split(/\r?\n/) : []),
+            ...paths,
+          ].map((s) => s.trim()).filter(Boolean);
+          return [...new Set(lines)].join('\n');
+        });
+      });
+    };
+    void setup();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   async function search() {
-    if (!text.trim()) return;
+    const files = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    if (files.length === 0) return;
     setStatus('搜索中…');
     setResults([]);
     setRunning(true);
@@ -66,7 +93,7 @@ export function SearchPage() {
       await runTask(
         'search',
         {
-          files: [text.trim()],
+          files,
           baseDir: boothRoot || null,
           dryRun: true,
           cookie: cookie || null,
@@ -126,7 +153,7 @@ export function SearchPage() {
       <Lead>没有 ID 的文件，按名字去 BOOTH 上碰运气。</Lead>
       <TextArea
         rows={3}
-        placeholder={'输入本地文件名 / 完整路径 / 关键词，或直接贴文件路径\n如：LunariaPaperFan.zip  或  D:\\BOOTH\\xxx.zip  或  Lunaria Paper Fan'}
+        placeholder={'输入本地文件名 / 完整路径 / 关键词，或直接拖入文件 / 文件夹\n如：LunariaPaperFan.zip  或  D:\\BOOTH\\xxx.zip  或  Lunaria Paper Fan'}
         value={text}
         onChange={(e) => setText(e.target.value)}
       />
@@ -149,6 +176,8 @@ export function SearchPage() {
             key={it.id}
             selected={selected.includes(it.id)}
             onClick={() => toggleSelect(it.id)}
+            onDoubleClick={() => void openUrl(`https://booth.pm/ja/items/${it.id}`)}
+            title={selected.includes(it.id) ? '单击选中 / 双击浏览器核对' : '双击浏览器核对商品页'}
           >
             <Badge kind="ok">ID</Badge>
             <span>{it.id}</span>
