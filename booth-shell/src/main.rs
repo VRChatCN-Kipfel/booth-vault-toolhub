@@ -139,15 +139,13 @@ fn main() -> ExitCode {
                 usage();
                 ExitCode::FAILURE
             } else {
-                let cover = PathBuf::from(&args[2]);
-                let folder = PathBuf::from(&args[3]);
                 #[cfg(windows)]
                 {
-                    impl_win::set(&cover, &folder)
+                    impl_win::set(&PathBuf::from(&args[2]), &PathBuf::from(&args[3]))
                 }
                 #[cfg(target_os = "macos")]
                 {
-                    impl_mac::set(&cover, &folder)
+                    impl_mac::set(&PathBuf::from(&args[2]), &PathBuf::from(&args[3]))
                 }
                 #[cfg(all(not(windows), not(target_os = "macos")))]
                 {
@@ -161,14 +159,13 @@ fn main() -> ExitCode {
                 usage();
                 ExitCode::FAILURE
             } else {
-                let folder = PathBuf::from(&args[2]);
                 #[cfg(windows)]
                 {
-                    impl_win::reset(&folder)
+                    impl_win::reset(&PathBuf::from(&args[2]))
                 }
                 #[cfg(target_os = "macos")]
                 {
-                    impl_mac::reset(&folder)
+                    impl_mac::reset(&PathBuf::from(&args[2]))
                 }
                 #[cfg(all(not(windows), not(target_os = "macos")))]
                 {
@@ -182,20 +179,19 @@ fn main() -> ExitCode {
                 usage();
                 ExitCode::FAILURE
             } else {
-                let folder = PathBuf::from(&args[2]);
                 #[cfg(windows)]
                 {
-                    impl_win::audit(&folder)
+                    impl_win::audit(&PathBuf::from(&args[2]))
                 }
                 #[cfg(target_os = "macos")]
                 {
-                    impl_mac::audit(&folder)
+                    impl_mac::audit(&PathBuf::from(&args[2]))
                 }
                 #[cfg(all(not(windows), not(target_os = "macos")))]
                 {
                     println!(
                         "audit {}: FAIL 文件夹图标仅支持 Windows / macOS",
-                        folder.display()
+                        PathBuf::from(&args[2]).display()
                     );
                     ExitCode::FAILURE
                 }

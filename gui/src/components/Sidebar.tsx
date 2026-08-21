@@ -1,148 +1,204 @@
 /**
- * 侧栏：固定 208px，母题底纹 + 品牌 + 导航 + 主题/明暗切换。
+ * 侧栏：印记 + 导航 + 主题开关。
+ *
+ * 当前项用一道朱记竖线加淡底标记，不用整块反色。
+ * 窄窗（<860px）收成图标栏，保证小屏和分屏下仍可用。
  */
 
 import styled from 'styled-components';
+import type { LucideIcon } from 'lucide-react';
 import { useThemeStore, resolveMode } from '../store/themeStore';
-import { FONTS, motifSidebarSrc, THEME_NAMES, THEMES } from '../theme/themes';
+import { APP_ICON_SRC, FONTS, motifSidebarSrc, THEME_NAMES, THEMES } from '../theme/themes';
 import { brandMark } from '../theme/chrome';
 import { ModeToggle } from './ModeToggle';
 
-const SidebarWrap = styled.div`
-  width: 208px;
-  min-width: 208px;
-  background: var(--bvt-surface2);
-  border-right: 1px solid var(--bvt-border);
+const RAIL = 860;
+const NAV_H = 36;
+const NAV_GAP = 2;
+const NAV_PAD_Y = 8;
+const NAV_PAD_X = 8;
+
+const Wrap = styled.aside`
+  width: 200px;
+  flex: none;
+  position: relative;
   display: flex;
   flex-direction: column;
-  position: relative;
+  background: var(--bvt-rail-bg);
+  border-right: 1px solid var(--bvt-border);
   overflow: hidden;
+  @media (max-width: ${RAIL}px) {
+    width: 56px;
+  }
 `;
 
-const MotifLayer = styled.div<{ $src: string }>`
+/** 母题退成纸背底噪，并从上往下渐隐，不与文字争；浓淡由设置页滑条给。 */
+const Motif = styled.div<{ $src: string }>`
   position: absolute;
   inset: 0;
-  z-index: 0;
   pointer-events: none;
-  background-image: url(${({ $src }) => $src});
-  background-size: cover;
-  background-position: center right;
-  opacity: ${({ theme }) => (theme.mode === 'dark' ? 0.28 : 0.22)};
-  -webkit-mask-image: linear-gradient(to right, transparent 0%, black 55%);
-  mask-image: linear-gradient(to right, transparent 0%, black 55%);
+  background: url("${({ $src }) => $src}") center / cover no-repeat;
+  opacity: var(--bvt-motif-opacity);
+  mask-image: linear-gradient(to bottom, transparent, #000 45%);
 `;
 
-const Content = styled.div`
+const Inner = styled.div`
   position: relative;
-  z-index: 1;
   display: flex;
   flex-direction: column;
   height: 100%;
 `;
 
 const Brand = styled.div`
-  padding: 22px 16px 16px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--bvt-s3);
+  padding: var(--bvt-s5) var(--bvt-s4) var(--bvt-s5);
+  @media (max-width: ${RAIL}px) {
+    padding: var(--bvt-s4) 0;
+    justify-content: center;
+  }
 `;
 
-const Seal = styled.div`
-  width: 36px;
-  height: 36px;
-  flex-shrink: 0;
-  svg { width: 100%; height: 100%; display: block; }
+const Seal = styled.img`
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: 6px;
+  object-fit: cover;
 `;
 
 const BrandText = styled.div`
   display: flex;
   flex-direction: column;
-  line-height: 1.15;
   min-width: 0;
   .zh {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--bvt-text);
     font-family: ${FONTS.serif};
-    letter-spacing: var(--bvt-title-track, 0.16em);
+    font-size: var(--bvt-fz-lg);
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: var(--bvt-title-track);
+    color: var(--bvt-text);
   }
-  .en { font-size: 10px; color: var(--bvt-text3); letter-spacing: 0.06em; margin-top: 4px; }
+  .en {
+    margin-top: 2px;
+    font-size: 9px;
+    line-height: 1;
+    letter-spacing: 0.18em;
+    color: var(--bvt-text3);
+  }
+  @media (max-width: ${RAIL}px) {
+    display: none;
+  }
 `;
-
-const NAV_ITEM_H = 40;
-const NAV_ITEM_GAP = 4;
-const NAV_PAD_Y = 8;
-const NAV_PAD_X = 10;
 
 const Nav = styled.nav`
   flex: 1;
-  padding: ${NAV_PAD_Y}px ${NAV_PAD_X}px;
   position: relative;
+  padding: ${NAV_PAD_Y}px ${NAV_PAD_X}px;
 `;
 
-const NavSlider = styled.div<{ $index: number }>`
+/** 当前项底衬：滑动切换，避免五个按钮各自闪烁。 */
+const NavMark = styled.div<{ $index: number }>`
   position: absolute;
   left: ${NAV_PAD_X}px;
   right: ${NAV_PAD_X}px;
   top: ${NAV_PAD_Y}px;
-  height: ${NAV_ITEM_H}px;
+  height: ${NAV_H}px;
   background: var(--bvt-sel-bg);
-  border-left: 3px solid var(--bvt-accent);
-  border-radius: var(--bvt-radius, 0px);
-  transform: translateY(${({ $index }) => $index * (NAV_ITEM_H + NAV_ITEM_GAP)}px);
-  transition: transform calc(0.32s / var(--bvt-anim)) cubic-bezier(0.4, 0, 0.2, 1);
-  z-index: 0;
+  border-left: var(--bvt-mark-w) solid var(--bvt-accent);
+  border-radius: var(--bvt-radius);
+  transform: translateY(${({ $index }) => $index * (NAV_H + NAV_GAP)}px);
+  transition: transform calc(0.32s / var(--bvt-anim)) var(--bvt-ease);
 `;
 
-const NavItem = styled.button<{ active: boolean }>`
-  position: relative;
-  z-index: 1;
-  display: block;
-  width: 100%;
-  height: ${NAV_ITEM_H}px;
-  margin-bottom: ${NAV_ITEM_GAP}px;
-  padding: 0 14px;
-  text-align: left;
-  background: transparent;
-  color: ${({ active }) => (active ? 'var(--bvt-sel-text)' : 'var(--bvt-text2)')};
-  border: none;
-  font-family: inherit;
-  font-size: 14px;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-  ${({ active }) => (active ? 'font-weight: 600;' : '')}
-  &:hover {
-    color: ${({ active }) => (active ? 'var(--bvt-sel-text)' : 'var(--bvt-accent)')};
+const NavKbd = styled.span`
+  flex: none;
+  font-size: 10px;
+  color: var(--bvt-text3);
+  opacity: 0;
+  transition: opacity 0.15s var(--bvt-ease);
+  @media (max-width: ${RAIL}px) {
+    display: none;
   }
 `;
 
-const SidebarFooter = styled.div`
-  padding: 12px 12px 16px;
-  border-top: 1px solid var(--bvt-border2);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+const NavLabel = styled.span`
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  @media (max-width: ${RAIL}px) {
+    display: none;
+  }
 `;
 
-const GhostAction = styled.button`
+const NavItem = styled.button<{ $active: boolean }>`
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--bvt-s3);
+  width: 100%;
+  height: ${NAV_H}px;
+  margin-bottom: ${NAV_GAP}px;
+  padding: 0 var(--bvt-s3);
   background: transparent;
   border: none;
-  color: var(--bvt-text2);
-  font-family: inherit;
-  font-size: 13px;
+  border-radius: var(--bvt-radius);
+  font-size: var(--bvt-fz-md);
   cursor: pointer;
-  padding: 6px 8px;
-  &:hover { color: var(--bvt-accent); background: transparent; }
-  .mark { width: 16px; height: 16px; flex: none; }
+  color: ${({ $active }) => ($active ? 'var(--bvt-sel-text)' : 'var(--bvt-text2)')};
+  font-weight: ${({ $active }) => ($active ? 600 : 400)};
+  transition: color 0.16s var(--bvt-ease);
+  svg { width: 15px; height: 15px; flex: none; }
+  &:hover { color: ${({ $active }) => ($active ? 'var(--bvt-sel-text)' : 'var(--bvt-text)')}; }
+  &:hover ${NavKbd}, &:focus-visible ${NavKbd} { opacity: 1; }
+  @media (max-width: ${RAIL}px) {
+    justify-content: center;
+    padding: 0;
+  }
+`;
+
+const Footer = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: var(--bvt-s2);
+  padding: var(--bvt-s3);
+  border-top: 1px solid var(--bvt-border2);
+  @media (max-width: ${RAIL}px) {
+    align-items: center;
+    padding: var(--bvt-s2) 0;
+  }
+`;
+
+const ThemeSwitch = styled.button`
+  display: flex;
+  align-items: center;
+  gap: var(--bvt-s2);
+  height: 28px;
+  padding: 0 var(--bvt-s2);
+  background: transparent;
+  border: none;
+  border-radius: var(--bvt-radius);
+  color: var(--bvt-text2);
+  font-size: var(--bvt-fz-sm);
+  cursor: pointer;
+  &:hover { background: var(--bvt-hover); color: var(--bvt-text); }
+  .mark { width: 14px; height: 14px; flex: none; }
   .mark svg { width: 100%; height: 100%; display: block; }
+  .name {
+    @media (max-width: ${RAIL}px) {
+      display: none;
+    }
+  }
 `;
 
 export interface NavItemDef {
   key: string;
   label: string;
+  icon: LucideIcon;
 }
 
 export function Sidebar({
@@ -154,44 +210,50 @@ export function Sidebar({
   active: string;
   onNavigate: (key: string) => void;
 }) {
-  const { theme, mode, systemTheme, cycleTheme } = useThemeStore();
+  const { theme, mode, systemTheme, motifImage, appIcon, cycleTheme } = useThemeStore();
   const resolved = resolveMode(mode, systemTheme);
   const pal = THEMES[theme][resolved];
+  const mod = /Mac|Macintosh/.test(navigator.userAgent) ? '⌘' : 'Ctrl ';
+  const index = Math.max(0, items.findIndex((it) => it.key === active));
 
   return (
-    <SidebarWrap>
-      <MotifLayer $src={motifSidebarSrc(theme, resolved)} />
-      <Content>
+    <Wrap>
+      <Motif $src={motifImage ?? motifSidebarSrc(theme, resolved)} />
+      <Inner>
         <Brand>
-          <Seal dangerouslySetInnerHTML={{ __html: brandMark(theme, pal.accent) }} />
+          <Seal src={APP_ICON_SRC[appIcon]} alt="" />
           <BrandText>
             <span className="zh">展位库</span>
-            <span className="en">Booth Vault</span>
+            <span className="en">BOOTH VAULT</span>
           </BrandText>
         </Brand>
+
         <Nav>
-          <NavSlider $index={Math.max(0, items.findIndex((it) => it.key === active))} />
-          {items.map((it) => (
+          <NavMark $index={index} />
+          {items.map((it, i) => (
             <NavItem
               key={it.key}
-              active={active === it.key}
+              type="button"
+              $active={active === it.key}
+              aria-current={active === it.key ? 'page' : undefined}
+              title={it.label}
               onClick={() => onNavigate(it.key)}
             >
-              {it.label}
+              <it.icon />
+              <NavLabel>{it.label}</NavLabel>
+              <NavKbd>{mod}{i + 1}</NavKbd>
             </NavItem>
           ))}
         </Nav>
-        <SidebarFooter>
-          <GhostAction onClick={cycleTheme}>
-            <span
-              className="mark"
-              dangerouslySetInnerHTML={{ __html: brandMark(theme, pal.accent) }}
-            />
-            <span>主题 · {THEME_NAMES[theme]}</span>
-          </GhostAction>
+
+        <Footer>
+          <ThemeSwitch type="button" onClick={cycleTheme} title={`主题 · ${THEME_NAMES[theme]}`}>
+            <span className="mark" dangerouslySetInnerHTML={{ __html: brandMark(theme, pal.accent) }} />
+            <span className="name">主题 · {THEME_NAMES[theme]}</span>
+          </ThemeSwitch>
           <ModeToggle />
-        </SidebarFooter>
-      </Content>
-    </SidebarWrap>
+        </Footer>
+      </Inner>
+    </Wrap>
   );
 }

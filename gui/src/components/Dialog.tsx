@@ -6,11 +6,9 @@
  * 入场动画：opacity 淡入 + 轻微上移。
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import styled from 'styled-components';
 import { createPortal } from 'react-dom';
-import { useThemeStore, resolveMode } from '../store/themeStore';
-import { THEMES } from '../theme/themes';
 import { AccentButton, SecondaryButton } from './ui';
 
 export type DialogKind = 'info' | 'warn' | 'error' | 'ask';
@@ -23,6 +21,11 @@ interface ThemeDialogState {
 }
 
 let openDialog: ((state: ThemeDialogState) => void) | null = null;
+let dialogOpen = false;
+
+export function isDialogOpen(): boolean {
+  return dialogOpen;
+}
 
 /** 注册全局弹窗打开器（App 挂载时调用）；传 null 取消注册。 */
 export function registerDialogOpener(fn: ((s: ThemeDialogState) => void) | null) {
@@ -51,7 +54,7 @@ export const confirmation = async (title: string, body: string): Promise<boolean
 const Overlay = styled.div`
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(0, 0, 0, 0.28);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -67,10 +70,10 @@ const Dialog = styled.div`
   min-width: 420px;
   max-width: 620px;
   background: var(--bvt-surface);
-  border: 1.5px solid var(--bvt-accent-deep);
-  border-top: 3px solid var(--bvt-accent);
-  border-radius: var(--bvt-radius, 0px);
-  padding: 18px 22px;
+  border: 1px solid var(--bvt-border);
+  border-radius: var(--bvt-radius);
+  padding: var(--bvt-s5);
+  box-shadow: var(--bvt-shadow-2);
   animation: bvtDialogIn calc(0.18s / var(--bvt-anim)) ease both;
   @keyframes bvtDialogIn {
     from { opacity: 0; transform: translateY(-8px); }
@@ -79,21 +82,20 @@ const Dialog = styled.div`
 `;
 
 const Title = styled.div`
-  font-size: 15px;
-  font-weight: 700;
+  font-family: var(--bvt-serif);
+  font-size: var(--bvt-fz-lg);
+  font-weight: 600;
+  letter-spacing: var(--bvt-title-track);
   color: var(--bvt-text);
-  font-family: 'Noto Serif CJK SC','Songti SC',serif;
-  letter-spacing: var(--bvt-title-track, 0.1em);
-  border-bottom: 1px solid var(--bvt-border);
-  padding: 4px 0 8px;
-  margin-bottom: 10px;
+  border-left: var(--bvt-mark-w) solid var(--bvt-accent);
+  padding-left: var(--bvt-s3);
+  margin-bottom: var(--bvt-s4);
 `;
 
 const Body = styled.div`
-  font-size: 13px;
-  color: var(--bvt-text);
-  line-height: 1.55;
-  padding: 4px 0;
+  font-size: var(--bvt-fz-md);
+  color: var(--bvt-text2);
+  line-height: 1.75;
   white-space: pre-wrap;
   word-break: break-word;
 `;
@@ -101,28 +103,52 @@ const Body = styled.div`
 const Buttons = styled.div`
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 16px;
+  gap: var(--bvt-s2);
+  margin-top: var(--bvt-s5);
 `;
 
 /** 弹窗宿主（App 挂载一次）。 */
 export function DialogHost() {
   const [state, setState] = useState<ThemeDialogState | null>(null);
-  const { theme, mode, systemTheme } = useThemeStore();
-  const resolved = resolveMode(mode, systemTheme);
-  const pal = THEMES[theme][resolved];
+  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    registerDialogOpener((s) => setState(s));
-    return () => registerDialogOpener(null);
+    registerDialogOpener((s) => {
+      dialogOpen = true;
+      setState(s);
+    });
+    return () => {
+      dialogOpen = false;
+      registerDialogOpener(null);
+    };
   }, []);
 
   useEffect(() => {
     if (!state) return;
+    const root = panelRef.current;
+    const focusables = () =>
+      Array.from(root?.querySelectorAll<HTMLButtonElement>('button') ?? []).filter((el) => !el.disabled);
+    const initial = focusables();
+    initial[initial.length - 1]?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        e.preventDefault();
+        dialogOpen = false;
         state.resolve(null);
         setState(null);
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const els = focusables();
+      if (els.length === 0) return;
+      const first = els[0];
+      const last = els[els.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -131,16 +157,16 @@ export function DialogHost() {
 
   if (!state) return null;
   const isAsk = state.kind === 'ask';
-  const accent = pal.accent;
   const close = (result: string | null) => {
+    dialogOpen = false;
     state.resolve(result);
     setState(null);
   };
 
   return createPortal(
     <Overlay onMouseDown={(e) => { if (e.target === e.currentTarget) close(null); }}>
-      <Dialog>
-        <Title>{state.title}</Title>
+      <Dialog ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="bvt-dialog-title">
+        <Title id="bvt-dialog-title">{state.title}</Title>
         <Body>{state.body}</Body>
         <Buttons>
           {isAsk ? (
@@ -149,7 +175,7 @@ export function DialogHost() {
               <AccentButton onClick={() => close('确定')}>确定</AccentButton>
             </>
           ) : (
-            <AccentButton style={{ borderColor: accent }} onClick={() => close('OK')}>OK</AccentButton>
+            <AccentButton onClick={() => close('OK')}>确定</AccentButton>
           )}
         </Buttons>
       </Dialog>

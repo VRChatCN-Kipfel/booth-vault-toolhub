@@ -28,10 +28,10 @@ BOOTH 素材统一管理工具 —— VRChat / XR 创作者的 BOOTH 资产全�
 
 - **下载**：整店爬取 / 散链下载 BOOTH 免费商品（variation 级免费筛选、断点续传、假文件校验、限速防封）
 - **整理**：本地压缩包文件名含 7 位 ID → 按 ID 取元数据归档（无登录）
-- **按名搜索**：文件名无 ID 时，清洗生成搜索候选 → 评分选优 → 归档（含水印/UnityPackage 二次验真）
+- **按名搜索**：文件名无 ID 时，清洗生成搜索候选 → 评分选优 → 归档（UnityPackage 资源名二次验真）
 - **巡检**：文件夹图标三件套（cover.jpg + .folder_icon.ico + desktop.ini）完整性扫描 + 自动修复 + 版本巡检 + 错位纠正
 - **自更新检查**：GitHub `releases.atom` feed 取最新版本（成熟库 feed-rs 解析，无 API 配额限流；HTML 重定向/API 作兜底 + 403/429 退避 + 代理直连重试 + 显式超时），CLI/MCP/GUI（设置页「软件更新」入口）三端一致
-- **三主题六配色 GUI**：朱印（印泥/宣纸）/ 鎏金（金缮/漆）/ 古纹（青铜/青瓷）× 亮 / 暗，形制与色板分开，SVG 母题纹样与素材图，动效齐全
+- **三主题六配色 GUI**：朱印（印泥/宣纸）/ 鎏金（金缮/漆）/ 古纹（青铜/青瓷）× 亮 / 暗，形制与色板分开，SVG 母题纹样与素材图。macOS 面板通透走系统 `NSGlassEffectView`（旧系统回落 `NSVisualEffectView`），其它平台 CSS `backdrop-filter`
 
 ## 架构
 
@@ -86,10 +86,12 @@ cargo build --release --workspace
 ### CLI
 
 ```bash
-booth download <店铺URL|散链> [--cookie ...] [--out DIR]   # 下载免费商品
+booth download <店铺URL|散链> [--cookie ...] [--out DIR]   # 下载免费商品（需 Cookie）
 booth organize <本地包...> [--id ID] [--out DIR]           # 按 ID 整理归档
 booth search   <本地文件...> [--id ID] [--base-dir DIR]    # 按名搜索整理
 booth audit    [--base DIR] [--dry-run]                    # 图标三件套巡检
+booth version-audit [--base DIR] [--fix]                   # 版本巡检；--fix 补免费文件
+booth library  [--base DIR]                                # 列出库存
 booth update-check [--proxy]                               # 工具自更新检查
 ```
 
@@ -109,7 +111,7 @@ npm run tauri build      # 打包
 ### MCP
 
 ```bash
-booth-mcp                # stdio server，暴露 download/organize/search/audit
+booth-mcp                # stdio server，暴露 download/organize/search/audit/version_audit/library
 ```
 
 客户端配置示例见 `skills/booth/mcp.example.json`。
@@ -143,7 +145,7 @@ proxy = "http://127.0.0.1:7890"   # 可选；优先级 配置文件 > HTTPS_PROX
 proxy_enabled = true               # false = 强制直连（忽略环境变量/系统代理）
 download_root = "D:/BOOTH"         # 归档根目录（不硬编码路径）
 rate_limit_secs = 0.8              # 限速秒数（三端统一，防封）
-cookie = ""                        # 可选；仅用户目录。CLI --cookie / MCP 参数优先
+cookie = ""                        # 免费文件下载也需登录；仅用户目录。CLI --cookie / MCP 参数优先
 ```
 
 - 用户目录：`{config_dir}/booth-vault-toolhub/config.toml`（GUI 设置页写入这里，三端共用）
@@ -157,6 +159,7 @@ cookie = ""                        # 可选；仅用户目录。CLI --cookie / M
     └── ID_标题/
         ├── ID_标题.ext   原文件（保留原文件名含版本号）
         ├── cover.jpg
+        ├── booth.txt           标题/ID/店铺/条款（缺失不计入三件套损坏）
         ├── .folder_icon.ico    (隐藏)
         └── desktop.ini         (隐藏+系统)
 ```

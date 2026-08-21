@@ -96,21 +96,80 @@ pub fn target_folder(out_root: &Path, item: &ItemJson, item_id: &str) -> PathBuf
 /// 元组比较，`Ver_2.0` 与 `Ver_2.00` 视为同版本）则跳过；
 /// 否则目标文件名已存在且为有效文件（存在、非空、非 HTML 伪装）则跳过；
 /// 其余列为缺失。
-pub fn missing_free_files(dest_dir: &Path, item: &ItemJson) -> Vec<(String, String)> {
-    let local_files: Vec<PathBuf> = match std::fs::read_dir(dest_dir) {
-        Ok(rd) => rd
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.is_file())
-            .collect(),
-        Err(_) => Vec::new(),
+/// 目录内资源文件名提取的版本标记（跳过封面/图标/sidecar）。
+pub fn local_file_versions(dest_dir: &Path) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(dest_dir) else {
+        return Vec::new();
     };
-    let local_vers: Vec<String> = local_files
-        .iter()
-        .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
-        .map(extract_version_tag)
+    rd.filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+        .filter(|n| !is_sidecar_name(n))
+        .map(|n| extract_version_tag(&n))
         .filter(|v| !v.is_empty())
-        .collect();
+        .collect()
+}
+
+fn is_sidecar_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("cover.jpg")
+        || name.eq_ignore_ascii_case("desktop.ini")
+        || name.eq_ignore_ascii_case("booth.txt")
+        || name.eq_ignore_ascii_case("thumbs.db")
+        || name.eq_ignore_ascii_case(".ds_store")
+        || name.starts_with('.')
+}
+
+/// 一组版本标记中的最新（`ver_gt`），全空则空串。
+pub fn latest_version_tag<I, S>(tags: I) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut best = String::new();
+    for t in tags {
+        let t = t.as_ref();
+        if t.is_empty() {
+            continue;
+        }
+        if best.is_empty() || crate::version::ver_gt(t, &best) {
+            best = t.to_string();
+        }
+    }
+    best
+}
+
+/// 远程免费文件名的最新版本标记。
+pub fn remote_free_version_tag(item: &ItemJson) -> String {
+    latest_version_tag(
+        free_downloads(item)
+            .into_iter()
+            .map(|(_, fname)| extract_version_tag(&fname)),
+    )
+}
+
+/// 本地文件名的最新版本标记。
+pub fn local_file_version_tag(dest_dir: &Path) -> String {
+    latest_version_tag(local_file_versions(dest_dir))
+}
+
+/// 是否应提示可更新：有远程免费文件，且本地缺文件或远程文件名版本更新。
+pub fn free_updateable(dest_dir: &Path, item: &ItemJson) -> bool {
+    let remotes = free_downloads(item);
+    if remotes.is_empty() {
+        return false;
+    }
+    if !missing_free_files(dest_dir, item).is_empty() {
+        return true;
+    }
+    crate::version::ver_gt(
+        &remote_free_version_tag(item),
+        &local_file_version_tag(dest_dir),
+    )
+}
+
+pub fn missing_free_files(dest_dir: &Path, item: &ItemJson) -> Vec<(String, String)> {
+    let local_vers = local_file_versions(dest_dir);
     let mut missing = Vec::new();
     for (url, fname) in free_downloads(item) {
         let dest = dest_dir.join(sanitize(&fname, 120));
@@ -130,32 +189,34 @@ pub fn missing_free_files(dest_dir: &Path, item: &ItemJson) -> Vec<(String, Stri
     missing
 }
 
-/// 免费版本补全：下载 `dest_dir` 缺失的免费文件，返回补全数。
+/// 免费版本补全：下载 `dest_dir` 缺失的免费文件。
 ///
-/// 无 cookie 时不下载（BOOTH 免费文件也需登录），仅返回 0，缺失数量由
-/// `missing_free_files` 另行报告。
+/// 返回 `(补全数, 失败列表)`。无 cookie 时不下载，返回 `(0, [])`，缺失数量由
+/// `missing_free_files` 另行报告。下载失败（含过期 Cookie / 假文件）写入失败列表。
 pub fn backfill_free_files(
     client: &Client,
     dest_dir: &Path,
     item: &ItemJson,
     cookie: Option<&str>,
-) -> usize {
+) -> (usize, Vec<String>) {
     let missing = missing_free_files(dest_dir, item);
     if missing.is_empty() {
-        return 0;
+        return (0, Vec::new());
     }
     let has_cookie = cookie.map(|c| !c.trim().is_empty()).unwrap_or(false);
     if !has_cookie {
-        return 0;
+        return (0, Vec::new());
     }
     let mut added = 0;
+    let mut errors = Vec::new();
     for (url, fname) in missing {
         let dest = dest_dir.join(sanitize(&fname, 120));
-        if download::download(client, &url, &dest, true, BACKFILL_RATE_LIMIT).is_ok() {
-            added += 1;
+        match download::download(client, &url, &dest, true, BACKFILL_RATE_LIMIT) {
+            Ok(()) => added += 1,
+            Err(e) => errors.push(format!("{fname}: {}", download::with_cookie_hint(e))),
         }
     }
-    added
+    (added, errors)
 }
 
 /// 整理单个 archive 文件。
@@ -282,22 +343,54 @@ fn finalize_folder(
         }
     }
 
+    write_booth_txt(folder, item);
+
     // 免费版本补全。
-    let backfilled = backfill_free_files(client, folder, item, opts.cookie);
+    let (backfilled, backfill_errors) = backfill_free_files(client, folder, item, opts.cookie);
     if backfilled > 0 {
         message.push_str(&format!("；免费版本补全 +{backfilled}"));
-    } else {
+    }
+    if !backfill_errors.is_empty() {
+        message.push_str(&format!("；补全失败: {}", backfill_errors.join("；")));
+    } else if backfilled == 0 {
         let missing = missing_free_files(folder, item).len();
         if missing > 0 {
             let hint = if opts.cookie.map(|c| !c.trim().is_empty()).unwrap_or(false) {
                 ""
             } else {
-                "（需 --cookie 才能下载）"
+                "（请到设置页填写 Cookie，CLI/MCP 用 --cookie）"
             };
             message.push_str(&format!("；另有 {missing} 个免费版本缺失{hint}"));
         }
     }
     (cover_downloaded, backfilled)
+}
+
+/// 条款 sidecar：标题 / ID / 店铺 / 商品 URL / description。失败不挡归档。
+pub fn write_booth_txt(folder: &Path, item: &ItemJson) {
+    let id = if item.id.is_empty() {
+        folder
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.get(..7))
+            .unwrap_or("")
+            .to_string()
+    } else {
+        item.id.clone()
+    };
+    let url = format!("https://booth.pm/ja/items/{id}");
+    let shop = if item.shop.name.is_empty() {
+        item.shop.subdomain.clone()
+    } else {
+        item.shop.name.clone()
+    };
+    let mut body = format!("{}\nID: {id}\n店铺: {shop}\n{url}", item.name);
+    if !item.description.trim().is_empty() {
+        body.push_str("\n\n");
+        body.push_str(item.description.trim());
+    }
+    body.push('\n');
+    let _ = std::fs::write(folder.join("booth.txt"), body);
 }
 
 /// 错位纠正：把 `source` 目录内容整体迁入目标分类目录并重建三件套。
@@ -492,6 +585,29 @@ mod tests {
     }
 
     #[test]
+    fn write_booth_txt_contains_fields() {
+        let dir = tmpdir("sidecar");
+        let item = ItemJson {
+            id: "1234567".to_string(),
+            name: "Dress".to_string(),
+            description: "利用規約".to_string(),
+            shop: crate::fetch::ShopJson {
+                name: "ShopA".to_string(),
+                ..crate::fetch::ShopJson::default()
+            },
+            ..ItemJson::default()
+        };
+        write_booth_txt(&dir, &item);
+        let text = std::fs::read_to_string(dir.join("booth.txt")).unwrap();
+        assert!(text.contains("Dress"));
+        assert!(text.contains("1234567"));
+        assert!(text.contains("ShopA"));
+        assert!(text.contains("https://booth.pm/ja/items/1234567"));
+        assert!(text.contains("利用規約"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn target_folder_basic() {
         let item = ItemJson {
             name: "メカ弾エフェクト".to_string(),
@@ -517,6 +633,37 @@ mod tests {
         assert_eq!(
             folder,
             Path::new("/out").join("其他").join("1234567_1234567")
+        );
+    }
+
+    #[test]
+    fn target_folder_uses_parent_like_organize() {
+        let item = ItemJson {
+            name: "Dress".to_string(),
+            category: crate::fetch::CategoryJson {
+                name: "衣装".to_string(),
+                parent: Some(crate::fetch::ParentCategory {
+                    name: "3Dモデル".to_string(),
+                }),
+            },
+            ..ItemJson::default()
+        };
+        let folder = target_folder(Path::new("/out"), &item, "1234567");
+        assert_eq!(
+            folder,
+            Path::new("/out").join("3D服饰").join("1234567_Dress")
+        );
+        let no_parent = ItemJson {
+            name: "Dress".to_string(),
+            category: crate::fetch::CategoryJson {
+                name: "衣装".to_string(),
+                parent: None,
+            },
+            ..ItemJson::default()
+        };
+        assert_eq!(
+            target_folder(Path::new("/out"), &no_parent, "1234567"),
+            Path::new("/out").join("服饰").join("1234567_Dress")
         );
     }
 
@@ -610,8 +757,9 @@ mod tests {
         };
         let client = crate::session::make_session(&crate::config::AppConfig::default(), None);
         // 无 cookie：不触发任何下载。
-        let added = backfill_free_files(&client, &dir, &item, None);
+        let (added, errors) = backfill_free_files(&client, &dir, &item, None);
         assert_eq!(added, 0);
+        assert!(errors.is_empty());
         assert!(!dir.join("a.zip").is_file());
         let _ = std::fs::remove_dir_all(&dir);
     }

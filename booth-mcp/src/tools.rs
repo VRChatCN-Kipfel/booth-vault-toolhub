@@ -81,14 +81,6 @@ struct SearchParams {
     /// 只搜索不实际整理。
     #[serde(default)]
     dry_run: bool,
-    /// 复制而非移动（与 CLI 接口对齐，当前整理固定移动）。
-    #[serde(default)]
-    #[allow(dead_code)]
-    keep: bool,
-    /// 歧义也强制选最佳（与 CLI 接口对齐，当前 MCP 固定选最佳）。
-    #[serde(default)]
-    #[allow(dead_code)]
-    auto: bool,
     /// 强制指定 BOOTH 商品 ID（跳过搜索）。
     #[serde(default)]
     id: Option<String>,
@@ -128,6 +120,53 @@ struct AuditResult {
     fixed: usize,
     no_cover: usize,
     failed: usize,
+}
+
+// ── version_audit ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+struct VersionAuditParams {
+    /// 巡检根目录（默认读配置 download_root）。
+    #[serde(default)]
+    base: Option<String>,
+    /// 对可更新项补免费文件。
+    #[serde(default)]
+    fix: bool,
+    /// BOOTH 登录 Cookie（fix 时需要）。
+    #[serde(default)]
+    cookie: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct VersionAuditResult {
+    command: String,
+    updateable: usize,
+    fixed: usize,
+    failures: Vec<String>,
+}
+
+// ── library ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+struct LibraryParams {
+    /// 归档根目录（默认读配置 download_root）。
+    #[serde(default)]
+    base: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct LibraryResult {
+    command: String,
+    total: usize,
+    items: Vec<LibraryRow>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct LibraryRow {
+    id: String,
+    name: String,
+    category: String,
+    path: String,
 }
 
 // ── update_check ───────────────────────────────────────────────
@@ -306,7 +345,7 @@ impl BoothServer {
 
     /// 按名搜索并整理本地文件。
     #[tool(
-        description = "本地文件（无 ID）按名搜索 BOOTH：生成搜索候选 → 搜索 → 评分选优 → 整理归档。歧义时优先选最佳（auto=true）或报告候选。"
+        description = "本地文件（无 ID）按名搜索 BOOTH：生成搜索候选 → 搜索 → 评分选优（含 unitypackage 资源名验真）→ 整理归档。歧义时选最佳。"
     )]
     async fn search(&self, Parameters(params): Parameters<SearchParams>) -> CallToolResult {
         let config = load_config();
@@ -341,7 +380,13 @@ impl BoothServer {
                 }
                 continue;
             }
-            match process_search_file(&client, path, &base, params.id.as_deref()) {
+            match process_search_file(
+                &client,
+                path,
+                &base,
+                params.id.as_deref(),
+                params.cookie.as_deref(),
+            ) {
                 Ok(Some(id)) => matched.push(id),
                 Ok(None) => {}
                 Err(e) => failures.push(format!("{path_str}: {e}")),
@@ -411,6 +456,99 @@ impl BoothServer {
         CallToolResult::success(vec![ContentBlock::text(text)])
     }
 
+    /// 版本巡检：按免费文件名比对，可选补免费文件。
+    #[tool(
+        description = "巡检归档库免费文件版本：本地文件名 vs 远程免费文件名。fix=true 时补缺失免费文件（需 cookie）。付费缺口只给商品页，不自动下。"
+    )]
+    async fn version_audit(
+        &self,
+        Parameters(params): Parameters<VersionAuditParams>,
+    ) -> CallToolResult {
+        let config = load_config();
+        let base = match params.base.or(config.download_root.clone()) {
+            Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
+            _ => {
+                return tool_error("未指定巡检根目录：用 base 或配置文件 download_root");
+            }
+        };
+        if !base.is_dir() {
+            return tool_error(&format!("FATAL: {} 不存在", base.display()));
+        }
+        let client = make_session(&config, params.cookie.as_deref());
+        let rows =
+            engine::audit::version_audit(&base, |id| engine::fetch::fetch_item(&client, id).ok());
+        let mut fixed = 0usize;
+        let mut failures: Vec<String> = Vec::new();
+        if params.fix {
+            let has_cookie = params
+                .cookie
+                .as_deref()
+                .is_some_and(|c| !c.trim().is_empty());
+            if !has_cookie && rows.iter().any(|r| r.missing > 0) {
+                failures.push(engine::download::cookie_required_msg().to_string());
+            } else {
+                for r in &rows {
+                    let item = match engine::fetch::fetch_item(&client, &r.id) {
+                        Ok(i) => i,
+                        Err(e) => {
+                            failures.push(format!("{}: {e}", r.id));
+                            continue;
+                        }
+                    };
+                    let (n, errs) = engine::organize::backfill_free_files(
+                        &client,
+                        &r.path,
+                        &item,
+                        params.cookie.as_deref(),
+                    );
+                    fixed += n;
+                    failures.extend(errs.into_iter().map(|e| format!("{}: {e}", r.id)));
+                }
+            }
+        }
+        let result = VersionAuditResult {
+            command: "version-audit".to_string(),
+            updateable: rows.len(),
+            fixed,
+            failures,
+        };
+        let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+        CallToolResult::success(vec![ContentBlock::text(text)])
+    }
+
+    /// 列出归档库存（只读）。
+    #[tool(
+        description = "列出归档库存：ID / 标题 / 类目 / 路径。类目取 ID 目录的父文件夹名，不联网。"
+    )]
+    async fn library(&self, Parameters(params): Parameters<LibraryParams>) -> CallToolResult {
+        let config = load_config();
+        let base = match params.base.or(config.download_root.clone()) {
+            Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
+            _ => {
+                return tool_error("未指定归档根目录：用 base 或配置文件 download_root");
+            }
+        };
+        if !base.is_dir() {
+            return tool_error(&format!("FATAL: {} 不存在", base.display()));
+        }
+        let items = engine::audit::list_library(&base);
+        let result = LibraryResult {
+            command: "library".to_string(),
+            total: items.len(),
+            items: items
+                .into_iter()
+                .map(|i| LibraryRow {
+                    id: i.id,
+                    name: i.name,
+                    category: i.category,
+                    path: i.path.display().to_string(),
+                })
+                .collect(),
+        };
+        let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+        CallToolResult::success(vec![ContentBlock::text(text)])
+    }
+
     /// 检查工具自身是否有新版本（GitHub Releases）。
     #[tool(
         description = "检查 booth-vault-toolhub 工具自身是否有新版本：拉取 GitHub Releases 最新 tag 与本地版本比较，返回是否有更新、最新版本号与下载链接。优先用 releases.atom feed（不消耗 API 配额）。"
@@ -456,31 +594,23 @@ fn download_one(
     if files.is_empty() {
         return Ok(false);
     }
-    let title = if item.name.is_empty() {
-        item_id.to_string()
-    } else {
-        item.name.clone()
-    };
-    let cat = if item.category.name.is_empty() {
-        "その他"
-    } else {
-        item.category.name.as_str()
-    };
-    let group = engine::classify::classify(cat, "");
-    let folder = out_root
-        .join(engine::clean::sanitize(&group, 40))
-        .join(format!("{item_id}_{}", engine::clean::sanitize(&title, 70)));
+    let folder = engine::organize::target_folder(out_root, &item, item_id);
     if dry_run {
         return Ok(true);
     }
     std::fs::create_dir_all(&folder).map_err(|e| format!("建目录失败: {e}"))?;
+    engine::organize::write_booth_txt(&folder, &item);
     for (url, fname) in files {
         let dest = folder.join(engine::clean::sanitize(&fname, 120));
         if dest.exists() && !engine::cover::looks_html(&std::fs::read(&dest).unwrap_or_default()) {
             continue;
         }
-        engine::download::download(client, &url, &dest, true, 0.0)
-            .map_err(|e| format!("下载失败 {fname}: {e}"))?;
+        engine::download::download(client, &url, &dest, true, 0.0).map_err(|e| {
+            format!(
+                "下载失败 {fname}: {}",
+                engine::download::with_cookie_hint(e)
+            )
+        })?;
     }
     let thumb = engine::fetch::thumb_from_json(&item);
     let cover = folder.join("cover.jpg");
@@ -501,6 +631,7 @@ fn process_search_file(
     path: &std::path::Path,
     base: &std::path::Path,
     force_id: Option<&str>,
+    cookie: Option<&str>,
 ) -> Result<Option<String>, String> {
     let fname = path
         .file_name()
@@ -522,12 +653,13 @@ fn process_search_file(
                     price: r.price,
                 })
                 .collect();
+            let names = engine::unitypackage::names_for_score(path);
             let (picked, _) = engine::score::score_and_pick(
                 &q,
                 &items,
                 false,
                 |id| canonical_name(client, id),
-                None,
+                names.as_deref(),
             );
             if let Some(p) = picked {
                 best = Some(p.clone());
@@ -543,7 +675,7 @@ fn process_search_file(
     let opts = engine::organize::OrganizeOptions {
         out_root: base,
         dry_run: false,
-        cookie: None,
+        cookie,
     };
     let outcome = engine::organize::organize_archive(client, path, &item.id, &opts, icon_fn);
     if !outcome.ok {

@@ -7,11 +7,12 @@ import styled from 'styled-components';
 import {
   useThemeStore, ANIM_STOPS, stopIndex,
 } from '../store/themeStore';
+import { RangeInput } from './ui';
 
 const Wrap = styled.div`
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--bvt-s1);
   width: 320px;
   max-width: 100%;
 `;
@@ -23,14 +24,17 @@ const Head = styled.div`
 `;
 
 const Label = styled.span`
-  color: var(--bvt-text2);
-  font-size: 13px;
+  font-size: var(--bvt-fz-xs);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--bvt-text3);
 `;
 
 const Value = styled.span`
   color: var(--bvt-accent);
-  font-size: 14px;
+  font-size: var(--bvt-fz-md);
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
 `;
 
 const Track = styled.div`
@@ -38,35 +42,6 @@ const Track = styled.div`
   height: 24px;
   display: flex;
   align-items: center;
-`;
-
-/** 原生 range 底轨（视觉：细线 + 刻度点）。 */
-const RangeInput = styled.input`
-  width: 100%;
-  appearance: none;
-  -webkit-appearance: none;
-  height: 24px;
-  background: transparent;
-  cursor: pointer;
-  position: relative;
-  z-index: 2;
-
-  &::-webkit-slider-runnable-track {
-    height: 2px;
-    background: var(--bvt-border);
-    border-radius: 1px;
-  }
-  &::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: var(--bvt-accent);
-    margin-top: -7px;
-    border: none;
-    box-shadow: 0 0 0 3px var(--bvt-surface);
-  }
-  &:focus { outline: none; }
 `;
 
 /** thumb 半径（对齐 range 可达范围内缩）。 */
@@ -103,9 +78,8 @@ const TickLine = styled.div`
 const TicksLabel = styled.div`
   position: relative;
   height: 14px;
-  margin-top: 2px;
   color: var(--bvt-text3);
-  font-size: 11px;
+  font-size: var(--bvt-fz-xs);
   left: ${THUMB_R}px;
   right: ${THUMB_R}px;
 `;
@@ -139,7 +113,6 @@ export function SpeedSlider() {
           ))}
         </Ticks>
         <RangeInput
-          type="range"
           min={0}
           max={ANIM_STOPS.length - 1}
           step={1}

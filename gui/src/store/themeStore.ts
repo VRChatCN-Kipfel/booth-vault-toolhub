@@ -4,8 +4,8 @@
  */
 
 import { create } from 'zustand';
-import type { ThemeName } from '../theme/themes';
-import { DEFAULT_MODE_PER_THEME, DEFAULT_THEME, THEMES } from '../theme/themes';
+import type { AppIconId, ThemeName } from '../theme/themes';
+import { DEFAULT_APP_ICON, DEFAULT_MODE_PER_THEME, DEFAULT_THEME, THEMES, isAppIconId } from '../theme/themes';
 
 /** 明暗偏好：light / dark / system（跟随系统）。 */
 export type ModePref = 'light' | 'dark' | 'system';
@@ -19,13 +19,22 @@ interface ThemeState {
   systemTheme: ResolvedMode;
   /** 动画速度倍速（0.25 ~ 4，默认 1）。 */
   animSpeed: number;
+  /** 背景花纹不透明度（0 ~ 1）。 */
+  motifOpacity: number;
+  /** 自定义花纹图（data URL）；null 用主题自带图。 */
+  motifImage: string | null;
+  /** 程序图标，与主题解耦。 */
+  appIcon: AppIconId;
   setTheme: (t: ThemeName) => void;
+  setAppIcon: (id: AppIconId) => void;
   setMode: (m: ModePref) => void;
   cycleTheme: () => void;
   /** 三态循环明暗：light → system → dark → light。 */
   cycleMode: () => void;
   setSystemTheme: (t: ResolvedMode) => void;
   setAnimSpeed: (v: number) => void;
+  setMotifOpacity: (v: number) => void;
+  setMotifImage: (src: string | null) => void;
   /** 从持久化加载（返回是否成功）。 */
   hydrate: () => Promise<void>;
 }
@@ -67,32 +76,48 @@ export function stopIndex(v: number): number {
   return Math.max(0, idx);
 }
 
+/** 花纹不透明度：默认即上限 50%。 */
+export const MOTIF_DEFAULT = 0.5;
+export const MOTIF_MAX = 0.5;
+
+interface Prefs {
+  theme?: string;
+  mode?: string;
+  anim_speed?: number;
+  motif_opacity?: number;
+  motif_image?: string;
+  app_icon?: string;
+}
+
 /** 从 plugin-store 读取配置。 */
-async function loadPrefs(): Promise<Partial<Record<'theme' | 'mode' | 'anim_speed', string | number>> | null> {
+async function loadPrefs(): Promise<Prefs | null> {
   try {
     const { load } = await import('@tauri-apps/plugin-store');
     const store = await load('settings.json', { autoSave: false });
-    const theme = (await store.get<string>('theme')) ?? null;
-    const mode = (await store.get<string>('mode')) ?? null;
-    const animSpeed = (await store.get<number>('anim_speed')) ?? null;
     return {
-      theme: theme ?? undefined,
-      mode: mode ?? undefined,
-      anim_speed: animSpeed ?? undefined,
+      theme: (await store.get<string>('theme')) ?? undefined,
+      mode: (await store.get<string>('mode')) ?? undefined,
+      anim_speed: (await store.get<number>('anim_speed')) ?? undefined,
+      motif_opacity: (await store.get<number>('motif_opacity')) ?? undefined,
+      motif_image: (await store.get<string>('motif_image')) ?? undefined,
+      app_icon: (await store.get<string>('app_icon')) ?? undefined,
     };
   } catch {
     return null;
   }
 }
 
-/** 写回 plugin-store。 */
-async function savePrefs(theme: ThemeName, mode: ModePref, animSpeed: number) {
+/** 写回 plugin-store（一次落全量，setter 调用 set 后直接传 get()）。 */
+async function savePrefs(s: ThemeState) {
   try {
     const { load } = await import('@tauri-apps/plugin-store');
     const store = await load('settings.json', { autoSave: false });
-    await store.set('theme', theme);
-    await store.set('mode', mode);
-    await store.set('anim_speed', animSpeed);
+    await store.set('theme', s.theme);
+    await store.set('mode', s.mode);
+    await store.set('anim_speed', s.animSpeed);
+    await store.set('motif_opacity', s.motifOpacity);
+    await store.set('motif_image', s.motifImage ?? '');
+    await store.set('app_icon', s.appIcon);
     await store.save();
   } catch {
     // 非 Tauri 环境（浏览器 dev）静默失败
@@ -104,42 +129,54 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
   mode: DEFAULT_MODE_PER_THEME[DEFAULT_THEME],
   systemTheme: 'light',
   animSpeed: ANIM_DEFAULT,
+  motifOpacity: MOTIF_DEFAULT,
+  motifImage: null,
+  appIcon: DEFAULT_APP_ICON,
 
   setTheme: (t) => {
-    const cur = get();
     set({ theme: t });
-    void savePrefs(t, cur.mode, cur.animSpeed);
+    void savePrefs(get());
+  },
+
+  setAppIcon: (id) => {
+    set({ appIcon: id });
+    void savePrefs(get());
   },
 
   setMode: (m) => {
-    const cur = get();
     set({ mode: m });
-    void savePrefs(cur.theme, m, cur.animSpeed);
+    void savePrefs(get());
   },
 
   cycleTheme: () => {
-    const cur = get();
-    const idx = THEME_ORDER.indexOf(cur.theme);
-    const next = THEME_ORDER[(idx + 1) % THEME_ORDER.length];
-    set({ theme: next });
-    void savePrefs(next, cur.mode, cur.animSpeed);
+    const idx = THEME_ORDER.indexOf(get().theme);
+    const theme = THEME_ORDER[(idx + 1) % THEME_ORDER.length];
+    set({ theme });
+    void savePrefs(get());
   },
 
   cycleMode: () => {
-    const cur = get();
     const order: ModePref[] = ['light', 'system', 'dark'];
-    const idx = order.indexOf(cur.mode);
-    const next = order[(idx + 1) % order.length];
-    set({ mode: next });
-    void savePrefs(cur.theme, next, cur.animSpeed);
+    const idx = order.indexOf(get().mode);
+    set({ mode: order[(idx + 1) % order.length] });
+    void savePrefs(get());
   },
 
   setSystemTheme: (t) => set({ systemTheme: t }),
 
   setAnimSpeed: (v) => {
-    const cur = get();
     set({ animSpeed: v });
-    void savePrefs(cur.theme, cur.mode, v);
+    void savePrefs(get());
+  },
+
+  setMotifOpacity: (v) => {
+    set({ motifOpacity: Math.min(MOTIF_MAX, Math.max(0, v)) });
+    void savePrefs(get());
+  },
+
+  setMotifImage: (src) => {
+    set({ motifImage: src });
+    void savePrefs(get());
   },
 
   hydrate: async () => {
@@ -153,5 +190,10 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
     const a = prefs.anim_speed;
     // 持久化值须吸附到档位集合（旧版线性值如 1.75/2.25 不在新档位，统一吸附）。
     if (typeof a === 'number') set({ animSpeed: snapAnim(a) });
+    const o = prefs.motif_opacity;
+    if (typeof o === 'number' && o >= 0) set({ motifOpacity: Math.min(MOTIF_MAX, o) });
+    // 只认 data URL：路径在 webview 里加载不到，脏值当没设过。
+    if (prefs.motif_image?.startsWith('data:image/')) set({ motifImage: prefs.motif_image });
+    if (prefs.app_icon && isAppIconId(prefs.app_icon)) set({ appIcon: prefs.app_icon });
   },
 }));

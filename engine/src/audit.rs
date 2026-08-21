@@ -10,6 +10,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::clean::extract_version_tag;
+use crate::organize::{
+    free_updateable, local_file_version_tag, missing_free_files, remote_free_version_tag,
+};
 use crate::version;
 
 /// HIDDEN 属性位。
@@ -92,13 +95,14 @@ pub fn read_ini_text(path: &Path) -> String {
 
 /// UTF-16 解码为 String（无效代理以 U+FFFD 替换，容忍截断的尾字节）。
 fn decode_utf16(bytes: &[u8], little: bool) -> String {
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| {
+    let (chunks, _) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = chunks
+        .iter()
+        .map(|&c| {
             if little {
-                u16::from_le_bytes([c[0], c[1]])
+                u16::from_le_bytes(c)
             } else {
-                u16::from_be_bytes([c[0], c[1]])
+                u16::from_be_bytes(c)
             }
         })
         .collect();
@@ -417,22 +421,27 @@ fn sorted_dirs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 
 pub use version::ver_gt;
 
-/// 版本巡检结果：本地版本落后于官方版本的商品。
+/// 版本巡检结果：本地免费文件落后于远程免费文件的商品。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionInfo {
     /// 7 位商品 ID。
     pub id: String,
     /// 目录名分隔符之后的名称。
     pub name: String,
-    /// 本地目录名提取的版本标记。
+    /// 本地文件名提取的版本标记。
     pub local_tag: String,
-    /// 官方商品名提取的版本标记。
+    /// 远程免费文件名提取的版本标记。
     pub official_tag: String,
+    /// 商品目录。
+    pub path: PathBuf,
+    /// 缺失的远程免费文件数。
+    pub missing: usize,
 }
 
-/// 版本巡检：经 `fetch` 注入联网比对官方版本号，返回本地落后于官方的商品。
+/// 版本巡检：经 `fetch` 注入联网比对远程免费文件版本，返回可补全/可更新的商品。
 ///
-/// 每件取官方商品名提取版本标记，与本地目录名版本标记比较，严格大于才记录。
+/// 本地版本取目录内文件名，远程版本取 `free_downloads` 文件名。
+/// `updateable` = 存在远程免费文件且（`missing_free_files` 非空或远程版本 `ver_gt` 本地）。
 pub fn version_audit(
     root: &Path,
     fetch: impl Fn(&str) -> Option<crate::fetch::ItemJson>,
@@ -455,6 +464,7 @@ pub enum VersionEvent<'a> {
     /// 单件版本比对结果（含是否可更新，供 GUI 决定是否高亮/累计）。
     Compared {
         dir: &'a ScannedDir,
+        local: &'a str,
         official: &'a str,
         updateable: bool,
     },
@@ -464,7 +474,7 @@ pub enum VersionEvent<'a> {
 ///
 /// 收敛 GUI 在进程外复刻的判定核心：`fetch` 负责联网取官方信息，`progress` 负责
 /// 消费每件进度（日志/插桩）。回调返回 `true` 继续、`false` 提前终止（协作式取消）。
-/// 判定逻辑（`extract_version_tag` + `ver_gt`）单点落此，GUI 不再重复实现。
+/// 判定逻辑（文件名版本 + `missing_free_files`）单点落此，GUI 不再重复实现。
 pub fn version_audit_with_progress<F, P>(root: &Path, fetch: F, mut progress: P) -> Vec<VersionInfo>
 where
     F: Fn(&str) -> Result<crate::fetch::ItemJson, String>,
@@ -484,10 +494,13 @@ where
                 continue;
             }
         };
-        let official = extract_version_tag(&item.name);
-        let updateable = ver_gt(&official, &d.local_tag);
+        let local = local_file_version_tag(&d.path);
+        let official = remote_free_version_tag(&item);
+        let missing = missing_free_files(&d.path, &item).len();
+        let updateable = free_updateable(&d.path, &item);
         if !progress(VersionEvent::Compared {
             dir: &d,
+            local: &local,
             official: &official,
             updateable,
         }) {
@@ -497,12 +510,45 @@ where
             out.push(VersionInfo {
                 id: d.id,
                 name: d.name,
-                local_tag: d.local_tag,
+                local_tag: local,
                 official_tag: official,
+                path: d.path,
+                missing,
             });
         }
     }
     out
+}
+
+/// 库存列表：`scan_library` + 路径第一段类目（不联网）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryItem {
+    pub id: String,
+    pub name: String,
+    pub path: PathBuf,
+    pub category: String,
+}
+
+/// 列出归档库存。类目取 ID 目录的父目录名。
+pub fn list_library(root: &Path) -> Vec<LibraryItem> {
+    scan_library(root)
+        .into_iter()
+        .map(|d| {
+            let category = d
+                .path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            LibraryItem {
+                id: d.id,
+                name: d.name,
+                path: d.path,
+                category,
+            }
+        })
+        .collect()
 }
 
 /// 错位检测结果：目录所在分类与官方分类不一致的商品。
@@ -998,6 +1044,31 @@ mod tests {
         }
     }
 
+    fn json_item_files(name: &str, files: &[(&str, &str)]) -> crate::fetch::ItemJson {
+        crate::fetch::ItemJson {
+            name: name.to_string(),
+            variations: vec![crate::fetch::VariationJson {
+                price: Some(0),
+                downloadable: Some(crate::fetch::DownloadableJson {
+                    no_musics: files
+                        .iter()
+                        .map(|(u, n)| crate::fetch::DownloadFileJson {
+                            url: u.to_string(),
+                            name: n.to_string(),
+                            ..crate::fetch::DownloadFileJson::default()
+                        })
+                        .collect(),
+                    musics: vec![],
+                }),
+            }],
+            ..crate::fetch::ItemJson::default()
+        }
+    }
+
+    fn write_pkg(dir: &Path, name: &str) {
+        std::fs::write(dir.join(name), b"PK\x03\x04").unwrap();
+    }
+
     #[test]
     fn ver_gt_basic() {
         assert!(ver_gt("1.0", "0.9"));
@@ -1037,17 +1108,26 @@ mod tests {
     #[test]
     fn version_audit_reports_updateable() {
         let base = tmpdir("va_update");
-        make_id_dir(&base, "1111111_雪女v1");
-        make_id_dir(&base, "2222222_メカv3");
+        let d1 = make_id_dir(&base, "1111111_雪女");
+        write_pkg(&d1, "雪女v1.unitypackage");
+        let d2 = make_id_dir(&base, "2222222_メカ");
+        write_pkg(&d2, "メカv3.unitypackage");
         let out = version_audit(&base, |id| match id {
-            "1111111" => Some(json_item("雪女v2")),
-            "2222222" => Some(json_item("メカv2")),
+            "1111111" => Some(json_item_files(
+                "雪女",
+                &[("https://u/2", "雪女v2.unitypackage")],
+            )),
+            "2222222" => Some(json_item_files(
+                "メカ",
+                &[("https://u/3", "メカv3.unitypackage")],
+            )),
             _ => None,
         });
         assert_eq!(out.len(), 1, "out: {:?}", out);
         assert_eq!(out[0].id, "1111111");
         assert_eq!(out[0].local_tag, "Ver_1");
         assert_eq!(out[0].official_tag, "Ver_2");
+        assert_eq!(out[0].missing, 1);
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -1058,6 +1138,258 @@ mod tests {
         make_id_dir(&base, "4444444_plain");
         let out = version_audit(&base, |_| Some(json_item("无版本商品")));
         assert!(out.is_empty(), "out: {:?}", out);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 抽样表：商品名版本 / 本地文件名版本 / 旧巡检(目录名 vs 商品名) / 新判定。
+    /// 文件名版本覆盖更好（商品名无版本时旧公式漏报），故采用新公式。
+    #[test]
+    fn version_sample_filename_covers_better() {
+        struct Row {
+            id: &'static str,
+            dir: &'static str,
+            local_file: Option<&'static str>,
+            product: &'static str,
+            remote_file: Option<&'static str>,
+            old_report: bool,
+            new_report: bool,
+        }
+        let rows = [
+            Row {
+                id: "1000001",
+                dir: "1000001_无版本目录",
+                local_file: Some("pack_v1.unitypackage"),
+                product: "无版本商品",
+                remote_file: Some("pack_v2.unitypackage"),
+                old_report: false,
+                new_report: true,
+            },
+            Row {
+                id: "1000002",
+                dir: "1000002_目录v1",
+                local_file: Some("pack.zip"),
+                product: "商品v2",
+                remote_file: Some("pack_v2.zip"),
+                old_report: true,
+                new_report: true,
+            },
+            Row {
+                id: "1000003",
+                dir: "1000003_目录v3",
+                local_file: Some("pack_v3.unitypackage"),
+                product: "商品v2",
+                remote_file: Some("pack_v3.unitypackage"),
+                old_report: false,
+                new_report: false,
+            },
+            Row {
+                id: "1000004",
+                dir: "1000004_plain",
+                local_file: None,
+                product: "无版本",
+                remote_file: None,
+                old_report: false,
+                new_report: false,
+            },
+            Row {
+                id: "1000005",
+                dir: "1000005_雪女v1",
+                local_file: Some("雪女v1.unitypackage"),
+                product: "雪女v2",
+                remote_file: Some("雪女v2.unitypackage"),
+                old_report: true,
+                new_report: true,
+            },
+            Row {
+                id: "1000006",
+                dir: "1000006_メカ",
+                local_file: Some("メカv1.01.unitypackage"),
+                product: "メカ弾エフェクト",
+                remote_file: Some("メカv2.00.unitypackage"),
+                old_report: false,
+                new_report: true,
+            },
+            Row {
+                id: "1000007",
+                dir: "1000007_Same",
+                local_file: Some("item_v2.00.zip"),
+                product: "Same v2",
+                remote_file: Some("item_v2.zip"),
+                old_report: false,
+                new_report: false,
+            },
+            Row {
+                id: "1000008",
+                dir: "1000008_extra",
+                local_file: Some("a_v1.zip"),
+                product: "extra",
+                remote_file: Some("b_v1.zip"),
+                old_report: false,
+                new_report: false,
+            },
+            Row {
+                id: "1000009",
+                dir: "1000009_缺文件",
+                local_file: None,
+                product: "缺文件",
+                remote_file: Some("free_v1.zip"),
+                old_report: false,
+                new_report: true,
+            },
+            Row {
+                id: "1000010",
+                dir: "1000010_付费店",
+                local_file: Some("paid_v1.zip"),
+                product: "付费店v9",
+                remote_file: None,
+                old_report: false,
+                new_report: false,
+            },
+            Row {
+                id: "1000011",
+                dir: "1000011_Lunaria",
+                local_file: Some("LunariaPaperFan.unitypackage"),
+                product: "Lunaria Paper Fan v2",
+                remote_file: Some("LunariaPaperFan_v2.unitypackage"),
+                old_report: false,
+                new_report: true,
+            },
+            Row {
+                id: "1000012",
+                dir: "1000012_owl_v1",
+                local_file: Some("owl.unitypackage"),
+                product: "owl",
+                remote_file: Some("owl.unitypackage"),
+                old_report: false,
+                new_report: false,
+            },
+            Row {
+                id: "1000013",
+                dir: "1000013_shader",
+                local_file: Some("shader_1.2.unitypackage"),
+                product: "shader 1.2",
+                remote_file: Some("shader_1.3.unitypackage"),
+                old_report: false,
+                new_report: true,
+            },
+            Row {
+                id: "1000014",
+                dir: "1000014_world_v10",
+                local_file: Some("world_v10.unitypackage"),
+                product: "world v9",
+                remote_file: Some("world_v10.unitypackage"),
+                old_report: false,
+                new_report: false,
+            },
+            Row {
+                id: "1000015",
+                dir: "1000015_hair",
+                local_file: Some("hair.fbx"),
+                product: "hair v3",
+                remote_file: Some("hair_v3.fbx"),
+                old_report: false,
+                new_report: true,
+            },
+            Row {
+                id: "1000016",
+                dir: "1000016_avatarv1",
+                local_file: Some("avatar_v1.unitypackage"),
+                product: "avatar",
+                remote_file: Some("avatar_v1.unitypackage"),
+                old_report: false,
+                new_report: false,
+            },
+            Row {
+                id: "1000017",
+                dir: "1000017_fx",
+                local_file: Some("fx_v0.9.unitypackage"),
+                product: "fx",
+                remote_file: Some("fx_v1.0.unitypackage"),
+                old_report: false,
+                new_report: true,
+            },
+            Row {
+                id: "1000018",
+                dir: "1000018_tool_v2",
+                local_file: None,
+                product: "tool v2",
+                remote_file: Some("tool_v2.zip"),
+                old_report: false,
+                new_report: true,
+            },
+            Row {
+                id: "1000019",
+                dir: "1000019_music",
+                local_file: Some("music_v1.wav"),
+                product: "music v1",
+                remote_file: Some("music_v1.wav"),
+                old_report: false,
+                new_report: false,
+            },
+            Row {
+                id: "1000020",
+                dir: "1000020_cloth_v1",
+                local_file: Some("cloth_v1.unitypackage"),
+                product: "cloth v1",
+                remote_file: Some("cloth_v2.unitypackage"),
+                old_report: false,
+                new_report: true,
+            },
+        ];
+        assert_eq!(rows.len(), 20);
+        let base = tmpdir("va_sample20");
+        for row in &rows {
+            let dir = make_id_dir(&base, row.dir);
+            if let Some(f) = row.local_file {
+                write_pkg(&dir, f);
+            }
+        }
+        let out = version_audit(&base, |id| {
+            let row = rows.iter().find(|r| r.id == id)?;
+            Some(match row.remote_file {
+                Some(f) => json_item_files(row.product, &[("https://u/x", f)]),
+                None => json_item(row.product),
+            })
+        });
+        let got: std::collections::HashSet<_> = out.iter().map(|v| v.id.as_str()).collect();
+        let mut old_hits = 0usize;
+        let mut new_hits = 0usize;
+        for row in &rows {
+            let old = crate::version::ver_gt(
+                &crate::clean::extract_version_tag(row.product),
+                &crate::clean::extract_version_tag(row.dir),
+            );
+            assert_eq!(old, row.old_report, "old formula {}", row.id);
+            assert_eq!(
+                got.contains(row.id),
+                row.new_report,
+                "new formula {}",
+                row.id
+            );
+            if row.old_report {
+                old_hits += 1;
+            }
+            if row.new_report {
+                new_hits += 1;
+            }
+        }
+        assert!(
+            new_hits > old_hits,
+            "filename cover {new_hits} > name cover {old_hits}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn list_library_uses_parent_as_category() {
+        let base = tmpdir("lib_cat");
+        let cat = base.join("3D服饰");
+        std::fs::create_dir_all(&cat).unwrap();
+        make_id_dir(&cat, "1234567_Dress");
+        let out = list_library(&base);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "1234567");
+        assert_eq!(out[0].category, "3D服饰");
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -1081,14 +1413,22 @@ mod tests {
     #[test]
     fn version_audit_with_progress_emits_and_collects() {
         let base = tmpdir("vap_emit");
-        make_id_dir(&base, "1111111_雪女v1");
-        make_id_dir(&base, "2222222_メカv3");
+        let d1 = make_id_dir(&base, "1111111_雪女");
+        write_pkg(&d1, "雪女v1.unitypackage");
+        let d2 = make_id_dir(&base, "2222222_メカ");
+        write_pkg(&d2, "メカv3.unitypackage");
         let mut compared = Vec::new();
         let out = version_audit_with_progress(
             &base,
             |id| match id {
-                "1111111" => Ok(json_item("雪女v2")),
-                "2222222" => Ok(json_item("メカv2")),
+                "1111111" => Ok(json_item_files(
+                    "雪女",
+                    &[("https://u/2", "雪女v2.unitypackage")],
+                )),
+                "2222222" => Ok(json_item_files(
+                    "メカ",
+                    &[("https://u/3", "メカv3.unitypackage")],
+                )),
                 _ => Err("404".to_string()),
             },
             |evt| {
@@ -1096,6 +1436,7 @@ mod tests {
                     dir,
                     official,
                     updateable,
+                    ..
                 } = evt
                 {
                     compared.push((dir.id.clone(), official.to_string(), updateable));
@@ -1109,7 +1450,7 @@ mod tests {
             compared,
             vec![
                 ("1111111".to_string(), "Ver_2".to_string(), true),
-                ("2222222".to_string(), "Ver_2".to_string(), false),
+                ("2222222".to_string(), "Ver_3".to_string(), false),
             ]
         );
         let _ = std::fs::remove_dir_all(&base);

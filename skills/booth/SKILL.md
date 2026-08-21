@@ -84,10 +84,12 @@ MCP 客户端若 `booth-mcp` 不在 PATH，配置改填绝对路径（示例见 
    非提权会失败）。
 
 ```bash
-booth download <店铺URL|散链> [--cookie ...] [--out DIR]   # 下载免费商品
+booth download <店铺URL|散链> [--cookie ...] [--out DIR]   # 下载免费商品（需 Cookie）
 booth organize <本地包...> [--id ID] [--out DIR]           # 按 ID 整理归档
 booth search   <本地文件...> [--id ID] [--base-dir DIR]    # 按名搜索整理
 booth audit    [--base DIR] [--dry-run]                    # 图标三件套巡检
+booth version-audit [--base DIR] [--fix]                   # 版本巡检；--fix 补免费文件
+booth library  [--base DIR]                                # 列出库存
 booth update-check [--proxy]                               # 工具自更新检查
 ```
 
@@ -95,7 +97,7 @@ booth update-check [--proxy]                               # 工具自更新检�
 
 ## MCP 接入（可选）
 
-以 stdio server 运行 `booth-mcp`，同五工具（download/organize/search/audit/update_check），
+以 stdio server 运行 `booth-mcp`，同七工具（download/organize/search/audit/version_audit/library/update_check），
 JSON 输入输出与 CLI 完全一致。客户端配置示例（`.mcp.json` 片段）：
 
 ```json
@@ -117,7 +119,7 @@ JSON 输入输出与 CLI 完全一致。客户端配置示例（`.mcp.json` 片�
 ├─ 是本地压缩包，文件名含 7 位数字（如 跟随悬浮机-6504842等3个文件.rar）
 │   └─► booth organize              （按 ID 取元数据整理）
 ├─ 是本地压缩包，无 ID，是 BOOTH 商品名（如 SimpleJoinAlert_v100.zip）
-│   └─► booth search                （按名字搜索 + 水印/UnityPackage 辅助识别）
+│   └─► booth search                （按名字搜索 + UnityPackage 资源名验真）
 └─ 主上想让整个库图标整齐 / 图标异常
     └─► booth audit                 （三件套巡检 + 自动修复）
 └─ 询问工具是否有新版本 / 版本号
@@ -132,8 +134,7 @@ JSON 输入输出与 CLI 完全一致。客户端配置示例（`.mcp.json` 片�
 - **分类汉化**：engine `CATEGORY_MAP`（3Dテクスチャ→3D贴图 等）；未知类目保留日文原名不臆造
 - **免费偏置禁忌**：整理已有文件时评分**不偏置免费**，避免付费商品错配到同名免费兄弟
 - **文件名清洗**：去版本号/中文备注/括号、下划线→空格、驼峰拆词、纯日文主体
-- **压缩包水印识图**：搜索无果读 `*.url`/`readme` 提取店铺 URL，走 `/items?page=N` 反查
-- **UnityPackage 内部资源名是硬线索**：首段目录名=店铺名/作者名，内部 prefab/anim=商品主题
+- **UnityPackage 内部资源名是硬线索**：单结果名称未命中时解包 `pathname` 二次验真
 - **商品页下载文件名=终极锚点**：歧义时以实际免费文件名与本地版本号匹配确认
 - **隐私铁律**：Cookie 仅存本机配置（应用级 config），**绝不上传 GitHub**
 
@@ -165,6 +166,7 @@ JSON 输入输出与 CLI 完全一致。客户端配置示例（`.mcp.json` 片�
     └── ID_标题\
         ├── ID_标题.ext   原文件（下载/移动/复制，保留原文件名含版本号）
         ├── cover.jpg           商品首图
+        ├── booth.txt           标题/ID/店铺/条款（缺失不计入三件套损坏）
         ├── .folder_icon.ico    (隐藏)
         └── desktop.ini         (隐藏+系统)
 ```
@@ -172,7 +174,7 @@ JSON 输入输出与 CLI 完全一致。客户端配置示例（`.mcp.json` 片�
 ## 非 BOOTH 商品处理
 
 部分 VRC 素材不在 BOOTH 上（如 Poiyomi Toon 走 GitHub 分发）。
-search 判定「所有搜索 + 水印探测均无果」时保留源文件不整理，交主上确认来源平台。
+search 判定「所有搜索均无果」时保留源文件不整理，交主上确认来源平台。
 
 ## 配置
 
