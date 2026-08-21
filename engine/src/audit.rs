@@ -95,13 +95,14 @@ pub fn read_ini_text(path: &Path) -> String {
 
 /// UTF-16 解码为 String（无效代理以 U+FFFD 替换，容忍截断的尾字节）。
 fn decode_utf16(bytes: &[u8], little: bool) -> String {
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| {
+    let (chunks, _) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = chunks
+        .iter()
+        .map(|&c| {
             if little {
-                u16::from_le_bytes([c[0], c[1]])
+                u16::from_le_bytes(c)
             } else {
-                u16::from_be_bytes([c[0], c[1]])
+                u16::from_be_bytes(c)
             }
         })
         .collect();
