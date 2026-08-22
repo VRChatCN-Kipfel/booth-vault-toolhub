@@ -140,7 +140,7 @@ impl Drop for JobGuard {
         registry_lock(&self.map).remove(&self.tid);
         if !self.done {
             let _ = self.on_event.send(ProgressEvent::ItemError {
-                id: self.tid.clone(),
+                id: String::new(),
                 message: "任务异常终止".to_string(),
             });
             let _ = self.on_event.send(ProgressEvent::Finished {

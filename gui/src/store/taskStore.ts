@@ -150,16 +150,20 @@ export const useTaskStore = create<TaskState>((set) => ({
             },
           ]);
           break;
-        case 'finished':
+        case 'finished': {
+          const abort = next.items.some(isAbortItem);
+          const errCount = next.items.filter((i) => i.status === 'err').length;
           next.status = 'done';
-          next.done = Math.max(next.done, evt.done ?? 0);
-          next.failed = Math.max(
-            next.failed,
-            evt.failed ?? 0,
-            next.items.filter((i) => i.status === 'err').length,
-          );
+          if (abort) {
+            next.done = Math.max(next.done, evt.done ?? 0);
+            next.failed = Math.max(next.failed, evt.failed ?? 0, errCount);
+          } else {
+            next.done = evt.done ?? next.done;
+            next.failed = evt.failed ?? errCount;
+          }
           next.updateable = evt.updateable ?? next.updateable;
           break;
+        }
         case 'cancelled':
           next.status = 'cancelled';
           break;
@@ -180,8 +184,14 @@ export function useLatestTask(kind: TaskKind): { id: string; task: TaskRecord } 
   return { id, task };
 }
 
+const ABORT_MSG = '任务异常终止';
+
+function isAbortItem(i: TaskItem): boolean {
+  return i.message === ABORT_MSG;
+}
+
 export function failedItems(task: TaskRecord): TaskItem[] {
-  return task.items.filter((i) => i.status === 'err');
+  return task.items.filter((i) => i.status === 'err' && !isAbortItem(i));
 }
 
 function keepTask(

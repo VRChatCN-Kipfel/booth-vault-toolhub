@@ -79,9 +79,12 @@ export async function retryFailed(taskId: string): Promise<string | null> {
   if (task.kind === 'download' || task.cmd === 'download') {
     const shopErrs = failed.filter((i) => i.message.startsWith('店铺翻页失败'));
     const itemErrs = failed.filter((i) => !i.message.startsWith('店铺翻页失败'));
-    args.items = itemErrs.map((i) => i.id);
     const prevShop = typeof task.args.shop === 'string' ? task.args.shop : '';
-    args.shop = shopErrs.length ? prevShop || shopErrs[0].id : null;
+    const retryItems = itemErrs.map((i) => i.id).filter(Boolean);
+    const retryShop = shopErrs.length ? prevShop || shopErrs[0].id : null;
+    if (retryItems.length === 0 && !retryShop) return null;
+    args.items = retryItems;
+    args.shop = retryShop;
   } else if (task.kind === 'organize' || task.cmd === 'organize') {
     args.archives = ids;
   } else if (task.cmd === 'search') {
