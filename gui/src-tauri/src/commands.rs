@@ -490,6 +490,38 @@ pub fn organize(
 }
 
 /// search：按名搜索并整理本地文件。立刻返回 task_id。
+///
+/// 输入允许混入文件夹：此处先递归展开为其中的普通文件，
+/// 使「拖入文件夹 → 逐文件检索」而非仅按文件夹名搜一次。
+fn expand_directories(files: &[String]) -> Vec<String> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in rd.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if entry.file_name() != "desktop.ini"
+                && entry.file_name() != "Thumbs.db"
+                && entry.file_name() != ".DS_Store"
+            {
+                out.push(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for f in files {
+        let p = std::path::Path::new(f);
+        if p.is_dir() {
+            walk(p, &mut out);
+        } else {
+            out.push(f.clone());
+        }
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn search(
@@ -506,6 +538,7 @@ pub fn search(
     let base = resolve_root(&config, base_dir.as_deref())?;
     let cookie = resolve_cookie(cookie.as_deref(), &config);
     let client = make_session(&config, cookie.as_deref());
+    let files = expand_directories(&files);
     let total = files.len();
 
     Ok(spawn_job(&registry, on_event.clone(), move |flag| {
@@ -1004,4 +1037,42 @@ pub async fn update_check(use_proxy: bool) -> Result<serde_json::Value, String> 
         "release_body": info.release_body,
         "error": info.error,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand_directories;
+    use std::path::PathBuf;
+
+    #[test]
+    fn file_passthrough_keeps_order() {
+        let files = vec!["a.zip".to_string(), "b.zip".to_string()];
+        assert_eq!(expand_directories(&files), files);
+    }
+
+    #[test]
+    fn directory_expands_recursively_and_skips_system_files() {
+        let tmp = std::env::temp_dir().join(format!("bvt-expand-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("sub")).unwrap();
+        std::fs::write(tmp.join("x.zip"), b"x").unwrap();
+        std::fs::write(tmp.join("desktop.ini"), b"d").unwrap();
+        std::fs::write(tmp.join("Thumbs.db"), b"t").unwrap();
+        std::fs::write(tmp.join("sub").join("y.package"), b"y").unwrap();
+
+        let out = expand_directories(&[tmp.to_string_lossy().into_owned()]);
+        let mut rel: Vec<PathBuf> = out
+            .iter()
+            .map(|s| {
+                s.trim_start_matches(tmp.to_str().unwrap())
+                    .trim_start_matches('\\')
+                    .into()
+            })
+            .collect();
+        rel.sort();
+        assert_eq!(
+            rel,
+            vec![PathBuf::from("sub/y.package"), PathBuf::from("x.zip")]
+        );
+    }
 }
