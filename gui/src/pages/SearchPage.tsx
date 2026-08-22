@@ -1,180 +1,253 @@
 /**
- * 实验检索页：文件名/路径/关键词 → 搜索候选 → 评分选优 → 归档。
+ * 实验检索页：文件名 → score_and_pick 候选 → 歧义人工选 → 原路径+forceId 归档。
  */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import styled from 'styled-components';
-import { AccentButton, SecondaryButton, TextArea, ObsPanel, ProgressBar, Badge, PanelLabel, PageShell, Lead } from '../components/ui';
+import {
+  AccentButton, SecondaryButton, TextArea, ObsPanel, ProgressBar, Badge, PanelLabel, PageShell,
+  Section, FlexSection, Row, ListRow, EmptyState, Muted, Counter,
+} from '../components/ui';
+import { QueueActions } from '../components/QueueActions';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
-import { runTask } from '../lib/task';
-
-interface ResultItem {
-  id: string;
-  name: string;
-  priceText: string;
-}
-
-const Row = styled.div`
-  display: flex;
-  gap: 10px;
-  align-items: center;
-`;
-
-const StatusLabel = styled.div`
-  color: var(--bvt-text2);
-  font-size: 13px;
-`;
+import { failedItems, useLatestTask } from '../store/taskStore';
+import { cancelTask, retryFailed, runTask } from '../lib/task';
+import { badgeKind, badgeLabel, formatPrice } from '../lib/booth';
 
 const ResultList = styled(ObsPanel)`
   flex: 1;
-  min-height: 0;
 `;
 
-const ResultRow = styled.div<{ selected: boolean }>`
+/** 一个来源文件一组：组头是文件路径，组内是候选商品。 */
+const FileBlock = styled.div`
+  border-bottom: 1px solid var(--bvt-border);
+  &:last-child { border-bottom: none; }
+`;
+
+const FileHead = styled.div`
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  cursor: pointer;
-  background: ${({ selected }) => (selected ? 'var(--bvt-sel-bg)' : 'transparent')};
-  color: ${({ selected }) => (selected ? 'var(--bvt-sel-text)' : 'var(--bvt-text)')};
-  border-bottom: 1px solid var(--bvt-border2);
-  .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .price { color: var(--bvt-text2); font-size: 12px; }
-  &:hover { background: var(--bvt-hover); }
+  gap: var(--bvt-s2);
+  padding: var(--bvt-s2) var(--bvt-s3);
+  background: var(--bvt-surface2);
+  font-size: var(--bvt-fz-sm);
+  color: var(--bvt-text2);
+  .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `;
+
+const AmbiguousHint = styled.div`
+  padding: var(--bvt-s1) var(--bvt-s3);
+  color: var(--bvt-warn);
+  font-size: var(--bvt-fz-sm);
+`;
+
+const ResultRow = styled(ListRow)`
+  cursor: pointer;
+  border-bottom: none;
+  .price { flex: none; color: var(--bvt-text2); font-size: var(--bvt-fz-sm); }
+`;
+
+const ArchiveList = styled(ObsPanel)`
+  max-height: 160px;
+`;
+
+function parseFiles(blob: string): string[] {
+  return blob.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+}
 
 export function SearchPage() {
   const boothRoot = useAppConfigStore((s) => s.boothRoot);
   const cookie = useAppConfigStore((s) => s.cookie);
+  const preview = useLatestTask('search');
+  const archive = useLatestTask('search_archive');
   const [text, setText] = useState('');
-  const [results, setResults] = useState<ResultItem[]>([]);
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selected, setSelected] = useState<Record<string, string>>({});
+  const [starting, setStarting] = useState(false);
   const [status, setStatus] = useState('');
-  const [queue, setQueue] = useState<Array<{ id: string; message: string; status: 'ok' | 'err' }>>([]);
-  const [running, setRunning] = useState(false);
-  const [archiving, setArchiving] = useState(false);
-  const [total, setTotal] = useState(0);
+
+  const previewTask = preview?.task;
+  const archiveTask = archive?.task;
+  const searching = starting || previewTask?.status === 'running';
+  const archiving = archiveTask?.status === 'running';
+  const groups = useMemo(
+    () => (previewTask?.items ?? []).filter((i) => i.candidates),
+    [previewTask],
+  );
+  const errors = (previewTask?.items ?? []).filter((i) => i.status === 'err' && !i.candidates);
+  const archiveQueue = archiveTask?.items ?? [];
+  const archiveFailed = archiveTask ? failedItems(archiveTask) : [];
+  const archiveTotal = archiveTask?.total ?? 0;
+  const archiveDone = archiveTask?.done ?? archiveQueue.length;
+
+  const blocked = groups.some((g) => g.ambiguous && g.source && !selected[g.source]);
+  const picks = groups.flatMap((g) => {
+    if (!g.source) return [];
+    if (g.ambiguous) {
+      const id = selected[g.source];
+      return id ? [{ source: g.source, id }] : [];
+    }
+    const id = selected[g.source] || g.picked;
+    return id ? [{ source: g.source, id }] : [];
+  });
 
   async function search() {
-    if (!text.trim()) return;
+    const files = parseFiles(text);
+    if (files.length === 0) return;
+    setSelected({});
     setStatus('搜索中…');
-    setResults([]);
-    setRunning(true);
+    setStarting(true);
     try {
       await runTask(
         'search',
         {
-          files: [text.trim()],
+          files,
           baseDir: boothRoot || null,
           dryRun: true,
           cookie: cookie || null,
         },
-        (evt) => {
-          if (evt.type === 'itemDone') {
-            setResults((r) => [...r, { id: String(evt.id ?? ''), name: String(evt.message ?? ''), priceText: '' }]);
-          } else if (evt.type === 'finished' || evt.type === 'cancelled') {
-            setRunning(false);
-            setStatus('搜索完成');
-          }
-        },
+        { kind: 'search' },
       );
+      setStatus('搜索完成');
     } catch (e) {
       setStatus(String(e));
-      setRunning(false);
+    } finally {
+      setStarting(false);
     }
   }
 
-  function toggleSelect(id: string) {
-    setSelected((sel) => (sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]));
+  function toggle(source: string, id: string) {
+    setSelected((sel) => (sel[source] === id ? { ...sel, [source]: '' } : { ...sel, [source]: id }));
   }
 
   async function archiveSelected() {
-    if (selected.length === 0) return;
-    setArchiving(true);
-    setTotal(selected.length);
+    if (picks.length === 0 || blocked) return;
+    setStarting(true);
     try {
       await runTask(
         'search',
         {
-          files: selected,
+          files: picks.map((p) => p.source),
           baseDir: boothRoot || null,
           dryRun: false,
+          forceIds: picks.map((p) => p.id),
           cookie: cookie || null,
         },
-        (evt) => {
-          if (evt.type === 'itemDone') {
-            setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'ok' }]);
-          } else if (evt.type === 'itemError') {
-            setQueue((q) => [...q, { id: String(evt.id ?? ''), message: String(evt.message ?? ''), status: 'err' }]);
-          } else if (evt.type === 'finished' || evt.type === 'cancelled') {
-            setArchiving(false);
-            setSelected([]);
-          }
-        },
+        { kind: 'search_archive', label: '检索归档' },
       );
     } catch (e) {
-      setQueue([{ id: '-', message: String(e), status: 'err' }]);
-      setArchiving(false);
+      setStatus(String(e));
+    } finally {
+      setStarting(false);
     }
   }
 
+  const running = searching || archiving;
+
   return (
     <PageShell>
-      <PageTitle title="实验检索" />
-      <Lead>没有 ID 的文件，按名字去 BOOTH 上碰运气。</Lead>
-      <TextArea
-        rows={3}
-        placeholder={'输入本地文件名 / 完整路径 / 关键词，或直接贴文件路径\n如：LunariaPaperFan.zip  或  D:\\BOOTH\\xxx.zip  或  Lunaria Paper Fan'}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
+      <PageTitle
+        title="实验检索"
+        desc={<>没有 ID 的文件，按名字去 BOOTH 上碰运气。歧义（同名不同价 / 分差&lt;30）必须人工选。</>}
       />
-      <Row>
-        <AccentButton onClick={() => void search()} disabled={running || !text.trim()}>
-          检索
-        </AccentButton>
-        <AccentButton onClick={() => void archiveSelected()} disabled={archiving || selected.length === 0}>
-          归档选中（{selected.length}）
-        </AccentButton>
-        <SecondaryButton onClick={() => setSelected([])} disabled={archiving}>
-          清空
-        </SecondaryButton>
-        <StatusLabel>{status}</StatusLabel>
-      </Row>
-      <PanelLabel>检索结果（可多选）</PanelLabel>
-      <ResultList>
-        {results.map((it) => (
-          <ResultRow
-            key={it.id}
-            selected={selected.includes(it.id)}
-            onClick={() => toggleSelect(it.id)}
-          >
-            <Badge kind="ok">ID</Badge>
-            <span>{it.id}</span>
-            <span className="name">{it.name}</span>
-            <span className="price">{it.priceText}</span>
-          </ResultRow>
-        ))}
-        {results.length === 0 && (
-          <div style={{ color: 'var(--bvt-text3)', padding: 8 }}>输入关键词后点「检索」…</div>
-        )}
-      </ResultList>
-      {(archiving || queue.length > 0) && (
-        <>
+
+      <Section>
+        <PanelLabel>待检索</PanelLabel>
+        <TextArea
+          rows={3}
+          placeholder={'输入本地文件名 / 完整路径 / 关键词，或直接贴文件路径\n如：LunariaPaperFan.zip  或  D:\\BOOTH\\xxx.zip  或  Lunaria Paper Fan'}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+        />
+        <Row>
+          <AccentButton onClick={() => void search()} disabled={running || !text.trim()}>
+            检索
+          </AccentButton>
+          <AccentButton onClick={() => void archiveSelected()} disabled={running || picks.length === 0 || blocked}>
+            归档选中（{picks.length}）
+          </AccentButton>
+          <SecondaryButton onClick={() => setSelected({})} disabled={running}>
+            清空选择
+          </SecondaryButton>
+          {running && (preview || archive) && (
+            <SecondaryButton
+              onClick={() => {
+                if (previewTask?.status === 'running' && preview) void cancelTask(preview.id);
+                if (archiveTask?.status === 'running' && archive) void cancelTask(archive.id);
+              }}
+            >
+              取消
+            </SecondaryButton>
+          )}
+          {archive && archiveTask?.status === 'done' && archiveFailed.length > 0 && (
+            <SecondaryButton onClick={() => void retryFailed(archive.id)}>
+              重试失败（{archiveFailed.length}）
+            </SecondaryButton>
+          )}
+          {status && <Muted>{status}</Muted>}
+        </Row>
+      </Section>
+
+      <FlexSection>
+        <PanelLabel>检索结果</PanelLabel>
+        <ResultList>
+          {groups.map((g) => {
+            const source = g.source ?? '';
+            const chosen = selected[source] || (!g.ambiguous ? g.picked : undefined);
+            return (
+              <FileBlock key={source || g.id}>
+                <FileHead>
+                  <Badge kind={badgeKind(g.status)}>{g.ambiguous ? '歧义' : badgeLabel(g.status)}</Badge>
+                  <span className="path">{source}</span>
+                </FileHead>
+                {g.ambiguous && (
+                  <AmbiguousHint>同名不同价 / 分差&lt;30，请人工选择后再归档</AmbiguousHint>
+                )}
+                {(g.candidates ?? []).map((c) => (
+                  <ResultRow
+                    key={`${source}:${c.id}`}
+                    $selected={chosen === c.id}
+                    onClick={() => toggle(source, c.id)}
+                  >
+                    <Badge kind="ok">ID</Badge>
+                    <span>{c.id}</span>
+                    <span className="grow">{c.name}</span>
+                    <span className="price">{formatPrice(c.price)}</span>
+                    <QueueActions id={c.id} />
+                  </ResultRow>
+                ))}
+              </FileBlock>
+            );
+          })}
+          {errors.map((it, i) => (
+            <FileHead key={`err-${i}`}>
+              <Badge kind="err">失败</Badge>
+              <span className="path">{it.id} {it.message}</span>
+            </FileHead>
+          ))}
+          {groups.length === 0 && errors.length === 0 && (
+            <EmptyState title="还没有检索结果" hint="输入文件名或关键词后点「检索」" />
+          )}
+        </ResultList>
+      </FlexSection>
+
+      {(archiving || archiveQueue.length > 0) && (
+        <Section>
+          <PanelLabel extra={<Counter>{archiveDone}/{archiveTotal}</Counter>}>归档进度</PanelLabel>
           <ProgressBar>
-            <div style={{ width: `${total ? (queue.length / total) * 100 : 0}%` }} />
+            <div style={{ width: `${archiveTotal ? (archiveDone / archiveTotal) * 100 : 0}%` }} />
           </ProgressBar>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {queue.map((it, i) => (
-              <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
-                <Badge kind={it.status}>{it.status}</Badge>
+          <ArchiveList>
+            {archiveQueue.map((it, i) => (
+              <ListRow key={i}>
+                <Badge kind={badgeKind(it.status)}>{badgeLabel(it.status)}</Badge>
                 <span>{it.id}</span>
-                <span style={{ color: 'var(--bvt-text2)' }}>{it.message}</span>
-              </div>
+                <span className="msg">{it.message}</span>
+                <QueueActions id={it.id} path={it.path} />
+              </ListRow>
             ))}
-          </div>
-        </>
+          </ArchiveList>
+        </Section>
       )}
     </PageShell>
   );

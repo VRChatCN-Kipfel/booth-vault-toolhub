@@ -1,50 +1,120 @@
 /**
- * 底部状态栏：显示全局任务状态/提示消息（对齐原版 set_status）。
+ * 底部状态栏：全局任务状态 + 进行中任务可取消。
  */
 
+import { useMemo, useState } from 'react';
 import styled from 'styled-components';
 import { useUiStore } from '../store/uiStore';
 import { useUpdateStore } from '../store/updateStore';
+import { failedItems, useTaskStore, type TaskRecord } from '../store/taskStore';
+import { cancelTask, retryFailed } from '../lib/task';
+import { TextButton } from './ui';
 
-const Bar = styled.div`
-  height: 26px;
+const Bar = styled.footer`
+  position: relative;
+  flex: none;
   display: flex;
   align-items: center;
-  padding: 0 16px;
-  background: var(--bvt-surface2);
+  gap: var(--bvt-s4);
+  width: 100%;
+  height: 28px;
+  padding: 0 var(--bvt-s4);
+  background: var(--bvt-rail-bg);
   border-top: 1px solid var(--bvt-border);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--bvt-accent) 16%, transparent);
   color: var(--bvt-text3);
-  font-size: 11px;
-  letter-spacing: 0.1em;
+  font-size: var(--bvt-fz-xs);
+`;
+
+const StatusText = styled.span`
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  width: 100%;
 `;
 
-const Hint = styled.button`
-  margin-left: auto;
-  border: none;
-  background: transparent;
-  color: var(--bvt-accent);
-  font: inherit;
-  letter-spacing: 0.08em;
-  cursor: pointer;
-  flex: none;
+const Pop = styled.div`
+  position: absolute;
+  right: var(--bvt-s3);
+  bottom: 32px;
+  z-index: 20;
+  min-width: 300px;
+  max-width: 440px;
+  padding: var(--bvt-s2);
+  background: var(--bvt-surface);
+  border: 1px solid var(--bvt-border);
+  border-radius: var(--bvt-radius);
+  box-shadow: var(--bvt-shadow-2);
 `;
+
+const PopRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: var(--bvt-s2);
+  padding: var(--bvt-s1) var(--bvt-s2);
+  color: var(--bvt-text);
+  font-size: var(--bvt-fz-sm);
+  .lab { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { flex: none; color: var(--bvt-text2); font-variant-numeric: tabular-nums; }
+`;
+
+function statusBarKey(tasks: Record<string, TaskRecord>): string {
+  return Object.entries(tasks)
+    .filter(([, t]) => t.status === 'running' || (t.status === 'done' && failedItems(t).length > 0))
+    .map(([id, t]) => `${id}:${t.status}:${t.done}:${t.total}:${t.failed}`)
+    .sort()
+    .join('|');
+}
 
 export function StatusBar() {
   const status = useUiStore((s) => s.status);
   const goTo = useUiStore((s) => s.goTo);
   const info = useUpdateStore((s) => s.info);
+  const key = useTaskStore((s) => statusBarKey(s.tasks));
+  const [open, setOpen] = useState(false);
+  const list = useMemo(() => {
+    const tasks = useTaskStore.getState().tasks;
+    return Object.entries(tasks)
+      .filter(([, t]) => t.status === 'running' || (t.status === 'done' && failedItems(t).length > 0))
+      .sort((a, b) => b[1].startedAt - a[1].startedAt)
+      .slice(0, 8);
+  }, [key]);
+  const n = list.filter(([, t]) => t.status === 'running').length;
+
   return (
     <Bar>
-      <span>{status || '\u00A0'}</span>
+      <StatusText>{status || '\u00A0'}</StatusText>
+      {n > 0 && (
+        <TextButton type="button" onClick={() => setOpen((v) => !v)}>
+          {n} 个任务进行中
+        </TextButton>
+      )}
+      {n === 0 && list.length > 0 && (
+        <TextButton type="button" onClick={() => setOpen((v) => !v)}>
+          {list.length} 个任务可重试
+        </TextButton>
+      )}
       {info?.has_update && (
-        <Hint type="button" onClick={() => goTo('settings')}>
+        <TextButton type="button" onClick={() => goTo('settings')}>
           {info.remote_version} 可更新
-        </Hint>
+        </TextButton>
+      )}
+      {open && (
+        <Pop>
+          {list.length === 0 && <PopRow>没有进行中的任务</PopRow>}
+          {list.map(([id, t]) => (
+            <PopRow key={id}>
+              <span className="lab">{t.label}</span>
+              <span className="meta">{t.done}/{t.total || '?'}</span>
+              {t.status === 'running' && (
+                <TextButton type="button" onClick={() => void cancelTask(id)}>取消</TextButton>
+              )}
+              {t.status === 'done' && failedItems(t).length > 0 && (
+                <TextButton type="button" onClick={() => void retryFailed(id)}>重试</TextButton>
+              )}
+            </PopRow>
+          ))}
+        </Pop>
       )}
     </Bar>
   );
