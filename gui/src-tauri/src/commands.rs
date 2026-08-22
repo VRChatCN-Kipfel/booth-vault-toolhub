@@ -5,8 +5,9 @@
 //! 取消：managed state 维护 `Arc<AtomicBool>` 取消标志，长任务内协作式检查。
 
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::Serialize;
 use tauri::State;
@@ -22,6 +23,14 @@ use engine::session::make_session;
 #[derive(Clone, Default)]
 pub struct TaskRegistry(pub Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>);
 
+impl TaskRegistry {
+    pub fn cancel_all(&self) {
+        for flag in registry_lock(&self.0).values() {
+            flag.store(true, Ordering::Release);
+        }
+    }
+}
+
 /// 进度事件（前端 Channel 载荷）。
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -34,6 +43,17 @@ pub enum ProgressEvent {
         id: String,
         message: String,
         status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        price: Option<i64>,
+    },
+    /// 检索候选（dry-run / 预览与正式选优同一套 score_and_pick）。
+    Candidates {
+        source: String,
+        candidates: Vec<SearchCandidate>,
+        picked: Option<String>,
+        ambiguous: bool,
     },
     /// 进度推进（done/total）。
     Progress { done: usize, total: usize },
@@ -53,6 +73,13 @@ pub enum ProgressEvent {
     Cancelled,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct SearchCandidate {
+    pub id: String,
+    pub name: String,
+    pub price: i64,
+}
+
 /// 解析下载根目录：参数 > 配置。
 fn resolve_root(config: &AppConfig, arg: Option<&str>) -> Result<std::path::PathBuf, String> {
     arg.filter(|s| !s.is_empty())
@@ -65,17 +92,18 @@ fn resolve_root(config: &AppConfig, arg: Option<&str>) -> Result<std::path::Path
 fn register_task(registry: &State<'_, TaskRegistry>) -> (String, Arc<AtomicBool>) {
     let task_id = uuid();
     let flag = Arc::new(AtomicBool::new(false));
-    registry
-        .0
-        .lock()
-        .unwrap()
-        .insert(task_id.clone(), flag.clone());
+    registry_lock(&registry.0).insert(task_id.clone(), flag.clone());
     (task_id, flag)
 }
 
-/// 协作式取消：检查标志并睡眠一小段（让出）。
+fn registry_lock(
+    map: &Mutex<HashMap<String, Arc<AtomicBool>>>,
+) -> MutexGuard<'_, HashMap<String, Arc<AtomicBool>>> {
+    map.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 fn cancelled(flag: &AtomicBool) -> bool {
-    flag.load(Ordering::Relaxed)
+    flag.load(Ordering::Acquire)
 }
 
 /// 简单 task id（时间戳 + 随机后缀）。
@@ -91,17 +119,44 @@ fn uuid() -> String {
 /// 取消任务。
 #[tauri::command]
 pub fn cancel_task(registry: State<'_, TaskRegistry>, task_id: String) -> bool {
-    let guard = registry.0.lock().unwrap();
+    let guard = registry_lock(&registry.0);
     if let Some(flag) = guard.get(&task_id) {
-        flag.store(true, Ordering::Relaxed);
+        flag.store(true, Ordering::Release);
         true
     } else {
         false
     }
 }
 
-/// 立刻返回 task_id，工作在后台跑；结束时从注册表摘掉。
-fn spawn_job<F>(registry: &State<'_, TaskRegistry>, job: F) -> String
+struct JobGuard {
+    map: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    tid: String,
+    on_event: Channel<ProgressEvent>,
+    done: bool,
+}
+
+impl Drop for JobGuard {
+    fn drop(&mut self) {
+        registry_lock(&self.map).remove(&self.tid);
+        if !self.done {
+            let _ = self.on_event.send(ProgressEvent::ItemError {
+                id: String::new(),
+                message: "任务异常终止".to_string(),
+            });
+            let _ = self.on_event.send(ProgressEvent::Finished {
+                done: 0,
+                failed: 1,
+                updateable: 0,
+            });
+        }
+    }
+}
+
+fn spawn_job<F>(
+    registry: &State<'_, TaskRegistry>,
+    on_event: Channel<ProgressEvent>,
+    job: F,
+) -> String
 where
     F: FnOnce(Arc<AtomicBool>) + Send + 'static,
 {
@@ -109,10 +164,13 @@ where
     let map = registry.0.clone();
     let tid = task_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        job(flag);
-        if let Ok(mut g) = map.lock() {
-            g.remove(&tid);
-        }
+        let mut guard = JobGuard {
+            map,
+            tid,
+            on_event,
+            done: false,
+        };
+        guard.done = catch_unwind(AssertUnwindSafe(|| job(flag))).is_ok();
     });
     task_id
 }
@@ -188,7 +246,7 @@ pub fn download(
         return Err("提供店铺 URL/子域名，或用 items 提供商品链接/ID".to_string());
     }
 
-    Ok(spawn_job(&registry, move |flag| {
+    Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let mut ids = ids;
         if let Some(sub) = shop_id {
             if cancelled(&flag) {
@@ -237,6 +295,8 @@ pub fn download(
                         id: item_id.clone(),
                         message: "已下载".to_string(),
                         status: "ok".to_string(),
+                        path: None,
+                        price: None,
                     });
                 }
                 Ok(false) => {
@@ -244,6 +304,8 @@ pub fn download(
                         id: item_id.clone(),
                         message: "无免费文件".to_string(),
                         status: "warn".to_string(),
+                        path: None,
+                        price: None,
                     });
                 }
                 Err(e) => {
@@ -353,7 +415,7 @@ pub fn organize(
     let client = make_session(&config, cookie.as_deref());
     let total = archives.len();
 
-    Ok(spawn_job(&registry, move |flag| {
+    Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let mut ok = 0usize;
         let mut failed = 0usize;
@@ -400,6 +462,8 @@ pub fn organize(
                     id: item_id,
                     message: outcome.target_dir.display().to_string(),
                     status: status_str.to_string(),
+                    path: Some(path_str.clone()),
+                    price: None,
                 });
             } else {
                 failed += 1;
@@ -426,6 +490,7 @@ pub fn organize(
 }
 
 /// search：按名搜索并整理本地文件。立刻返回 task_id。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn search(
     registry: State<'_, TaskRegistry>,
@@ -433,6 +498,7 @@ pub fn search(
     base_dir: Option<String>,
     dry_run: bool,
     force_id: Option<String>,
+    force_ids: Option<Vec<String>>,
     cookie: Option<String>,
     on_event: Channel<ProgressEvent>,
 ) -> Result<String, String> {
@@ -442,76 +508,89 @@ pub fn search(
     let client = make_session(&config, cookie.as_deref());
     let total = files.len();
 
-    Ok(spawn_job(&registry, move |flag| {
+    Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let mut matched = 0usize;
         let mut failed = 0usize;
         let mut cancelled_now = false;
-        for path_str in files {
+        for (i, path_str) in files.iter().enumerate() {
             if cancelled(&flag) {
                 cancelled_now = true;
                 break;
             }
-            let path = std::path::Path::new(&path_str);
-            let fname = path
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
+            let path = std::path::Path::new(path_str);
+            let file_force = force_ids
+                .as_ref()
+                .filter(|ids| ids.len() == files.len())
+                .and_then(|ids| ids.get(i))
+                .map(String::as_str)
+                .filter(|s| !s.is_empty())
+                .or_else(|| force_id.as_deref().filter(|s| !s.is_empty()));
             if dry_run {
-                let candidates = engine::clean::sanitize_query(&fname);
-                let mut hit = false;
-                for q in candidates {
-                    match engine::search::search_booth(&client, &q) {
-                        Ok(results) => {
-                            if let Some(it) = results.first() {
-                                matched += 1;
-                                hit = true;
-                                let _ = on_event.send(ProgressEvent::ItemDone {
-                                    id: it.id.clone(),
-                                    message: it.name.clone(),
-                                    status: "ok".to_string(),
-                                });
-                                break;
-                            }
-                        }
-                        Err(e) => {
+                match pick_search_match(&client, path) {
+                    Ok(pick) => {
+                        let picked_id = pick.picked.as_ref().map(|p| p.id.clone());
+                        let _ = on_event.send(ProgressEvent::Candidates {
+                            source: path_str.clone(),
+                            candidates: pick.candidates,
+                            picked: picked_id,
+                            ambiguous: pick.ambiguous,
+                        });
+                        if let Some(p) = pick.picked {
+                            matched += 1;
+                            let _ = on_event.send(ProgressEvent::ItemDone {
+                                id: p.id,
+                                message: p.name,
+                                status: if pick.ambiguous {
+                                    "ambiguous".to_string()
+                                } else {
+                                    "ok".to_string()
+                                },
+                                path: Some(path_str.clone()),
+                                price: Some(p.price),
+                            });
+                        } else {
                             failed += 1;
-                            let _ = on_event.send(ProgressEvent::ItemError { id: q, message: e });
+                            let _ = on_event.send(ProgressEvent::ItemError {
+                                id: path_str.clone(),
+                                message: "未找到匹配商品".to_string(),
+                            });
                         }
                     }
+                    Err(e) => {
+                        failed += 1;
+                        let _ = on_event.send(ProgressEvent::ItemError {
+                            id: path_str.clone(),
+                            message: e,
+                        });
+                    }
                 }
-                if !hit && !cancelled(&flag) {
-                    failed += 1;
-                    let _ = on_event.send(ProgressEvent::ItemError {
-                        id: path_str.clone(),
-                        message: "未找到匹配商品".to_string(),
-                    });
-                }
-                continue;
-            }
-            match process_search_file(&client, path, &base, force_id.as_deref(), cookie.as_deref())
-            {
-                Ok(Some(id)) => {
-                    matched += 1;
-                    let _ = on_event.send(ProgressEvent::ItemDone {
-                        id,
-                        message: path_str,
-                        status: "ok".to_string(),
-                    });
-                }
-                Ok(None) => {
-                    failed += 1;
-                    let _ = on_event.send(ProgressEvent::ItemError {
-                        id: path_str,
-                        message: "未找到匹配商品".to_string(),
-                    });
-                }
-                Err(e) => {
-                    failed += 1;
-                    let _ = on_event.send(ProgressEvent::ItemError {
-                        id: path_str,
-                        message: e,
-                    });
+            } else {
+                match process_search_file(&client, path, &base, file_force, cookie.as_deref()) {
+                    Ok(Some(id)) => {
+                        matched += 1;
+                        let _ = on_event.send(ProgressEvent::ItemDone {
+                            id,
+                            message: path_str.clone(),
+                            status: "ok".to_string(),
+                            path: Some(path_str.clone()),
+                            price: None,
+                        });
+                    }
+                    Ok(None) => {
+                        failed += 1;
+                        let _ = on_event.send(ProgressEvent::ItemError {
+                            id: path_str.clone(),
+                            message: "未找到匹配商品".to_string(),
+                        });
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        let _ = on_event.send(ProgressEvent::ItemError {
+                            id: path_str.clone(),
+                            message: e,
+                        });
+                    }
                 }
             }
             let _ = on_event.send(ProgressEvent::Progress {
@@ -531,7 +610,58 @@ pub fn search(
     }))
 }
 
-/// 按名搜索 + 评分 + 整理。
+struct SearchPick {
+    candidates: Vec<SearchCandidate>,
+    picked: Option<engine::score::Item>,
+    ambiguous: bool,
+}
+
+fn pick_search_match(
+    client: &reqwest::blocking::Client,
+    path: &std::path::Path,
+) -> Result<SearchPick, String> {
+    let fname = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let queries = engine::clean::sanitize_query(&fname);
+    let mut last: Vec<SearchCandidate> = Vec::new();
+    for q in queries {
+        let results =
+            engine::search::search_booth(client, &q).map_err(|e| format!("搜索失败: {e}"))?;
+        let items: Vec<engine::score::Item> = results
+            .iter()
+            .map(|r| engine::score::Item {
+                id: r.id.clone(),
+                name: r.name.clone(),
+                price: r.price,
+            })
+            .collect();
+        last = items
+            .iter()
+            .map(|it| SearchCandidate {
+                id: it.id.clone(),
+                name: it.name.clone(),
+                price: it.price,
+            })
+            .collect();
+        let (picked, ambiguous) =
+            engine::score::score_and_pick(&q, &items, false, |id| canonical_name(client, id), None);
+        if let Some(p) = picked {
+            return Ok(SearchPick {
+                candidates: last,
+                picked: Some(p.clone()),
+                ambiguous,
+            });
+        }
+    }
+    Ok(SearchPick {
+        candidates: last,
+        picked: None,
+        ambiguous: false,
+    })
+}
+
 fn process_search_file(
     client: &reqwest::blocking::Client,
     path: &std::path::Path,
@@ -539,39 +669,10 @@ fn process_search_file(
     force_id: Option<&str>,
     cookie: Option<&str>,
 ) -> Result<Option<String>, String> {
-    let fname = path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
     let item = if let Some(id) = force_id.filter(|s| !s.is_empty()) {
         engine::fetch::fetch_item(client, id).map_err(|e| format!("指定 ID {id} 获取失败: {e}"))?
     } else {
-        let candidates = engine::clean::sanitize_query(&fname);
-        let mut best: Option<engine::score::Item> = None;
-        for q in candidates {
-            let results =
-                engine::search::search_booth(client, &q).map_err(|e| format!("搜索失败: {e}"))?;
-            let items: Vec<engine::score::Item> = results
-                .iter()
-                .map(|r| engine::score::Item {
-                    id: r.id.clone(),
-                    name: r.name.clone(),
-                    price: r.price,
-                })
-                .collect();
-            let (picked, _) = engine::score::score_and_pick(
-                &q,
-                &items,
-                false,
-                |id| canonical_name(client, id),
-                None,
-            );
-            if let Some(p) = picked {
-                best = Some(p.clone());
-                break;
-            }
-        }
-        match best {
+        match pick_search_match(client, path)?.picked {
             Some(it) => engine::fetch::fetch_item(client, &it.id)
                 .map_err(|e| format!("获取元数据失败: {e}"))?,
             None => return Ok(None),
@@ -611,7 +712,7 @@ pub fn audit(
         return Err(format!("FATAL: {} 不存在", base_path.display()));
     }
 
-    Ok(spawn_job(&registry, move |flag| {
+    Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let dirs = engine::audit::scan_library(&base_path);
         let total = dirs.len();
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
@@ -636,17 +737,23 @@ pub fn audit(
                 }
             }
             let _ = on_event.send(ProgressEvent::ItemDone {
-                id: format!("{} · {}", d.id, d.name),
-                message: if d.missing.is_empty() {
-                    "[完整]".to_string()
-                } else {
-                    format!("[缺{}]", d.missing.join("/"))
-                },
+                id: d.id.clone(),
+                message: format!(
+                    "{} · {}",
+                    d.name,
+                    if d.missing.is_empty() {
+                        "[完整]".to_string()
+                    } else {
+                        format!("[缺{}]", d.missing.join("/"))
+                    }
+                ),
                 status: if d.missing.is_empty() {
                     "ok".to_string()
                 } else {
                     "warn".to_string()
                 },
+                path: Some(d.path.display().to_string()),
+                price: None,
             });
         }
         if cancelled_now {
@@ -679,10 +786,11 @@ pub fn version_audit(
     let cookie = resolve_cookie(None, &config);
     let client = make_session(&config, cookie.as_deref());
 
-    Ok(spawn_job(&registry, move |flag| {
+    Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let total = engine::audit::scan_library(&base_path).len();
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let mut updateable = 0usize;
+        let mut seen = 0usize;
         let mut cancelled_now = false;
         let _ = engine::audit::version_audit_with_progress(
             &base_path,
@@ -694,15 +802,18 @@ pub fn version_audit(
                 }
                 match evt {
                     engine::audit::VersionEvent::FetchError { id, error } => {
+                        seen += 1;
                         let _ = on_event.send(ProgressEvent::Log {
                             line: format!("错误 {id}: {error}"),
                         });
+                        let _ = on_event.send(ProgressEvent::Progress { done: seen, total });
                     }
                     engine::audit::VersionEvent::Compared {
                         dir,
                         official,
                         updateable: is_updateable,
                     } => {
+                        seen += 1;
                         let _ = on_event.send(ProgressEvent::Log {
                             line: format!(
                                 "核对 {}: 本地 {} / 官方 {}",
@@ -719,15 +830,18 @@ pub fn version_audit(
                                 },
                             ),
                         });
+                        let _ = on_event.send(ProgressEvent::Progress { done: seen, total });
                         if is_updateable {
                             updateable += 1;
                             let _ = on_event.send(ProgressEvent::ItemDone {
-                                id: format!("{} · {}", dir.id, dir.name),
+                                id: dir.id.clone(),
                                 message: format!(
-                                    "本地 {} → 官方 {} 可更新",
-                                    dir.local_tag, official
+                                    "{} · 本地 {} → 官方 {} 可更新",
+                                    dir.name, dir.local_tag, official
                                 ),
                                 status: "ok".to_string(),
+                                path: Some(dir.path.display().to_string()),
+                                price: None,
                             });
                         }
                     }
@@ -762,7 +876,7 @@ pub fn mismatch_audit(
     let cookie = resolve_cookie(None, &config);
     let client = make_session(&config, cookie.as_deref());
 
-    Ok(spawn_job(&registry, move |flag| {
+    Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let total = engine::audit::scan_library(&base_path).len();
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let found = engine::audit::mismatch_audit(&base_path, |id| {
@@ -781,9 +895,11 @@ pub fn mismatch_audit(
                 return;
             }
             let _ = on_event.send(ProgressEvent::ItemDone {
-                id: format!("{} · {}", m.id, m.name),
-                message: format!("[{} → 期望 {}]", m.wrong_cat, m.dest_cat),
+                id: m.id.clone(),
+                message: format!("{} · [{} → 期望 {}]", m.name, m.wrong_cat, m.dest_cat),
                 status: "warn".to_string(),
+                path: Some(m.path.clone()),
+                price: None,
             });
         }
         let _ = on_event.send(ProgressEvent::Finished {
@@ -795,10 +911,12 @@ pub fn mismatch_audit(
 }
 
 /// fix_mismatch：重检测错位目录并强制重归档到正确分类。
+/// `ids` 为空或未传时保持全量旧语义。
 #[tauri::command]
 pub fn fix_mismatch(
     registry: State<'_, TaskRegistry>,
     base: Option<String>,
+    ids: Option<Vec<String>>,
     on_event: Channel<ProgressEvent>,
 ) -> Result<String, String> {
     let config = load_config();
@@ -809,7 +927,7 @@ pub fn fix_mismatch(
     let cookie = resolve_cookie(None, &config);
     let client = make_session(&config, cookie.as_deref());
 
-    Ok(spawn_job(&registry, move |flag| {
+    Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let found = engine::audit::mismatch_audit(&base_path, |id| {
             if cancelled(&flag) {
                 return None;
@@ -820,6 +938,13 @@ pub fn fix_mismatch(
             let _ = on_event.send(ProgressEvent::Cancelled);
             return;
         }
+        let found: Vec<_> = match ids {
+            Some(ref filter) if !filter.is_empty() => found
+                .into_iter()
+                .filter(|m| filter.iter().any(|id| id == &m.id))
+                .collect(),
+            _ => found,
+        };
         let total = found.len();
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let opts = engine::organize::OrganizeOptions {
@@ -849,8 +974,8 @@ pub fn fix_mismatch(
             } else {
                 failed += 1;
                 let _ = on_event.send(ProgressEvent::ItemError {
-                    id: format!("{} · {}", m.id, m.name),
-                    message: outcome.message,
+                    id: m.id.clone(),
+                    message: format!("{} · {}", m.name, outcome.message),
                 });
             }
         }
@@ -878,7 +1003,5 @@ pub async fn update_check(use_proxy: bool) -> Result<serde_json::Value, String> 
         "release_title": info.release_title,
         "release_body": info.release_body,
         "error": info.error,
-        "release_title": info.release_title,
-        "release_body": info.release_body,
     }))
 }

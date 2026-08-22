@@ -31,7 +31,7 @@ BOOTH 素材统一管理工具 —— VRChat / XR 创作者的 BOOTH 资产全�
 - **按名搜索**：文件名无 ID 时，清洗生成搜索候选 → 评分选优 → 归档（含水印/UnityPackage 二次验真）
 - **巡检**：文件夹图标三件套（cover.jpg + .folder_icon.ico + desktop.ini）完整性扫描 + 自动修复 + 版本巡检 + 错位纠正
 - **自更新检查**：GitHub `releases.atom` feed 取最新版本（成熟库 feed-rs 解析，无 API 配额限流；HTML 重定向/API 作兜底 + 403/429 退避 + 代理直连重试 + 显式超时），CLI/MCP/GUI（设置页「软件更新」入口）三端一致
-- **三主题六配色 GUI**：朱印（印泥/宣纸）/ 鎏金（金缮/漆）/ 古纹（青铜/青瓷）× 亮 / 暗，形制与色板分开，SVG 母题纹样与素材图，动效齐全
+- **三主题六配色 GUI**：朱印（印泥/宣纸）/ 鎏金（金缮/漆）/ 古纹（青铜/青瓷）× 亮 / 暗，形制与色板分开，SVG 母题纹样与素材图。macOS 面板通透走系统 `NSGlassEffectView`（旧系统回落 `NSVisualEffectView`），其它平台 CSS `backdrop-filter`
 
 ## 架构
 

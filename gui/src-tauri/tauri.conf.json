@@ -11,15 +11,17 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
-        "title": "Booth Vault Toolhub",
+        "title": "展位库",
         "width": 1080,
         "height": 720,
         "minWidth": 860,
         "minHeight": 560,
         "decorations": false,
+        "transparent": true,
         "dragDropEnabled": true,
         "create": false
       }

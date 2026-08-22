@@ -1,45 +1,68 @@
 /**
- * 页题：宋体落款 + 随主题变的花饰。
+ * 页题：左侧一道朱记竖线 + 宋体标题，下面跟一行说明。
+ * 花饰全部去掉——留白和这道竖线就是识别度。
  */
 
 import styled from 'styled-components';
-import { useThemeStore, resolveMode } from '../store/themeStore';
-import { THEMES } from '../theme/themes';
-import { themeTitleFont, titleOrnament } from '../theme/chrome';
+import type { ReactNode } from 'react';
 
-const Wrapper = styled.div`
+const Wrap = styled.header`
+  flex: none;
   display: flex;
-  align-items: flex-end;
-  gap: 12px;
-  margin-bottom: 2px;
+  align-items: flex-start;
+  gap: var(--bvt-s4);
+`;
+
+const Main = styled.div`
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bvt-s2);
+  border-left: var(--bvt-mark-w) solid var(--bvt-accent);
+  padding-left: var(--bvt-s4);
 `;
 
 const Title = styled.h2`
-  font-size: 22px;
+  font-family: var(--bvt-serif);
+  font-size: var(--bvt-fz-title);
   font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: var(--bvt-title-track);
   color: var(--bvt-text);
-  font-family: ${({ theme }) => themeTitleFont(theme.theme)};
-  margin: 0;
-  letter-spacing: var(--bvt-title-track, 0.12em);
-  line-height: 1.15;
 `;
 
-const Motif = styled.div`
-  flex: 1;
-  min-width: 80px;
-  height: 36px;
-  opacity: 0.9;
-  svg { width: 168px; height: 36px; display: block; }
+const Desc = styled.p`
+  color: var(--bvt-text2);
+  font-size: var(--bvt-fz-sm);
+  line-height: 1.7;
+  max-width: 68ch;
 `;
 
-export function PageTitle({ title }: { title: string }) {
-  const { theme, mode, systemTheme } = useThemeStore();
-  const resolved = resolveMode(mode, systemTheme);
-  const pal = THEMES[theme][resolved];
+const Actions = styled.div`
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--bvt-s2);
+  padding-top: 2px;
+`;
+
+export function PageTitle({
+  title,
+  desc,
+  actions,
+}: {
+  title: string;
+  desc?: ReactNode;
+  actions?: ReactNode;
+}) {
   return (
-    <Wrapper>
-      <Title>{title}</Title>
-      <Motif dangerouslySetInnerHTML={{ __html: titleOrnament(theme, pal.accent) }} />
-    </Wrapper>
+    <Wrap>
+      <Main>
+        <Title>{title}</Title>
+        {desc && <Desc>{desc}</Desc>}
+      </Main>
+      {actions && <Actions>{actions}</Actions>}
+    </Wrap>
   );
 }

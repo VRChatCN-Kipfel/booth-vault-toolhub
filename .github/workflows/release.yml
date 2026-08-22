@@ -144,21 +144,24 @@ jobs:
       #   AUTHOR_3_JSON: {"name":"作者C","image":"data:image/png;base64,..."}
       #   SUPPORT_NOTE:  底部说明文字（可选，覆盖内置文案）
       # 未配置 secrets 时保持仓库默认模板（单占位作者）。空值自动跳过，当前最多 3 位。
+      # 通过 env 传值而非内联到 run（secret 含双引号/base64，内联会破坏 bash 引号解析）。
       - name: Inject support authors
         shell: bash
         working-directory: gui
+        env:
+          AUTHOR_1_JSON: ${{ secrets.AUTHOR_1_JSON }}
+          AUTHOR_2_JSON: ${{ secrets.AUTHOR_2_JSON }}
+          AUTHOR_3_JSON: ${{ secrets.AUTHOR_3_JSON }}
+          SUPPORT_NOTE: ${{ secrets.SUPPORT_NOTE }}
         run: |
           set -euo pipefail
           tmp=$(mktemp)
-          for v in \
-            "${{ secrets.AUTHOR_1_JSON }}" \
-            "${{ secrets.AUTHOR_2_JSON }}" \
-            "${{ secrets.AUTHOR_3_JSON }}"
+          for v in "$AUTHOR_1_JSON" "$AUTHOR_2_JSON" "$AUTHOR_3_JSON"
           do
             [ -z "$v" ] || echo "$v" >> "$tmp"
           done
           if [ -s "$tmp" ]; then
-            note="${{ secrets.SUPPORT_NOTE }}"
+            note="$SUPPORT_NOTE"
             if [ -z "$note" ]; then
               jq -s '{authors: .}' "$tmp" > public/support.json
             else
