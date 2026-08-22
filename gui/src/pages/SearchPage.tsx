@@ -2,8 +2,10 @@
  * 实验检索页：文件名 → score_and_pick 候选 → 歧义人工选 → 原路径+forceId 归档。
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import styled from 'styled-components';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   AccentButton, SecondaryButton, TextArea, ObsPanel, ProgressBar, Badge, PanelLabel, PageShell,
   Section, FlexSection, Row, ListRow, EmptyState, Muted, Counter,
@@ -13,7 +15,7 @@ import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
 import { failedItems, useLatestTask } from '../store/taskStore';
 import { cancelTask, retryFailed, runTask } from '../lib/task';
-import { badgeKind, badgeLabel, formatPrice } from '../lib/booth';
+import { badgeKind, badgeLabel, boothItemUrl, formatPrice } from '../lib/booth';
 
 const ResultList = styled(ObsPanel)`
   flex: 1;
@@ -65,6 +67,30 @@ export function SearchPage() {
   const [selected, setSelected] = useState<Record<string, string>>({});
   const [starting, setStarting] = useState(false);
   const [status, setStatus] = useState('');
+
+  // 输入框支持文件/文件夹拖放：拖入即把本地绝对路径按行追加（对齐拖拽分类页既有模式）。
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    const setup = async () => {
+      unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+        const t = event.payload.type;
+        if (t !== 'drop') return;
+        const paths = event.payload.paths ?? [];
+        if (paths.length === 0) return;
+        setText((cur) => {
+          const lines = [
+            ...(cur ? cur.split(/\r?\n/) : []),
+            ...paths,
+          ].map((s) => s.trim()).filter(Boolean);
+          return [...new Set(lines)].join('\n');
+        });
+      });
+    };
+    void setup();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   const previewTask = preview?.task;
   const archiveTask = archive?.task;
@@ -118,6 +144,46 @@ export function SearchPage() {
 
   function toggle(source: string, id: string) {
     setSelected((sel) => (sel[source] === id ? { ...sel, [source]: '' } : { ...sel, [source]: id }));
+  }
+
+  const clickPending = useRef<{
+    source: string;
+    id: string;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+
+  useEffect(() => () => {
+    if (clickPending.current) clearTimeout(clickPending.current.timer);
+  }, []);
+
+  function handleRowClick(source: string, id: string) {
+    const pending = clickPending.current;
+    if (pending && pending.source === source && pending.id === id) {
+      clearTimeout(pending.timer);
+      clickPending.current = null;
+      return;
+    }
+    if (pending) {
+      clearTimeout(pending.timer);
+      clickPending.current = null;
+      toggle(pending.source, pending.id);
+    }
+    clickPending.current = {
+      source,
+      id,
+      timer: setTimeout(() => {
+        clickPending.current = null;
+        toggle(source, id);
+      }, 250),
+    };
+  }
+
+  function handleRowDoubleClick(id: string) {
+    if (clickPending.current) {
+      clearTimeout(clickPending.current.timer);
+      clickPending.current = null;
+    }
+    void openUrl(boothItemUrl(id));
   }
 
   async function archiveSelected() {
@@ -207,7 +273,9 @@ export function SearchPage() {
                   <ResultRow
                     key={`${source}:${c.id}`}
                     $selected={chosen === c.id}
-                    onClick={() => toggle(source, c.id)}
+                    onClick={() => handleRowClick(source, c.id)}
+                    onDoubleClick={() => handleRowDoubleClick(c.id)}
+                    title={chosen === c.id ? '单击取消 / 双击浏览器核对' : '单击选中 / 双击浏览器核对'}
                   >
                     <Badge kind="ok">ID</Badge>
                     <span>{c.id}</span>
