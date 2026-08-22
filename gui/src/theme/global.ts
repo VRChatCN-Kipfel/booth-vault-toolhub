@@ -175,7 +175,6 @@ export const GlobalStyle = createGlobalStyle`
      mac：窗体背后是原生材质，网页只负责染色，禁止自绘 blur（blur(0) 也会
      建 WebKit backdrop 根，导致图层错位）。win/linux：自绘毛玻璃。 */
   html[data-platform='mac'] {
-    --bvt-glass-blur: none;
     --bvt-shell-bg: color-mix(in srgb, var(--bvt-surface) 82%, transparent);
     --bvt-rail-bg: color-mix(in srgb, var(--bvt-surface2) 62%, transparent);
   }

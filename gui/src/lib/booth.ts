@@ -1,6 +1,21 @@
+export function parseDiscrete(text: string): string[] {
+  const ids: string[] = [];
+  for (const m of text.matchAll(/\/items\/(\d+)/g)) {
+    if (!ids.includes(m[1])) ids.push(m[1]);
+  }
+  for (const m of text.replace(/,/g, ' ').matchAll(/(?<!\d)\d{5,}(?!\d)/g)) {
+    if (!ids.includes(m[0])) ids.push(m[0]);
+  }
+  return ids;
+}
+
 export function extractBoothId(raw: string): string | null {
-  const m = raw.match(/(?<!\d)(\d{7})(?!\d)/);
+  const m = raw.match(/(?<!\d)(\d{5,})(?!\d)/);
   return m ? m[1] : null;
+}
+
+export function hasFileProductId(path: string): boolean {
+  return /(?<!\d)\d{7,}(?!\d)/.test(path);
 }
 
 export function boothItemUrl(id: string): string {

@@ -10,6 +10,7 @@ import {
   type TaskRecord,
   failedItems,
 } from '../store/taskStore';
+import { useAppConfigStore } from '../store/appConfigStore';
 
 export type { ProgressEvt, TaskKind };
 
@@ -74,9 +75,13 @@ export async function retryFailed(taskId: string): Promise<string | null> {
   const ids = failed.map((i) => i.path || i.source || i.id).filter(Boolean);
   if (ids.length === 0) return null;
   const args = { ...task.args };
+  args.cookie = useAppConfigStore.getState().cookie || null;
   if (task.kind === 'download' || task.cmd === 'download') {
-    args.items = failed.map((i) => i.id);
-    args.shop = null;
+    const shopErrs = failed.filter((i) => i.message.startsWith('店铺翻页失败'));
+    const itemErrs = failed.filter((i) => !i.message.startsWith('店铺翻页失败'));
+    args.items = itemErrs.map((i) => i.id);
+    const prevShop = typeof task.args.shop === 'string' ? task.args.shop : '';
+    args.shop = shopErrs.length ? prevShop || shopErrs[0].id : null;
   } else if (task.kind === 'organize' || task.cmd === 'organize') {
     args.archives = ids;
   } else if (task.cmd === 'search') {

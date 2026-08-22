@@ -2,11 +2,11 @@
  * 底部状态栏：全局任务状态 + 进行中任务可取消。
  */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import styled from 'styled-components';
 import { useUiStore } from '../store/uiStore';
 import { useUpdateStore } from '../store/updateStore';
-import { failedItems, runningCount, useTaskStore } from '../store/taskStore';
+import { failedItems, useTaskStore } from '../store/taskStore';
 import { cancelTask, retryFailed } from '../lib/task';
 import { TextButton } from './ui';
 
@@ -58,17 +58,28 @@ const PopRow = styled.div`
   .meta { flex: none; color: var(--bvt-text2); font-variant-numeric: tabular-nums; }
 `;
 
+function statusBarKey(tasks: Record<string, { status: string; done: number; total: number; failed: number; label: string; startedAt: number }>): string {
+  return Object.entries(tasks)
+    .filter(([, t]) => t.status === 'running' || (t.status === 'done' && t.failed > 0))
+    .map(([id, t]) => `${id}:${t.status}:${t.done}:${t.total}:${t.failed}:${t.label}:${t.startedAt}`)
+    .sort()
+    .join('|');
+}
+
 export function StatusBar() {
   const status = useUiStore((s) => s.status);
   const goTo = useUiStore((s) => s.goTo);
   const info = useUpdateStore((s) => s.info);
-  const tasks = useTaskStore((s) => s.tasks);
+  const key = useTaskStore((s) => statusBarKey(s.tasks));
   const [open, setOpen] = useState(false);
-  const n = runningCount(tasks);
-  const list = Object.entries(tasks)
-    .filter(([, t]) => t.status === 'running' || (t.status === 'done' && failedItems(t).length > 0))
-    .sort((a, b) => b[1].startedAt - a[1].startedAt)
-    .slice(0, 8);
+  const list = useMemo(() => {
+    const tasks = useTaskStore.getState().tasks;
+    return Object.entries(tasks)
+      .filter(([, t]) => t.status === 'running' || (t.status === 'done' && failedItems(t).length > 0))
+      .sort((a, b) => b[1].startedAt - a[1].startedAt)
+      .slice(0, 8);
+  }, [key]);
+  const n = list.filter(([, t]) => t.status === 'running').length;
 
   return (
     <Bar>

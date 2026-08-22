@@ -8,7 +8,7 @@ use commands::{
     organize, save_app_config, search, update_check, version_audit,
 };
 use tauri::Manager;
-use tauri_plugin_window_state::StateFlags;
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -98,6 +98,14 @@ pub fn run() {
                 return;
             }
             if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                if let Some(reg) = window.try_state::<TaskRegistry>() {
+                    reg.cancel_all();
+                }
+                let flags = StateFlags::SIZE
+                    | StateFlags::POSITION
+                    | StateFlags::MAXIMIZED
+                    | StateFlags::FULLSCREEN;
+                let _ = window.app_handle().save_window_state(flags);
                 window.app_handle().exit(0);
             }
         })

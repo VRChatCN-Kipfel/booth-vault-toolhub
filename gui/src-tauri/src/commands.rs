@@ -23,6 +23,14 @@ use engine::session::make_session;
 #[derive(Clone, Default)]
 pub struct TaskRegistry(pub Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>);
 
+impl TaskRegistry {
+    pub fn cancel_all(&self) {
+        for flag in registry_lock(&self.0).values() {
+            flag.store(true, Ordering::Release);
+        }
+    }
+}
+
 /// 进度事件（前端 Channel 载荷）。
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -725,12 +733,16 @@ pub fn audit(
                 }
             }
             let _ = on_event.send(ProgressEvent::ItemDone {
-                id: format!("{} · {}", d.id, d.name),
-                message: if d.missing.is_empty() {
-                    "[完整]".to_string()
-                } else {
-                    format!("[缺{}]", d.missing.join("/"))
-                },
+                id: d.id.clone(),
+                message: format!(
+                    "{} · {}",
+                    d.name,
+                    if d.missing.is_empty() {
+                        "[完整]".to_string()
+                    } else {
+                        format!("[缺{}]", d.missing.join("/"))
+                    }
+                ),
                 status: if d.missing.is_empty() {
                     "ok".to_string()
                 } else {
@@ -818,10 +830,10 @@ pub fn version_audit(
                         if is_updateable {
                             updateable += 1;
                             let _ = on_event.send(ProgressEvent::ItemDone {
-                                id: format!("{} · {}", dir.id, dir.name),
+                                id: dir.id.clone(),
                                 message: format!(
-                                    "本地 {} → 官方 {} 可更新",
-                                    dir.local_tag, official
+                                    "{} · 本地 {} → 官方 {} 可更新",
+                                    dir.name, dir.local_tag, official
                                 ),
                                 status: "ok".to_string(),
                                 path: Some(dir.path.display().to_string()),
@@ -879,8 +891,8 @@ pub fn mismatch_audit(
                 return;
             }
             let _ = on_event.send(ProgressEvent::ItemDone {
-                id: format!("{} · {}", m.id, m.name),
-                message: format!("[{} → 期望 {}]", m.wrong_cat, m.dest_cat),
+                id: m.id.clone(),
+                message: format!("{} · [{} → 期望 {}]", m.name, m.wrong_cat, m.dest_cat),
                 status: "warn".to_string(),
                 path: Some(m.path.clone()),
                 price: None,
@@ -958,8 +970,8 @@ pub fn fix_mismatch(
             } else {
                 failed += 1;
                 let _ = on_event.send(ProgressEvent::ItemError {
-                    id: format!("{} · {}", m.id, m.name),
-                    message: outcome.message,
+                    id: m.id.clone(),
+                    message: format!("{} · {}", m.name, outcome.message),
                 });
             }
         }

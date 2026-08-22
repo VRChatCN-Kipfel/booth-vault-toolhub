@@ -14,7 +14,7 @@ import { useAppConfigStore } from '../store/appConfigStore';
 import { useUiStore } from '../store/uiStore';
 import { useLatestTask, type TaskKind } from '../store/taskStore';
 import { cancelTask, runTask } from '../lib/task';
-import { badgeKind, badgeLabel, extractBoothId } from '../lib/booth';
+import { badgeKind, badgeLabel } from '../lib/booth';
 import { isLinux } from '../lib/platform';
 
 const FilterBtn = styled.button<{ $on: boolean }>`
@@ -215,7 +215,7 @@ export function AuditPage() {
           </Row>
           <ScanList>
             {misItems.map((it, i) => {
-              const id = extractBoothId(it.id) ?? '';
+              const id = it.id;
               return (
                 <ListRow key={`${it.id}-${i}`}>
                   {id && (

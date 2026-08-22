@@ -69,7 +69,6 @@ type TaskState = {
   latestByKind: Partial<Record<TaskKind, string>>;
   begin: (taskId: string, init: Pick<TaskRecord, 'kind' | 'label' | 'cmd' | 'args'>) => void;
   applyEvent: (taskId: string, evt: ProgressEvt) => void;
-  markError: (taskId: string, message: string) => void;
 };
 
 export const useTaskStore = create<TaskState>((set) => ({
@@ -94,7 +93,7 @@ export const useTaskStore = create<TaskState>((set) => ({
             logs: [],
             startedAt: Date.now(),
             cmd: init.cmd,
-            args: init.args,
+            args: stripCookie(init.args),
           },
         },
         latestByKind,
@@ -115,41 +114,50 @@ export const useTaskStore = create<TaskState>((set) => ({
           next.total = evt.total ?? next.total;
           break;
         case 'itemDone':
-          next.items = [
-            ...next.items,
-            {
-              id: String(evt.id ?? ''),
-              message: String(evt.message ?? ''),
-              status: String(evt.status ?? 'ok'),
-              path: evt.path,
-              price: evt.price,
-            },
-          ];
+          next.items = capped(
+            [
+              ...next.items,
+              {
+                id: String(evt.id ?? ''),
+                message: String(evt.message ?? ''),
+                status: String(evt.status ?? 'ok'),
+                path: evt.path,
+                price: evt.price,
+              },
+            ],
+            ITEM_CAP,
+          );
           break;
         case 'candidates':
-          next.items = [
-            ...next.items,
-            {
-              id: String(evt.picked ?? ''),
-              message: '',
-              status: evt.ambiguous ? 'ambiguous' : evt.picked ? 'ok' : 'err',
-              source: evt.source,
-              path: evt.source,
-              candidates: evt.candidates,
-              picked: evt.picked ?? undefined,
-              ambiguous: evt.ambiguous,
-            },
-          ];
+          next.items = capped(
+            [
+              ...next.items,
+              {
+                id: String(evt.picked ?? ''),
+                message: '',
+                status: evt.ambiguous ? 'ambiguous' : evt.picked ? 'ok' : 'err',
+                source: evt.source,
+                path: evt.source,
+                candidates: evt.candidates,
+                picked: evt.picked ?? undefined,
+                ambiguous: evt.ambiguous,
+              },
+            ],
+            ITEM_CAP,
+          );
           break;
         case 'itemError':
-          next.items = [
-            ...next.items,
-            {
-              id: String(evt.id ?? ''),
-              message: String(evt.message ?? ''),
-              status: 'err',
-            },
-          ];
+          next.items = capped(
+            [
+              ...next.items,
+              {
+                id: String(evt.id ?? ''),
+                message: String(evt.message ?? ''),
+                status: 'err',
+              },
+            ],
+            ITEM_CAP,
+          );
           break;
         case 'finished':
           next.status = 'done';
@@ -161,28 +169,12 @@ export const useTaskStore = create<TaskState>((set) => ({
           next.status = 'cancelled';
           break;
         case 'log':
-          next.logs = [...next.logs, String(evt.line ?? '')];
+          next.logs = capped([...next.logs, String(evt.line ?? '')], LOG_CAP);
           break;
         default:
           break;
       }
       return { tasks: { ...s.tasks, [taskId]: next } };
-    }),
-
-  markError: (taskId, message) =>
-    set((s) => {
-      const t = s.tasks[taskId];
-      if (!t) return s;
-      return {
-        tasks: {
-          ...s.tasks,
-          [taskId]: {
-            ...t,
-            status: 'error',
-            items: [...t.items, { id: '-', message, status: 'err' }],
-          },
-        },
-      };
     }),
 }));
 
@@ -191,10 +183,6 @@ export function useLatestTask(kind: TaskKind): { id: string; task: TaskRecord } 
   const task = useTaskStore((s) => (id ? s.tasks[id] : undefined));
   if (!id || !task) return undefined;
   return { id, task };
-}
-
-export function runningCount(tasks: Record<string, TaskRecord>): number {
-  return Object.values(tasks).filter((t) => t.status === 'running').length;
 }
 
 export function failedItems(task: TaskRecord): TaskItem[] {
@@ -220,5 +208,19 @@ function pruneTasks(
   for (const [id, t] of Object.entries(tasks)) {
     if (id === keepId || keepTask(id, t, latestByKind)) next[id] = t;
   }
+  return next;
+}
+
+const ITEM_CAP = 500;
+const LOG_CAP = 200;
+
+function capped<T>(xs: T[], cap: number): T[] {
+  return xs.length > cap ? xs.slice(-cap) : xs;
+}
+
+function stripCookie(args: Record<string, unknown>): Record<string, unknown> {
+  if (!('cookie' in args)) return args;
+  const next = { ...args };
+  delete next.cookie;
   return next;
 }

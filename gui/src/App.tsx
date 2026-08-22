@@ -165,12 +165,6 @@ function App() {
     root.dataset.mode = resolved;
     const platform = detectPlatform();
     root.dataset.platform = platform;
-    if (platform === 'mac') {
-      // 玻璃填色交给 CSS，别让 JS 色板把原生材质盖死。
-      root.style.removeProperty('--bvt-glass');
-      root.style.removeProperty('--bvt-glass-2');
-      root.style.removeProperty('--bvt-glass-input');
-    }
   }, [theme, resolved, animSpeed, motifOpacity]);
 
   return (

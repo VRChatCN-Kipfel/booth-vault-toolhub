@@ -13,7 +13,7 @@ import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
 import { failedItems, useLatestTask } from '../store/taskStore';
 import { cancelTask, retryFailed, runTask } from '../lib/task';
-import { badgeKind, badgeLabel } from '../lib/booth';
+import { badgeKind, badgeLabel, parseDiscrete } from '../lib/booth';
 
 const QueueList = styled(ObsPanel)`
   flex: 1;
@@ -37,21 +37,8 @@ export function LinksPage() {
   const done = task?.done ?? 0;
   const failed = task ? failedItems(task) : [];
 
-  function parseIds(blob: string): string[] {
-    const urlRe = /booth\.pm\/[^/\s]+\/items\/(\d{7})/g;
-    const bareRe = /(?<!\d)\d{7}(?!\d)/g;
-    const ids: string[] = [];
-    for (const m of blob.matchAll(urlRe)) {
-      if (!ids.includes(m[1])) ids.push(m[1]);
-    }
-    for (const m of blob.matchAll(bareRe)) {
-      if (!ids.includes(m[0])) ids.push(m[0]);
-    }
-    return ids;
-  }
-
   async function start() {
-    const ids = parseIds(text);
+    const ids = parseDiscrete(text);
     if (ids.length === 0 && !shop.trim()) {
       setHint('未解析到有效商品 ID，也未填写店铺');
       return;
