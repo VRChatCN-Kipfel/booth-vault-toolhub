@@ -55,6 +55,14 @@ jobs:
           done <<< "$files"
           exit $fail
 
+      # fmt 平台无关，集中在前置门控一次跑完（不再按平台矩阵各跑一遍）；
+      # 与 encoding 同属最先门控，win/mac/portable 全部依赖它。
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --check
+
   # Windows 主目标：三架构（x64/x86/arm64）全量构建 + 测试 + 上传产物。
   # 产物（booth 三二进制 + tauri bundle + 便携版）供 release 聚合发布。
   windows:
@@ -104,8 +112,6 @@ jobs:
       - name: Install frontend deps
         working-directory: gui
         run: npm ci
-      - name: Check formatting
-        run: cargo fmt --check
       - name: Clippy (workspace)
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test (workspace)
@@ -218,8 +224,6 @@ jobs:
           components: rustfmt, clippy
           targets: ${{ matrix.rust_target }}
       - uses: Swatinem/rust-cache@v2
-      - name: Check formatting
-        run: cargo fmt --check
       # shell_win/shell_mac 依赖已按 target 门控，macOS 可完整编译检查（含 booth-shell 的 shell_mac 分支）
       - name: Clippy (workspace)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -253,8 +257,6 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Check formatting
-        run: cargo fmt --check
       - name: Clippy (engine)
         run: cargo clippy -p engine --all-targets --all-features -- -D warnings
       - name: Test (engine)
