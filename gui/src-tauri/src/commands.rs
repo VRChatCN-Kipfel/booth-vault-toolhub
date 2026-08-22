@@ -499,8 +499,14 @@ fn expand_directories(files: &[String]) -> Vec<String> {
             return;
         };
         for entry in rd.filter_map(Result::ok) {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
+            }
             let path = entry.path();
-            if path.is_dir() {
+            if ft.is_dir() {
                 walk(&path, out);
             } else if entry.file_name() != "desktop.ini"
                 && entry.file_name() != "Thumbs.db"
@@ -1081,5 +1087,32 @@ mod tests {
             })
             .collect();
         assert_eq!(rel, vec!["sub/y.package".to_string(), "x.zip".to_string()]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_skips_symlinks() {
+        let tmp = std::env::temp_dir().join(format!(
+            "bvt-expand-link-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("real.zip"), b"r").unwrap();
+        std::os::unix::fs::symlink(&tmp, tmp.join("loop")).unwrap();
+        std::os::unix::fs::symlink(tmp.join("real.zip"), tmp.join("alias.zip")).unwrap();
+        let out = expand_directories(&[tmp.to_string_lossy().into_owned()]);
+        let names: Vec<_> = out
+            .iter()
+            .filter_map(|s| Path::new(s).file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["real.zip".to_string()]);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

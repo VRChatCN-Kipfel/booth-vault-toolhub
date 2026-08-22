@@ -15,7 +15,7 @@ import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
 import { failedItems, useLatestTask } from '../store/taskStore';
 import { cancelTask, retryFailed, runTask } from '../lib/task';
-import { badgeKind, badgeLabel, formatPrice } from '../lib/booth';
+import { badgeKind, badgeLabel, boothItemUrl, formatPrice } from '../lib/booth';
 
 const ResultList = styled(ObsPanel)`
   flex: 1;
@@ -146,27 +146,44 @@ export function SearchPage() {
     setSelected((sel) => (sel[source] === id ? { ...sel, [source]: '' } : { ...sel, [source]: id }));
   }
 
-  // 单击/双击并存时，双击会先触发两次 onClick；用延迟把单击 toggle 挪到双击确认之后，
-  // 双击只打开浏览器核对，不翻转选中态。
-  const clickPending = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clickPending = useRef<{
+    source: string;
+    id: string;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+
+  useEffect(() => () => {
+    if (clickPending.current) clearTimeout(clickPending.current.timer);
+  }, []);
+
   function handleRowClick(source: string, id: string) {
-    if (clickPending.current) {
-      clearTimeout(clickPending.current);
+    const pending = clickPending.current;
+    if (pending && pending.source === source && pending.id === id) {
+      clearTimeout(pending.timer);
       clickPending.current = null;
       return;
     }
-    clickPending.current = setTimeout(() => {
+    if (pending) {
+      clearTimeout(pending.timer);
       clickPending.current = null;
-      toggle(source, id);
-    }, 250);
+      toggle(pending.source, pending.id);
+    }
+    clickPending.current = {
+      source,
+      id,
+      timer: setTimeout(() => {
+        clickPending.current = null;
+        toggle(source, id);
+      }, 250),
+    };
   }
 
   function handleRowDoubleClick(id: string) {
     if (clickPending.current) {
-      clearTimeout(clickPending.current);
+      clearTimeout(clickPending.current.timer);
       clickPending.current = null;
     }
-    void openUrl(`https://booth.pm/ja/items/${id}`);
+    void openUrl(boothItemUrl(id));
   }
 
   async function archiveSelected() {
