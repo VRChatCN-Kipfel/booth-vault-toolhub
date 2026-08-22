@@ -229,7 +229,7 @@ function capItems(xs: TaskItem[]): TaskItem[] {
   const keepErr = errs.length > ITEM_CAP ? errs.slice(-ITEM_CAP) : errs;
   const keepErrSet = new Set(keepErr);
   const room = ITEM_CAP - keepErr.length;
-  const others = xs.filter((i) => !keepErrSet.has(i)).slice(-room);
+  const others = room > 0 ? xs.filter((i) => !keepErrSet.has(i)).slice(-room) : [];
   const keep = new Set([...keepErr, ...others]);
   return xs.filter((i) => keep.has(i));
 }
