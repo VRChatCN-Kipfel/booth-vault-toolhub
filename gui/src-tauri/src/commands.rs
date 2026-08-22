@@ -1042,7 +1042,7 @@ pub async fn update_check(use_proxy: bool) -> Result<serde_json::Value, String> 
 #[cfg(test)]
 mod tests {
     use super::expand_directories;
-    use std::path::PathBuf;
+    use std::path::Path;
 
     #[test]
     fn file_passthrough_keeps_order() {
@@ -1061,18 +1061,25 @@ mod tests {
         std::fs::write(tmp.join("sub").join("y.package"), b"y").unwrap();
 
         let out = expand_directories(&[tmp.to_string_lossy().into_owned()]);
-        let mut rel: Vec<PathBuf> = out
+        let mut rel: Vec<std::path::PathBuf> = out
             .iter()
             .map(|s| {
-                s.trim_start_matches(tmp.to_str().unwrap())
-                    .trim_start_matches('\\')
-                    .into()
+                let p = Path::new(s);
+                p.strip_prefix(&tmp)
+                    .map(Path::to_path_buf)
+                    .unwrap_or_default()
             })
             .collect();
         rel.sort();
-        assert_eq!(
-            rel,
-            vec![PathBuf::from("sub/y.package"), PathBuf::from("x.zip")]
-        );
+        let rel: Vec<String> = rel
+            .iter()
+            .map(|p| {
+                p.components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .collect();
+        assert_eq!(rel, vec!["sub/y.package".to_string(), "x.zip".to_string()]);
     }
 }
