@@ -2,7 +2,7 @@
  * 实验检索页：文件名/路径/关键词 → 搜索候选 → 评分选优 → 归档。
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import styled from 'styled-components';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -117,6 +117,29 @@ export function SearchPage() {
     setSelected((sel) => (sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]));
   }
 
+  // 单击/双击并存时，双击会先触发两次 onClick；用延迟把单击 toggle 挪到双击确认之后，
+  // 双击只打开浏览器核对，不翻转选中态。
+  const clickPending = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function handleRowClick(id: string) {
+    if (clickPending.current) {
+      clearTimeout(clickPending.current);
+      clickPending.current = null;
+      return;
+    }
+    clickPending.current = setTimeout(() => {
+      clickPending.current = null;
+      toggleSelect(id);
+    }, 250);
+  }
+
+  function handleRowDoubleClick(id: string) {
+    if (clickPending.current) {
+      clearTimeout(clickPending.current);
+      clickPending.current = null;
+    }
+    void openUrl(`https://booth.pm/ja/items/${id}`);
+  }
+
   async function archiveSelected() {
     if (selected.length === 0) return;
     setArchiving(true);
@@ -175,8 +198,8 @@ export function SearchPage() {
           <ResultRow
             key={it.id}
             selected={selected.includes(it.id)}
-            onClick={() => toggleSelect(it.id)}
-            onDoubleClick={() => void openUrl(`https://booth.pm/ja/items/${it.id}`)}
+            onClick={() => handleRowClick(it.id)}
+            onDoubleClick={() => handleRowDoubleClick(it.id)}
             title={selected.includes(it.id) ? '单击选中 / 双击浏览器核对' : '双击浏览器核对商品页'}
           >
             <Badge kind="ok">ID</Badge>
