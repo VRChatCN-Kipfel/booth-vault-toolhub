@@ -6,7 +6,7 @@ import { useMemo, useState } from 'react';
 import styled from 'styled-components';
 import { useUiStore } from '../store/uiStore';
 import { useUpdateStore } from '../store/updateStore';
-import { failedItems, useTaskStore } from '../store/taskStore';
+import { failedItems, useTaskStore, type TaskRecord } from '../store/taskStore';
 import { cancelTask, retryFailed } from '../lib/task';
 import { TextButton } from './ui';
 
@@ -58,10 +58,10 @@ const PopRow = styled.div`
   .meta { flex: none; color: var(--bvt-text2); font-variant-numeric: tabular-nums; }
 `;
 
-function statusBarKey(tasks: Record<string, { status: string; done: number; total: number; failed: number; label: string; startedAt: number }>): string {
+function statusBarKey(tasks: Record<string, TaskRecord>): string {
   return Object.entries(tasks)
-    .filter(([, t]) => t.status === 'running' || (t.status === 'done' && t.failed > 0))
-    .map(([id, t]) => `${id}:${t.status}:${t.done}:${t.total}:${t.failed}:${t.label}:${t.startedAt}`)
+    .filter(([, t]) => t.status === 'running' || (t.status === 'done' && failedItems(t).length > 0))
+    .map(([id, t]) => `${id}:${t.status}:${t.done}:${t.total}:${t.failed}`)
     .sort()
     .join('|');
 }

@@ -114,55 +114,50 @@ export const useTaskStore = create<TaskState>((set) => ({
           next.total = evt.total ?? next.total;
           break;
         case 'itemDone':
-          next.items = capped(
-            [
-              ...next.items,
-              {
-                id: String(evt.id ?? ''),
-                message: String(evt.message ?? ''),
-                status: String(evt.status ?? 'ok'),
-                path: evt.path,
-                price: evt.price,
-              },
-            ],
-            ITEM_CAP,
-          );
+          next.items = capItems([
+            ...next.items,
+            {
+              id: String(evt.id ?? ''),
+              message: String(evt.message ?? ''),
+              status: String(evt.status ?? 'ok'),
+              path: evt.path,
+              price: evt.price,
+            },
+          ]);
           break;
         case 'candidates':
-          next.items = capped(
-            [
-              ...next.items,
-              {
-                id: String(evt.picked ?? ''),
-                message: '',
-                status: evt.ambiguous ? 'ambiguous' : evt.picked ? 'ok' : 'err',
-                source: evt.source,
-                path: evt.source,
-                candidates: evt.candidates,
-                picked: evt.picked ?? undefined,
-                ambiguous: evt.ambiguous,
-              },
-            ],
-            ITEM_CAP,
-          );
+          next.items = capItems([
+            ...next.items,
+            {
+              id: String(evt.picked ?? ''),
+              message: '',
+              status: evt.ambiguous ? 'ambiguous' : evt.picked ? 'ok' : 'err',
+              source: evt.source,
+              path: evt.source,
+              candidates: evt.candidates,
+              picked: evt.picked ?? undefined,
+              ambiguous: evt.ambiguous,
+            },
+          ]);
           break;
         case 'itemError':
-          next.items = capped(
-            [
-              ...next.items,
-              {
-                id: String(evt.id ?? ''),
-                message: String(evt.message ?? ''),
-                status: 'err',
-              },
-            ],
-            ITEM_CAP,
-          );
+          next.items = capItems([
+            ...next.items,
+            {
+              id: String(evt.id ?? ''),
+              message: String(evt.message ?? ''),
+              status: 'err',
+            },
+          ]);
           break;
         case 'finished':
           next.status = 'done';
-          next.done = evt.done ?? next.done;
-          next.failed = evt.failed ?? next.items.filter((i) => i.status === 'err').length;
+          next.done = Math.max(next.done, evt.done ?? 0);
+          next.failed = Math.max(
+            next.failed,
+            evt.failed ?? 0,
+            next.items.filter((i) => i.status === 'err').length,
+          );
           next.updateable = evt.updateable ?? next.updateable;
           break;
         case 'cancelled':
@@ -216,6 +211,17 @@ const LOG_CAP = 200;
 
 function capped<T>(xs: T[], cap: number): T[] {
   return xs.length > cap ? xs.slice(-cap) : xs;
+}
+
+function capItems(xs: TaskItem[]): TaskItem[] {
+  if (xs.length <= ITEM_CAP) return xs;
+  const errs = xs.filter((i) => i.status === 'err');
+  const keepErr = errs.length > ITEM_CAP ? errs.slice(-ITEM_CAP) : errs;
+  const keepErrSet = new Set(keepErr);
+  const room = ITEM_CAP - keepErr.length;
+  const others = xs.filter((i) => !keepErrSet.has(i)).slice(-room);
+  const keep = new Set([...keepErr, ...others]);
+  return xs.filter((i) => keep.has(i));
 }
 
 function stripCookie(args: Record<string, unknown>): Record<string, unknown> {

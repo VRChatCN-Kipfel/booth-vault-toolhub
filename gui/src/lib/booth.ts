@@ -10,7 +10,9 @@ export function parseDiscrete(text: string): string[] {
 }
 
 export function extractBoothId(raw: string): string | null {
-  const m = raw.match(/(?<!\d)(\d{5,})(?!\d)/);
+  const trimmed = raw.trim();
+  if (/^\d{5,}$/.test(trimmed)) return trimmed;
+  const m = trimmed.match(/(?<!\d)(\d{7,})(?!\d)/);
   return m ? m[1] : null;
 }
 
