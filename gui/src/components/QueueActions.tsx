@@ -16,16 +16,34 @@ export function QueueActions({ id, path }: { id: string; path?: string }) {
     <Wrap>
       {boothId && (
         <>
-          <TextButton type="button" onClick={() => void navigator.clipboard.writeText(boothId)}>
+          <TextButton
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              void navigator.clipboard.writeText(boothId);
+            }}
+          >
             复制
           </TextButton>
-          <TextButton type="button" onClick={() => void openUrl(boothItemUrl(boothId))}>
+          <TextButton
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              void openUrl(boothItemUrl(boothId));
+            }}
+          >
             打开
           </TextButton>
         </>
       )}
       {path && (
-        <TextButton type="button" onClick={() => void revealItemInDir(path)}>
+        <TextButton
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            void revealItemInDir(path);
+          }}
+        >
           文件夹
         </TextButton>
       )}

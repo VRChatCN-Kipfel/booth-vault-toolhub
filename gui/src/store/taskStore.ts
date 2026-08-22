@@ -77,26 +77,29 @@ export const useTaskStore = create<TaskState>((set) => ({
   latestByKind: {},
 
   begin: (taskId, init) =>
-    set((s) => ({
-      tasks: {
-        ...s.tasks,
-        [taskId]: {
-          kind: init.kind,
-          label: init.label,
-          status: 'running',
-          total: 0,
-          done: 0,
-          failed: 0,
-          updateable: 0,
-          items: [],
-          logs: [],
-          startedAt: Date.now(),
-          cmd: init.cmd,
-          args: init.args,
+    set((s) => {
+      const latestByKind = { ...s.latestByKind, [init.kind]: taskId };
+      return {
+        tasks: {
+          ...pruneTasks(s.tasks, latestByKind, taskId),
+          [taskId]: {
+            kind: init.kind,
+            label: init.label,
+            status: 'running',
+            total: 0,
+            done: 0,
+            failed: 0,
+            updateable: 0,
+            items: [],
+            logs: [],
+            startedAt: Date.now(),
+            cmd: init.cmd,
+            args: init.args,
+          },
         },
-      },
-      latestByKind: { ...s.latestByKind, [init.kind]: taskId },
-    })),
+        latestByKind,
+      };
+    }),
 
   applyEvent: (taskId, evt) =>
     set((s) => {
@@ -196,4 +199,26 @@ export function runningCount(tasks: Record<string, TaskRecord>): number {
 
 export function failedItems(task: TaskRecord): TaskItem[] {
   return task.items.filter((i) => i.status === 'err');
+}
+
+function keepTask(
+  id: string,
+  t: TaskRecord,
+  latestByKind: Partial<Record<TaskKind, string>>,
+): boolean {
+  if (t.status === 'running') return true;
+  if (t.status === 'done' && t.failed > 0) return true;
+  return latestByKind[t.kind] === id;
+}
+
+function pruneTasks(
+  tasks: Record<string, TaskRecord>,
+  latestByKind: Partial<Record<TaskKind, string>>,
+  keepId: string,
+): Record<string, TaskRecord> {
+  const next: Record<string, TaskRecord> = {};
+  for (const [id, t] of Object.entries(tasks)) {
+    if (id === keepId || keepTask(id, t, latestByKind)) next[id] = t;
+  }
+  return next;
 }

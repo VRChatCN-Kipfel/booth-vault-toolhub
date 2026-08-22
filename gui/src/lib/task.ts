@@ -7,6 +7,7 @@ import {
   useTaskStore,
   type ProgressEvt,
   type TaskKind,
+  type TaskRecord,
   failedItems,
 } from '../store/taskStore';
 
@@ -51,6 +52,20 @@ export async function cancelTask(taskId: string): Promise<void> {
   await invoke('cancel_task', { taskId });
 }
 
+function asStringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String) : [];
+}
+
+function forceIdForRetry(file: string, task: TaskRecord): string {
+  const origFiles = asStringList(task.args.files);
+  const origForce = asStringList(task.args.forceIds);
+  const idx = origFiles.indexOf(file);
+  if (idx >= 0 && origForce[idx]) return origForce[idx];
+  const previewId = useTaskStore.getState().latestByKind.search;
+  const preview = previewId ? useTaskStore.getState().tasks[previewId] : undefined;
+  return preview?.items.find((i) => i.source === file && i.picked)?.picked ?? '';
+}
+
 export async function retryFailed(taskId: string): Promise<string | null> {
   const task = useTaskStore.getState().tasks[taskId];
   if (!task) return null;
@@ -67,6 +82,7 @@ export async function retryFailed(taskId: string): Promise<string | null> {
   } else if (task.cmd === 'search') {
     args.files = ids;
     args.dryRun = false;
+    args.forceIds = ids.map((file) => forceIdForRetry(file, task));
   } else {
     return null;
   }

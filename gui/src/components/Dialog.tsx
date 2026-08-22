@@ -111,9 +111,12 @@ const Buttons = styled.div`
 export function DialogHost() {
   const [state, setState] = useState<ThemeDialogState | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     registerDialogOpener((s) => {
+      const active = document.activeElement;
+      openerRef.current = active instanceof HTMLElement ? active : null;
       dialogOpen = true;
       setState(s);
     });
@@ -122,6 +125,16 @@ export function DialogHost() {
       registerDialogOpener(null);
     };
   }, []);
+
+  const dismiss = (result: string | null) => {
+    if (!state) return;
+    dialogOpen = false;
+    state.resolve(result);
+    setState(null);
+    const el = openerRef.current;
+    openerRef.current = null;
+    if (el && document.contains(el)) el.focus();
+  };
 
   useEffect(() => {
     if (!state) return;
@@ -133,9 +146,7 @@ export function DialogHost() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        dialogOpen = false;
-        state.resolve(null);
-        setState(null);
+        dismiss(null);
         return;
       }
       if (e.key !== 'Tab') return;
@@ -157,25 +168,20 @@ export function DialogHost() {
 
   if (!state) return null;
   const isAsk = state.kind === 'ask';
-  const close = (result: string | null) => {
-    dialogOpen = false;
-    state.resolve(result);
-    setState(null);
-  };
 
   return createPortal(
-    <Overlay onMouseDown={(e) => { if (e.target === e.currentTarget) close(null); }}>
+    <Overlay onMouseDown={(e) => { if (e.target === e.currentTarget) dismiss(null); }}>
       <Dialog ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="bvt-dialog-title">
         <Title id="bvt-dialog-title">{state.title}</Title>
         <Body>{state.body}</Body>
         <Buttons>
           {isAsk ? (
             <>
-              <SecondaryButton onClick={() => close('取消')}>取消</SecondaryButton>
-              <AccentButton onClick={() => close('确定')}>确定</AccentButton>
+              <SecondaryButton onClick={() => dismiss('取消')}>取消</SecondaryButton>
+              <AccentButton onClick={() => dismiss('确定')}>确定</AccentButton>
             </>
           ) : (
-            <AccentButton onClick={() => close('OK')}>确定</AccentButton>
+            <AccentButton onClick={() => dismiss('OK')}>确定</AccentButton>
           )}
         </Buttons>
       </Dialog>

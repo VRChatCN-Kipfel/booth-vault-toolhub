@@ -5,8 +5,9 @@
 //! 取消：managed state 维护 `Arc<AtomicBool>` 取消标志，长任务内协作式检查。
 
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::Serialize;
 use tauri::State;
@@ -83,17 +84,18 @@ fn resolve_root(config: &AppConfig, arg: Option<&str>) -> Result<std::path::Path
 fn register_task(registry: &State<'_, TaskRegistry>) -> (String, Arc<AtomicBool>) {
     let task_id = uuid();
     let flag = Arc::new(AtomicBool::new(false));
-    registry
-        .0
-        .lock()
-        .unwrap()
-        .insert(task_id.clone(), flag.clone());
+    registry_lock(&registry.0).insert(task_id.clone(), flag.clone());
     (task_id, flag)
 }
 
-/// 协作式取消：检查标志并睡眠一小段（让出）。
+fn registry_lock(
+    map: &Mutex<HashMap<String, Arc<AtomicBool>>>,
+) -> MutexGuard<'_, HashMap<String, Arc<AtomicBool>>> {
+    map.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 fn cancelled(flag: &AtomicBool) -> bool {
-    flag.load(Ordering::Relaxed)
+    flag.load(Ordering::Acquire)
 }
 
 /// 简单 task id（时间戳 + 随机后缀）。
@@ -109,17 +111,40 @@ fn uuid() -> String {
 /// 取消任务。
 #[tauri::command]
 pub fn cancel_task(registry: State<'_, TaskRegistry>, task_id: String) -> bool {
-    let guard = registry.0.lock().unwrap();
+    let guard = registry_lock(&registry.0);
     if let Some(flag) = guard.get(&task_id) {
-        flag.store(true, Ordering::Relaxed);
+        flag.store(true, Ordering::Release);
         true
     } else {
         false
     }
 }
 
-/// 立刻返回 task_id，工作在后台跑；结束时从注册表摘掉。
-fn spawn_job<F>(registry: &State<'_, TaskRegistry>, job: F) -> String
+struct JobGuard {
+    map: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    tid: String,
+    on_event: Channel<ProgressEvent>,
+    done: bool,
+}
+
+impl Drop for JobGuard {
+    fn drop(&mut self) {
+        registry_lock(&self.map).remove(&self.tid);
+        if !self.done {
+            let _ = self.on_event.send(ProgressEvent::Finished {
+                done: 0,
+                failed: 1,
+                updateable: 0,
+            });
+        }
+    }
+}
+
+fn spawn_job<F>(
+    registry: &State<'_, TaskRegistry>,
+    on_event: Channel<ProgressEvent>,
+    job: F,
+) -> String
 where
     F: FnOnce(Arc<AtomicBool>) + Send + 'static,
 {
@@ -127,10 +152,13 @@ where
     let map = registry.0.clone();
     let tid = task_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        job(flag);
-        if let Ok(mut g) = map.lock() {
-            g.remove(&tid);
-        }
+        let mut guard = JobGuard {
+            map,
+            tid,
+            on_event,
+            done: false,
+        };
+        guard.done = catch_unwind(AssertUnwindSafe(|| job(flag))).is_ok();
     });
     task_id
 }
@@ -206,7 +234,7 @@ pub fn download(
         return Err("提供店铺 URL/子域名，或用 items 提供商品链接/ID".to_string());
     }
 
-    Ok(spawn_job(&registry, move |flag| {
+    Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let mut ids = ids;
         if let Some(sub) = shop_id {
             if cancelled(&flag) {
@@ -375,7 +403,7 @@ pub fn organize(
     let client = make_session(&config, cookie.as_deref());
     let total = archives.len();
 
-    Ok(spawn_job(&registry, move |flag| {
+    Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let mut ok = 0usize;
         let mut failed = 0usize;
@@ -468,7 +496,7 @@ pub fn search(
     let client = make_session(&config, cookie.as_deref());
     let total = files.len();
 
-    Ok(spawn_job(&registry, move |flag| {
+    Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let mut matched = 0usize;
         let mut failed = 0usize;
@@ -672,7 +700,7 @@ pub fn audit(
         return Err(format!("FATAL: {} 不存在", base_path.display()));
     }
 
-    Ok(spawn_job(&registry, move |flag| {
+    Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let dirs = engine::audit::scan_library(&base_path);
         let total = dirs.len();
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
@@ -742,7 +770,7 @@ pub fn version_audit(
     let cookie = resolve_cookie(None, &config);
     let client = make_session(&config, cookie.as_deref());
 
-    Ok(spawn_job(&registry, move |flag| {
+    Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let total = engine::audit::scan_library(&base_path).len();
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let mut updateable = 0usize;
@@ -832,7 +860,7 @@ pub fn mismatch_audit(
     let cookie = resolve_cookie(None, &config);
     let client = make_session(&config, cookie.as_deref());
 
-    Ok(spawn_job(&registry, move |flag| {
+    Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let total = engine::audit::scan_library(&base_path).len();
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
         let found = engine::audit::mismatch_audit(&base_path, |id| {
@@ -883,7 +911,7 @@ pub fn fix_mismatch(
     let cookie = resolve_cookie(None, &config);
     let client = make_session(&config, cookie.as_deref());
 
-    Ok(spawn_job(&registry, move |flag| {
+    Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let found = engine::audit::mismatch_audit(&base_path, |id| {
             if cancelled(&flag) {
                 return None;
