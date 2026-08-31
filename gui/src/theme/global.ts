@@ -1,7 +1,7 @@
 /**
  * 全局样式：设计令牌 + reset。
  *
- * 令牌只有一套刻度，主题之间只换「纸墨色」和少量形制（圆角、朱记宽度）。
+ * 令牌只有一套刻度，主题之间只换「纸墨色」。
  * 组件一律消费 var(--bvt-*)，不得再写死颜色或间距。
  */
 
@@ -70,7 +70,7 @@ export const GlobalStyle = createGlobalStyle`
     --bvt-serif: ${FONTS.serif};
     --bvt-mono: ${FONTS.mono};
 
-    /* 形制：圆角三主题统一，只有字距与朱记宽度随主题变 */
+    /* 形制：圆角、字距、朱记宽度三主题共用 */
     --bvt-radius: 6px;
     --bvt-radius-sm: 4px;
     --bvt-pill: 999px;
@@ -81,7 +81,7 @@ export const GlobalStyle = createGlobalStyle`
     --bvt-anim: 1;
     --bvt-ease: cubic-bezier(0.32, 0.72, 0, 1);
     /* 背景花纹浓淡，设置页滑条覆写 */
-    --bvt-motif-opacity: 0.08;
+    --bvt-motif-opacity: 0.5;
 
     /* 壳体底色：Windows/Linux 用实色，macOS 换成半透明让原生材质透上来 */
     --bvt-shell-bg: var(--bvt-surface);
@@ -101,15 +101,6 @@ export const GlobalStyle = createGlobalStyle`
     --bvt-accent: #A8322A;
     --bvt-shadow-1: 0 1px 2px rgba(28, 26, 23, 0.06);
     --bvt-shadow-2: 0 12px 32px rgba(28, 26, 23, 0.12);
-  }
-
-  html[data-theme='liujin'] {
-    --bvt-title-track: 0.06em;
-    --bvt-mark-w: 2px;
-  }
-  html[data-theme='guwen'] {
-    --bvt-title-track: 0.04em;
-    --bvt-mark-w: 2px;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }

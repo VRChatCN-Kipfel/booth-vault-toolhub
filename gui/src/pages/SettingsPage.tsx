@@ -15,8 +15,8 @@ import { PageTitle } from '../components/PageTitle';
 import { useThemeStore, resolveMode } from '../store/themeStore';
 import { useAppConfigStore } from '../store/appConfigStore';
 import { useUpdateStore } from '../store/updateStore';
-import { FONTS, motifSidebarSrc, THEME_HINTS, THEME_NAMES, THEME_ORDER, THEMES } from '../theme/themes';
 import { brandMark } from '../theme/chrome';
+import { APP_ICON_NAMES, APP_ICON_ORDER, APP_ICON_SRC, FONTS, motifSidebarSrc, THEME_HINTS, THEME_NAMES, THEME_ORDER, THEMES } from '../theme/themes';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { error, information } from '../components/Dialog';
 
@@ -52,7 +52,13 @@ const CardHead = styled.div`
   align-items: center;
   gap: var(--bvt-s2);
   padding: var(--bvt-s3) var(--bvt-s3) var(--bvt-s2);
-  .mark { width: 26px; height: 26px; flex: none; }
+  .mark {
+    width: 26px;
+    height: 26px;
+    flex: none;
+    border-radius: 6px;
+    object-fit: cover;
+  }
   .mark svg { width: 100%; height: 100%; display: block; }
   .name {
     font-family: ${FONTS.serif};
@@ -63,6 +69,40 @@ const CardHead = styled.div`
 `;
 
 /** 色板条：纸 / 朱 / 按钮填色，一眼看出这套主题的三个主色。 */
+const IconGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--bvt-s3);
+  @media (max-width: 720px) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+`;
+
+const IconCard = styled.button<{ $active: boolean; $bg: string; $border: string }>`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--bvt-s2);
+  padding: var(--bvt-s3) var(--bvt-s2);
+  border: 1px solid ${({ $active, $border }) => ($active ? 'var(--bvt-accent)' : $border)};
+  background: ${({ $bg }) => $bg};
+  border-radius: var(--bvt-radius);
+  cursor: pointer;
+  font-family: inherit;
+  box-shadow: ${({ $active }) => ($active ? '0 0 0 1px var(--bvt-accent)' : 'none')};
+  &:hover { border-color: color-mix(in srgb, var(--bvt-accent) 45%, var(--bvt-border)); }
+  .preview {
+    width: 48px;
+    height: 48px;
+    border-radius: 11px;
+    object-fit: cover;
+  }
+  .name {
+    font-family: ${FONTS.serif};
+    font-size: var(--bvt-fz-sm);
+  }
+`;
+
 const Swatches = styled.div`
   display: grid;
   grid-template-columns: 1.4fr 0.8fr 0.6fr;
@@ -95,7 +135,7 @@ const VersionCard = styled.div`
 `;
 
 export function SettingsPage() {
-  const { theme, mode, systemTheme, setTheme, setMode } = useThemeStore();
+  const { theme, mode, systemTheme, appIcon, setTheme, setMode, setAppIcon } = useThemeStore();
   const {
     boothRoot, setBoothRoot,
     proxy, setProxy, proxyUrl, setProxyUrl,
@@ -104,6 +144,7 @@ export function SettingsPage() {
   const { checking, info, check } = useUpdateStore();
 
   const resolved = resolveMode(mode, systemTheme);
+  const pal = THEMES[theme][resolved];
 
   async function pickRoot() {
     const dir = await open({ directory: true, title: '选择 BOOTH 归档根目录' });
@@ -131,10 +172,7 @@ export function SettingsPage() {
               onClick={() => setTheme(t)}
             >
               <CardHead>
-                <span
-                  className="mark"
-                  dangerouslySetInnerHTML={{ __html: brandMark(t, pal.accent) }}
-                />
+                <span className="mark" dangerouslySetInnerHTML={{ __html: brandMark(t, pal.accent) }} />
                 <div>
                   <div className="name" style={{ color: pal.text }}>{THEME_NAMES[t]}</div>
                   <div className="hint" style={{ color: pal.text3 }}>{THEME_HINTS[t]}</div>
@@ -162,6 +200,26 @@ export function SettingsPage() {
             else setMode(i === 0 ? 'light' : 'dark');
           }}
         />
+      </Section>
+
+      <Section>
+        <PanelLabel>程序图标</PanelLabel>
+        <Muted>和主题分开选，侧栏主印和窗口图标用这一张。</Muted>
+        <IconGrid>
+          {APP_ICON_ORDER.map((id) => (
+              <IconCard
+                key={id}
+                type="button"
+                $active={appIcon === id}
+                $bg={pal.surface}
+                $border={pal.border}
+                onClick={() => setAppIcon(id)}
+              >
+                <img className="preview" src={APP_ICON_SRC[id]} alt="" />
+                <div className="name" style={{ color: pal.text }}>{APP_ICON_NAMES[id]}</div>
+              </IconCard>
+          ))}
+        </IconGrid>
       </Section>
 
       <Section>
@@ -205,12 +263,12 @@ export function SettingsPage() {
 
       <Section>
         <PanelLabel>Booth Cookie</PanelLabel>
-        <Muted>可选，仅在访问受限商品时填写。只存本地。</Muted>
+        <Muted>免费文件下载也需要登录 Cookie，只存本地。</Muted>
         <Input
           type="password"
           value={cookie}
           onChange={(e) => setCookie(e.target.value)}
-          placeholder="留空即可"
+          placeholder="从浏览器复制 BOOTH 登录 Cookie"
         />
       </Section>
 

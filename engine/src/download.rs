@@ -77,7 +77,7 @@ pub fn download(
         && looks_html(&bytes)
     {
         let _ = std::fs::remove_file(&tmp);
-        return Err("got BOOTH login page instead of file — supply --cookie".to_string());
+        return Err(cookie_required_msg().to_string());
     }
     // 4) 原子落盘。
     std::fs::rename(&tmp, dest).map_err(|e| format!("rename {tmp:?} -> {dest:?}: {e}"))?;
@@ -183,6 +183,30 @@ fn ranged_download(client: &Client, url: &str, tmp: &Path) -> Result<(), String>
     Ok(())
 }
 
+/// 未登录/假文件时的统一提示：GUI 指设置页，CLI/MCP 用 --cookie。
+pub fn cookie_required_msg() -> &'static str {
+    "got BOOTH login page instead of file — 请到设置页填写 Cookie（CLI/MCP 用 --cookie）"
+}
+
+/// 错误串是否像未登录（假文件 / 缺 Cookie）。
+pub fn looks_like_cookie_error(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("login page")
+        || m.contains("supply --cookie")
+        || m.contains("设置页填写 cookie")
+        || m.contains("disguised html")
+}
+
+/// 下载/补全失败时补上设置页 Cookie 指向（已含则原样返回）。
+pub fn with_cookie_hint(err: impl std::fmt::Display) -> String {
+    let s = err.to_string();
+    if looks_like_cookie_error(&s) && !s.contains("设置页") {
+        format!("{s} — 请到设置页填写 Cookie（CLI/MCP 用 --cookie）")
+    } else {
+        s
+    }
+}
+
 /// 限速接口（三端统一，M5 MCP 不得绕过）。
 pub fn sleep_rate_limit(rate_limit: f64) {
     if rate_limit > 0.0 {
@@ -204,5 +228,20 @@ mod tests {
     fn looks_html_shared() {
         assert!(looks_html(b"<!doctype html>"));
         assert!(!looks_html(b"PK\x03\x04"));
+    }
+
+    #[test]
+    fn cookie_hint_points_to_settings() {
+        assert!(cookie_required_msg().contains("设置页填写 Cookie"));
+        assert!(looks_like_cookie_error(cookie_required_msg()));
+        assert!(looks_like_cookie_error(
+            "got BOOTH login page instead of file — supply --cookie"
+        ));
+        let hinted = with_cookie_hint("got BOOTH login page instead of file — supply --cookie");
+        assert!(hinted.contains("设置页填写 Cookie"));
+        assert_eq!(
+            with_cookie_hint(cookie_required_msg()),
+            cookie_required_msg()
+        );
     }
 }

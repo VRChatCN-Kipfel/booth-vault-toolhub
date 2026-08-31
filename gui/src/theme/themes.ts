@@ -20,11 +20,30 @@ export const THEME_HINTS: Record<ThemeName, string> = {
   guwen: '云雷 · 青铜 · 叶脉',
 };
 
-export const THEME_ORDER: ThemeName[] = ['zhuyin', 'liujin', 'guwen'];
+export type AppIconId = 'default' | 'zhuyin' | 'liujin' | 'guwen';
 
-export function motifBgSrc(theme: ThemeName, mode: ThemeMode): string {
-  return `/motifs/${theme}-bg${mode === 'dark' ? '-dark' : ''}.jpg`;
+export const APP_ICON_ORDER: AppIconId[] = ['default', 'zhuyin', 'liujin', 'guwen'];
+export const DEFAULT_APP_ICON: AppIconId = 'default';
+
+export const APP_ICON_SRC: Record<AppIconId, string> = {
+  default: '/app-icons/default.png',
+  zhuyin: '/app-icons/zhuyin.png',
+  liujin: '/app-icons/liujin.png',
+  guwen: '/app-icons/guwen.png',
+};
+
+export const APP_ICON_NAMES: Record<AppIconId, string> = {
+  default: '默认',
+  zhuyin: '朱印',
+  liujin: '鎏金',
+  guwen: '古纹',
+};
+
+export function isAppIconId(v: string): v is AppIconId {
+  return v === 'default' || v === 'zhuyin' || v === 'liujin' || v === 'guwen';
 }
+
+export const THEME_ORDER: ThemeName[] = ['zhuyin', 'liujin', 'guwen'];
 
 export function motifSidebarSrc(theme: ThemeName, mode: ThemeMode): string {
   return `/motifs/${theme}-sidebar${mode === 'dark' ? '-dark' : ''}.jpg`;
@@ -151,7 +170,7 @@ export const THEMES: Record<ThemeName, Record<ThemeMode, ThemePalette>> = {
   },
 };
 
-export type MotifKind = 'zhuyin' | 'gold' | 'guwen';
+export type MotifKind = 'zhuyin' | 'liujin' | 'guwen';
 
 export const DEFAULT_MODE_PER_THEME: Record<ThemeName, ThemeMode> = {
   zhuyin: 'light',

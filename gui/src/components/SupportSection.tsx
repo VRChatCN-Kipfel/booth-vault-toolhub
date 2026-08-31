@@ -82,10 +82,10 @@ const AuthorCard = styled.div`
 const Qr = styled.img`
   width: 96px;
   height: 96px;
-  border: 1.5px solid var(--bvt-text3);
-  border-radius: var(--bvt-radius, 0px);
-  object-fit: fill;
   flex: none;
+  object-fit: fill;
+  border: 1px solid var(--bvt-border);
+  border-radius: var(--bvt-radius);
 `;
 
 const Info = styled.div`
@@ -131,7 +131,7 @@ const Links = styled.div`
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 4px;
+  margin-top: var(--bvt-s1);
 `;
 
 const LinkBtn = styled.a`

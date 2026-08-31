@@ -16,7 +16,7 @@ mod commands;
 #[derive(Parser)]
 #[command(
     name = "booth",
-    about = "BOOTH 素材统一管理：download(下载免费商品) / organize(按ID整理) / search(按名搜索) / audit(图标巡检)"
+    about = "BOOTH 素材统一管理：download / organize / search / audit / version-audit / library"
 )]
 struct Cli {
     /// 结构化输出（JSON）。
@@ -45,15 +45,9 @@ enum Command {
         /// 最多处理 N 个商品（0 = 不限）。
         #[arg(long, default_value_t = 0)]
         limit: usize,
-        /// 分组方式。
-        #[arg(long, value_enum, default_value_t = GroupBy::Category)]
-        folder_by: GroupBy,
         /// BOOTH 登录 Cookie：原始串 / cookies.txt / 存串文件。
         #[arg(long)]
         cookie: Option<String>,
-        /// 自定义 UA。
-        #[arg(long)]
-        ua: Option<String>,
     },
     /// 本地压缩包（文件名含 7 位 ID）按 ID 整理归档。
     Organize {
@@ -84,12 +78,6 @@ enum Command {
         /// 只搜索不实际整理。
         #[arg(long)]
         dry_run: bool,
-        /// 复制而非移动。
-        #[arg(long)]
-        keep: bool,
-        /// 歧义也强制选最佳。
-        #[arg(long)]
-        auto: bool,
         /// 强制指定 BOOTH 商品 ID（跳过搜索）。
         #[arg(long)]
         id: Option<String>,
@@ -120,12 +108,24 @@ enum Command {
         #[arg(long)]
         proxy: bool,
     },
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-enum GroupBy {
-    Category,
-    FirstTag,
+    /// 联网比对免费文件名版本，报告可补全项；`--fix` 补免费文件（需 Cookie）。
+    VersionAudit {
+        /// 巡检根目录。
+        #[arg(long)]
+        base: Option<PathBuf>,
+        /// 对可更新项补免费文件。
+        #[arg(long)]
+        fix: bool,
+        /// BOOTH 登录 Cookie（`--fix` 时需要）。
+        #[arg(long)]
+        cookie: Option<String>,
+    },
+    /// 列出归档库存（ID / 标题 / 类目 / 路径）。
+    Library {
+        /// 归档根目录。
+        #[arg(long)]
+        base: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]

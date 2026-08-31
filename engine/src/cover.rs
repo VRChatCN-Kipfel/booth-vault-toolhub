@@ -33,7 +33,9 @@ pub fn download_cover(
     let bytes = r.bytes().map_err(|e| format!("cover read failed: {e}"))?;
     // 假文件校验：未登录时 BOOTH 可能返回伪装成图片的登录页 HTML。
     if looks_html(&bytes) {
-        return Err("cover is a disguised HTML (login) page".to_string());
+        return Err(crate::download::with_cookie_hint(
+            "cover is a disguised HTML (login) page",
+        ));
     }
     std::fs::create_dir_all(dest_dir).map_err(|e| format!("mkdir failed: {e}"))?;
     let cover = dest_dir.join(COVER_FILENAME);

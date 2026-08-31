@@ -8,6 +8,7 @@ export type TaskKind =
   | 'audit'
   | 'audit_fix'
   | 'version_audit'
+  | 'backfill_free'
   | 'mismatch_audit'
   | 'fix_mismatch';
 
