@@ -1,0 +1,17 @@
+name: probe-callee
+# 探针（临时）：模拟 release.yml —— reusable workflow 顶层请求 contents: write。
+# 用于验证「caller 是否必须同步声明写权限」。
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+
+jobs:
+  hi:
+    runs-on: ubuntu-slim
+    steps:
+      - name: report
+        run: |
+          echo "callee loaded ok"
+          echo "event_name=${{ github.event_name }}"

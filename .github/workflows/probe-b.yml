@@ -1,0 +1,11 @@
+name: probe-b-with-perms
+# 探针 B（临时）：caller 显式声明与 callee 一致的写权限。
+# 预期：若「caller 必须同步声明」成立，本 workflow 应为 success。
+on:
+  pull_request:
+
+jobs:
+  call:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/probe-callee.yml

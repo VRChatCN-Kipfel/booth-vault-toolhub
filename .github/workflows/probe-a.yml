@@ -1,0 +1,9 @@
+name: probe-a-no-perms
+# 探针 A（临时）：caller 不声明 permissions —— 完全复刻 d7a2f54 的写法。
+# 预期：若根因成立，本 workflow 应为 startup_failure。
+on:
+  pull_request:
+
+jobs:
+  call:
+    uses: ./.github/workflows/probe-callee.yml
