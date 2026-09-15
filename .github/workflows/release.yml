@@ -360,6 +360,11 @@ jobs:
           retention-days: 3
 
   # 聚合发布：下载三架构全部产物，统一创建 GitHub Release
+  # 注意：tag 推送时上游 CI 的 workflow_run.head_branch 是 **tag 名**（如 v1.0.0），
+  # 并非空字符串；旧写法 `head_branch == ''` 恒为假，导致 tag 推送后本 job 永远被跳过、
+  # Release 永不产出。改用 startsWith 'v' 判定「tag 推送」，与 ci.yml 的 tags: ["v*"] 约定一致；
+  # 分支推送（master / dependabot/* 等）不进入本 job。
+  # 是否真正创建 Release 仍由下方 should_release（读 version.txt 的 v* 前缀）二次把关。
   release:
     needs: package
     runs-on: ubuntu-slim
@@ -369,7 +374,7 @@ jobs:
       github.event_name == 'workflow_dispatch'
       || (github.event_name == 'workflow_run'
           && github.event.workflow_run.conclusion == 'success'
-          && github.event.workflow_run.head_branch == '')
+          && startsWith(github.event.workflow_run.head_branch, 'v'))
     steps:
       - name: Download release metadata
         uses: actions/download-artifact@v4
