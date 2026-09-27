@@ -12,10 +12,12 @@ interface AppConfigState {
   proxy: boolean;
   proxyUrl: string;
   cookie: string;
+  keepFailedDownloads: boolean;
   setBoothRoot: (v: string) => void;
   setProxy: (v: boolean) => void;
   setProxyUrl: (v: string) => void;
   setCookie: (v: string) => void;
+  setKeepFailedDownloads: (v: boolean) => void;
   save: () => Promise<void>;
   hydrate: () => Promise<void>;
 }
@@ -25,6 +27,7 @@ interface TomlSettings {
   proxy: boolean;
   proxyUrl: string;
   cookie: string;
+  keepFailedDownloads: boolean;
 }
 
 async function loadLegacyStore(): Promise<Partial<AppConfigState> | null> {
@@ -47,11 +50,13 @@ export const useAppConfigStore = create<AppConfigState>((set, get) => ({
   proxy: true,
   proxyUrl: '',
   cookie: '',
+  keepFailedDownloads: false,
 
   setBoothRoot: (v) => set({ boothRoot: v }),
   setProxy: (v) => set({ proxy: v }),
   setProxyUrl: (v) => set({ proxyUrl: v }),
   setCookie: (v) => set({ cookie: v }),
+  setKeepFailedDownloads: (v) => set({ keepFailedDownloads: v }),
 
   save: async () => {
     const s = get();
@@ -60,6 +65,7 @@ export const useAppConfigStore = create<AppConfigState>((set, get) => ({
       proxy: s.proxy,
       proxyUrl: s.proxyUrl,
       cookie: s.cookie,
+      keepFailedDownloads: s.keepFailedDownloads,
     });
   },
   hydrate: async () => {
@@ -72,6 +78,7 @@ export const useAppConfigStore = create<AppConfigState>((set, get) => ({
           proxy: cfg.proxy ?? true,
           proxyUrl: cfg.proxyUrl ?? '',
           cookie: cfg.cookie ?? '',
+          keepFailedDownloads: cfg.keepFailedDownloads ?? false,
         });
         return;
       }

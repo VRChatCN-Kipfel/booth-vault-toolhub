@@ -24,18 +24,47 @@ const RANGE_CHUNK: u64 = 64 * 1024;
 /// Range 每块最大重试次数。
 const RANGE_MAX_RETRY: u32 = 6;
 
+/// 下载行为选项。
+///
+/// `keep_failed` 为 `false`（默认）时，任何失败都会清理临时文件并上报——
+/// 从「既不清理也不上报」（`.part` 只在假 HTML 分支被删，其余失败静默残留）
+/// 变为「清理且上报」。置 `true` 才保留 `.part` 供取证。
+#[derive(Debug, Clone, Copy)]
+pub struct DownloadOptions {
+    /// 校验目标非登录页伪装（未登录时 BOOTH 返回伪装成文件的 HTML）。
+    pub check_html: bool,
+    /// 每文件间限速秒数（三端统一，默认 0.8）。
+    pub rate_limit: f64,
+    /// 失败时保留 `.part` 供取证；默认清理。
+    pub keep_failed: bool,
+}
+
+impl Default for DownloadOptions {
+    fn default() -> Self {
+        Self {
+            check_html: true,
+            rate_limit: 0.8,
+            keep_failed: false,
+        }
+    }
+}
+
 /// 下载 `url` 到 `dest`。下载过程写入 `{dest}.part`，成功后原子 rename。
 ///
-/// `check_html`：校验目标非登录页伪装（未登录时 BOOTH 返回伪装成文件的 HTML）。
-/// `rate_limit`：每文件间限速秒数（三端统一，默认 0.8）。
+/// 传输失败（状态码 / 读取 / 写入）与内容校验失败（HTML 伪装 / 损坏包）走
+/// **同一个** `keep_failed` 开关，不做「有的留有的删」。
+///
+/// 注意：保留的 `.part` **不产生续传能力**——两条路径都是 `File::create` 从头写，
+/// 重试即截断重来。保留的价值是取证（判断是登录页还是下到一半的包），
+/// 且全仓无自动回收，长期开启会持续占用空间。
 pub fn download(
     client: &Client,
     url: &str,
     dest: &Path,
-    check_html: bool,
-    rate_limit: f64,
+    opts: DownloadOptions,
 ) -> Result<(), String> {
     let tmp = part_path(dest);
+    let keep = opts.keep_failed;
     // 1) 快路径：单次流式 GET。
     let mut last_err: Option<String> = None;
     for attempt in 1..=MAX_RETRIES {
@@ -69,22 +98,35 @@ pub fn download(
     if last_err.is_some()
         && let Err(e) = ranged_download(client, url, &tmp)
     {
-        return Err(format!("ranged fallback failed: {e}"));
+        return Err(fail(&tmp, keep, format!("ranged fallback failed: {e}")));
     }
     // 3) 假文件校验。
-    if check_html
+    if opts.check_html
         && let Ok(bytes) = std::fs::read(&tmp)
         && looks_html(&bytes)
     {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(cookie_required_msg().to_string());
+        return Err(fail(&tmp, keep, cookie_required_msg()));
     }
     // 4) 原子落盘。
-    std::fs::rename(&tmp, dest).map_err(|e| format!("rename {tmp:?} -> {dest:?}: {e}"))?;
-    if rate_limit > 0.0 {
-        std::thread::sleep(Duration::from_secs_f64(rate_limit));
+    if let Err(e) = std::fs::rename(&tmp, dest) {
+        return Err(fail(&tmp, keep, format!("rename {tmp:?} -> {dest:?}: {e}")));
+    }
+    if opts.rate_limit > 0.0 {
+        std::thread::sleep(Duration::from_secs_f64(opts.rate_limit));
     }
     Ok(())
+}
+
+/// 失败收尾：按开关决定保留 `.part` 还是清理，并在保留时上报绝对路径。
+fn fail(tmp: &Path, keep: bool, msg: impl Into<String>) -> String {
+    let msg = msg.into();
+    if keep && tmp.exists() {
+        let abs = std::fs::canonicalize(tmp).unwrap_or_else(|_| tmp.to_path_buf());
+        format!("{msg} — 失败临时文件已保留：{}", abs.display())
+    } else {
+        let _ = std::fs::remove_file(tmp);
+        msg
+    }
 }
 
 /// `.part` 路径。
@@ -218,10 +260,110 @@ pub fn sleep_rate_limit(rate_limit: f64) {
 mod tests {
     use super::*;
 
+    fn tmpdir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "bvt_download_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn client() -> Client {
+        crate::session::make_session(&crate::config::AppConfig::default(), None)
+    }
+
+    fn opts(keep_failed: bool) -> DownloadOptions {
+        DownloadOptions {
+            check_html: true,
+            rate_limit: 0.0,
+            keep_failed,
+        }
+    }
+
+    /// 本地 HTTP 服务，若干次回固定 HTML（模拟 BOOTH 未登录时的登录页伪装）。
+    /// 用本地回环而非外网，测试不依赖网络可用性。
+    fn serve_html(times: usize) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for _ in 0..times {
+                let Ok((mut s, _)) = listener.accept() else {
+                    break;
+                };
+                let mut buf = [0u8; 2048];
+                let _ = s.read(&mut buf);
+                let body = "<!doctype html><html><body>login</body></html>";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = s.write_all(resp.as_bytes());
+            }
+        });
+        format!("http://127.0.0.1:{port}/x.zip")
+    }
+
     #[test]
     fn part_path_suffix() {
         let p = part_path(Path::new("C:\\x\\file.zip"));
         assert_eq!(p, Path::new("C:\\x\\file.zip.part"));
+    }
+
+    /// 内容校验失败 × 默认：临时文件被清理（原先只在假 HTML 分支删，其余静默残留）。
+    #[test]
+    fn content_failure_cleans_part_by_default() {
+        let dir = tmpdir("clean");
+        let dest = dir.join("x.zip");
+        let url = serve_html(4);
+        let err = download(&client(), &url, &dest, opts(false)).unwrap_err();
+        assert!(!part_path(&dest).exists(), "默认应清理临时文件");
+        assert!(!err.contains("已保留"), "{err}");
+        assert_eq!(err, cookie_required_msg());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 内容校验失败 × 开启：临时文件保留，错误串带绝对路径。
+    #[test]
+    fn content_failure_keeps_part_with_abs_path_when_enabled() {
+        let dir = tmpdir("keep");
+        let dest = dir.join("x.zip");
+        let url = serve_html(4);
+        let err = download(&client(), &url, &dest, opts(true)).unwrap_err();
+        let part = part_path(&dest);
+        assert!(part.exists(), "开启后应保留临时文件");
+        assert!(err.contains("已保留"), "{err}");
+        let abs = std::fs::canonicalize(&part).unwrap();
+        assert!(err.contains(&abs.to_string_lossy().to_string()), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 失败收尾的两态语义（纯函数，不涉网络）。
+    /// 传输失败走的就是这条路径——它不建 `.part`，故开启保留也不得谎报「已保留」。
+    #[test]
+    fn fail_cleans_or_keeps_with_abs_path() {
+        let dir = tmpdir("fail");
+        let tmp = dir.join("z.zip.part");
+        std::fs::write(&tmp, b"half").unwrap();
+        assert_eq!(fail(&tmp, false, "boom"), "boom");
+        assert!(!tmp.exists(), "默认应清理");
+
+        std::fs::write(&tmp, b"half").unwrap();
+        let msg = fail(&tmp, true, "boom");
+        assert!(tmp.exists(), "开启应保留");
+        assert!(msg.starts_with("boom"), "{msg}");
+        let abs = std::fs::canonicalize(&tmp).unwrap();
+        assert!(msg.contains(&abs.to_string_lossy().to_string()), "{msg}");
+
+        let _ = std::fs::remove_file(&tmp);
+        assert_eq!(fail(&tmp, true, "boom"), "boom", "无临时文件不得谎报");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

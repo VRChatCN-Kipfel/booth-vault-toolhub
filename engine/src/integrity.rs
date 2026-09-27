@@ -2,28 +2,38 @@
 //!
 //! 「存在且非空且非 HTML 伪装即有效」这一幂等契约不足以排除半截文件：
 //! 断下载留下的 zip/unitypackage size>0 且魔数正常，会被判为已完成而永久跳过，
-//! 换节点/换代理重跑仍不重下。故对可判定格式补一层真实解析校验。
+//! 换节点或换代理重跑仍不重下。故按结构补一层真实校验。
+//!
+//! 两类格式的判据完全不同。zip 的中央目录（EOCD）位于物理文件末尾，能定位即证
+//! 前缀完整，且列表读取不解码任何条目；unitypackage 是 gzip+tar 流，无尾置索引，
+//! 截断只能靠顺序解压到流末尾才能发现。
+//!
+//! 格式按扩展名分派（与库内 `ID_标题` 命名契约一致）：rar/7z 等无内置解析器，
+//! 判为无法判定而非损坏——宁可漏报，不可误报。若将来接入 7z 解析，
+//! 未知压缩法导致的失败同样应落在无法判定一侧。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use flate2::read::GzDecoder;
 use tar::Archive;
 
-/// 可校验的扩展名（rar/7z 无内置解析器，不在其中）。
+/// 可解析的扩展名。取小写且不含点：`Path::extension()` 返回的是 `zip` 而非 `.zip`。
 const CHECKABLE_EXTS: [&str; 2] = ["zip", "unitypackage"];
 
-/// 扫描库目录时识别的商品目录名前缀：BOOTH ID 位数。
-const ID_DIR_RE_LEN: (usize, usize) = (5, 8);
-
-/// 损坏包记录。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CorruptFile {
-    pub path: PathBuf,
-    pub id: String,
-    pub size: u64,
+/// 本地包体检结论。
+///
+/// 三态而非二值：`Corrupt` 可安全覆盖用户既有文件，`Indeterminate` 不可以。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageHealth {
+    /// 结构可解析，完好可用。
+    Valid,
+    /// 确证损坏：可解析格式校验失败，或文件为空/不可读。
+    Corrupt,
+    /// 无法判定：格式无内置解析器。不得据此覆盖文件。
+    Indeterminate,
 }
 
-/// 扩展名是否可校验。
+/// 扩展名是否可解析。
 pub fn is_checkable(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -31,116 +41,76 @@ pub fn is_checkable(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// 包是否损坏：可校验格式解析失败即损坏，不可校验格式一律 false（不误报）。
-///
-/// zip 走中央目录读取（截断/坏包在此暴露），unitypackage 解 gzip+tar 取首条目；
-/// 空文件与不存在文件同样判损坏，调用方无需再前置 size 检查。
-pub fn is_corrupt_package(path: &Path) -> bool {
-    if !is_checkable(path) {
-        return false;
-    }
+/// 包体检。
+pub fn package_health(path: &Path) -> PackageHealth {
     let Ok(meta) = std::fs::metadata(path) else {
-        return true;
+        return PackageHealth::Corrupt;
     };
     if meta.len() == 0 {
-        return true;
+        return PackageHealth::Corrupt;
+    }
+    if !is_checkable(path) {
+        return PackageHealth::Indeterminate;
     }
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if ext == "zip" {
-        return !matches!(zip_probe(path), Ok(true));
+    let intact = if ext == "zip" {
+        zip_intact(path)
+    } else {
+        unitypackage_intact(path)
+    };
+    if intact {
+        PackageHealth::Valid
+    } else {
+        PackageHealth::Corrupt
     }
-    !matches!(unitypackage_probe(path), Ok(true))
 }
 
-fn zip_probe(path: &Path) -> Result<bool, std::io::Error> {
-    let fh = std::fs::File::open(path)?;
-    let mut zip = zip::ZipArchive::new(fh).map_err(std::io::Error::other)?;
-    for i in 0..zip.len() {
-        let mut entry = zip.by_index(i).map_err(std::io::Error::other)?;
-        let mut sink = std::io::sink();
-        std::io::copy(&mut entry, &mut sink)?;
-    }
-    Ok(true)
+/// 是否确证损坏（无法判定不算损坏）。
+pub fn is_corrupt_package(path: &Path) -> bool {
+    matches!(package_health(path), PackageHealth::Corrupt)
 }
 
-fn unitypackage_probe(path: &Path) -> Result<bool, std::io::Error> {
-    let fh = std::fs::File::open(path)?;
+/// zip 整体性：EOCD 位于物理文件末尾，`ZipArchive::new()` 能定位到它即证前缀完整。
+///
+/// 只读尾部中央目录、不解码条目，故加密与未知压缩法都不影响本判定。
+/// 实测截断 1 字节即 `Could not find EOCD`，不存在「差一点还能过」的灰度带。
+///
+/// 已知取舍：中段位翻转需全量读条目 CRC 才能抓到，但那是介质损坏而非下载中断
+/// （流式写入是单调拼接），不作为本判据目标。
+fn zip_intact(path: &Path) -> bool {
+    let Ok(fh) = std::fs::File::open(path) else {
+        return false;
+    };
+    zip::ZipArchive::new(fh).is_ok()
+}
+
+/// unitypackage 整体性：gzip+tar 无尾置索引，必须顺序解压到流末尾。
+///
+/// tar 迭代遇到结尾零块即停止，不会读完 gzip 余下字节，gzip 的 CRC32/ISIZE
+/// 校验也就不会触发——因此遍历完成后还需把内层流读干。
+fn unitypackage_intact(path: &Path) -> bool {
+    let Ok(fh) = std::fs::File::open(path) else {
+        return false;
+    };
     let dec = GzDecoder::new(fh);
     let mut archive = Archive::new(dec);
-    let mut entries = archive.entries()?;
-    let Some(first) = entries.next() else {
-        return Ok(true);
+    let Ok(entries) = archive.entries() else {
+        return false;
     };
-    let mut entry = first?;
     let mut sink = std::io::sink();
-    std::io::copy(&mut entry, &mut sink)?;
-    Ok(true)
-}
-
-/// 扫描库内 `{5-8位数字}_` 商品目录，返回其中损坏的 zip/unitypackage。
-pub fn scan_corrupt_in_library(root: &Path) -> Vec<CorruptFile> {
-    let Ok(rd) = std::fs::read_dir(root) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for group in rd.filter_map(Result::ok) {
-        let group_path = group.path();
-        if !group_path.is_dir() {
-            continue;
-        }
-        let Ok(items) = std::fs::read_dir(&group_path) else {
-            continue;
+    for entry in entries {
+        let Ok(mut e) = entry else {
+            return false;
         };
-        for item in items.filter_map(Result::ok) {
-            let item_path = item.path();
-            if !item_path.is_dir() {
-                continue;
-            }
-            let name = item.file_name();
-            let name = name.to_string_lossy();
-            let Some(id) = item_id_of(&name) else {
-                continue;
-            };
-            let Ok(files) = std::fs::read_dir(&item_path) else {
-                continue;
-            };
-            for f in files.filter_map(Result::ok) {
-                let fp = f.path();
-                if !fp.is_file() || !is_checkable(&fp) {
-                    continue;
-                }
-                if is_corrupt_package(&fp) {
-                    let size = std::fs::metadata(&fp).map(|m| m.len()).unwrap_or(0);
-                    out.push(CorruptFile {
-                        path: fp,
-                        id: id.clone(),
-                        size,
-                    });
-                }
-            }
+        if std::io::copy(&mut e, &mut sink).is_err() {
+            return false;
         }
     }
-    out
-}
-
-/// 从目录名取 BOOTH ID（前导数字长度在契约范围内且后接下划线）。
-fn item_id_of(dir_name: &str) -> Option<String> {
-    let digits: String = dir_name
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    let (lo, hi) = ID_DIR_RE_LEN;
-    if digits.len() < lo || digits.len() > hi {
-        return None;
-    }
-    if !dir_name[digits.len()..].starts_with('_') {
-        return None;
-    }
-    Some(digits)
+    std::io::copy(&mut archive.into_inner(), &mut sink).is_ok()
 }
 
 #[cfg(test)]
@@ -151,7 +121,7 @@ mod tests {
     use std::io::Write;
 
     /// tag 置于末段：扩展名需落在路径末尾才能被 `is_checkable` 识别。
-    fn tmp(tag: &str) -> PathBuf {
+    fn tmp(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
             "bvt_integrity_{}_{}_{tag}",
             std::process::id(),
@@ -162,12 +132,21 @@ mod tests {
         ))
     }
 
-    fn good_zip() -> Vec<u8> {
+    fn write_tmp(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let p = tmp(tag);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    /// 夹具必须比实现更狡猾：EOCD 紧贴文件末尾时截断才会真正落在被截区间。
+    /// 无尾注的 zip 截断后中央目录可能仍在，测不出任何东西。
+    fn zip_with_comment(comment: &str) -> Vec<u8> {
         let mut buf = std::io::Cursor::new(Vec::new());
         {
             let mut w = zip::ZipWriter::new(&mut buf);
             let o = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
+            w.set_comment(comment);
             w.start_file("a.txt", o).unwrap();
             w.write_all(b"hello").unwrap();
             w.finish().unwrap();
@@ -175,15 +154,20 @@ mod tests {
         buf.into_inner()
     }
 
-    fn good_upk() -> Vec<u8> {
+    /// 60 字节的微型夹具取一半连 gzip 头都不完整，会在「读首条目」之前就抛错，
+    /// 恰好绕过被测行为——必须造足够大的多条目包，截断才落在首条目之后。
+    fn unitypackage_multi(entries: usize, payload: usize) -> Vec<u8> {
         let mut tar_buf = Vec::new();
         {
             let mut b = tar::Builder::new(&mut tar_buf);
-            let mut h = tar::Header::new_gnu();
-            let data = b"Assets/X.prefab";
-            h.set_size(data.len() as u64);
-            h.set_cksum();
-            b.append_data(&mut h, "guid/pathname", &data[..]).unwrap();
+            let data = vec![b'x'; payload];
+            for i in 0..entries {
+                let mut h = tar::Header::new_gnu();
+                h.set_size(data.len() as u64);
+                h.set_cksum();
+                b.append_data(&mut h, format!("guid{i}/pathname"), &data[..])
+                    .unwrap();
+            }
             b.finish().unwrap();
         }
         let mut e = GzEncoder::new(Vec::new(), Compression::default());
@@ -193,89 +177,69 @@ mod tests {
 
     #[test]
     fn empty_and_missing_are_corrupt() {
-        let p = tmp("empty.zip");
-        std::fs::write(&p, b"").unwrap();
-        assert!(is_corrupt_package(&p));
+        let p = write_tmp("empty.zip", b"");
+        assert_eq!(package_health(&p), PackageHealth::Corrupt);
         let _ = std::fs::remove_file(&p);
-        assert!(is_corrupt_package(&p));
+        assert_eq!(package_health(&p), PackageHealth::Corrupt);
     }
 
     #[test]
-    fn truncated_zip_is_corrupt() {
-        let full = good_zip();
-        let p = tmp("trunc.zip");
-        std::fs::write(&p, &full[..full.len() / 2]).unwrap();
-        assert!(is_corrupt_package(&p));
-        let _ = std::fs::remove_file(&p);
+    fn zip_prefix_truncation_is_corrupt() {
+        let full = zip_with_comment("tail anchor: EOCD must fall past the cut");
+        for keep in [1, 2, 10] {
+            let cut = full.len() - keep;
+            let p = write_tmp("trunc.zip", &full[..cut]);
+            assert_eq!(package_health(&p), PackageHealth::Corrupt, "cut {cut}");
+            let _ = std::fs::remove_file(&p);
+        }
     }
 
     #[test]
-    fn good_zip_is_not_corrupt() {
-        let p = tmp("okzip.zip");
-        std::fs::write(&p, good_zip()).unwrap();
-        assert!(!is_corrupt_package(&p));
+    fn good_zip_is_valid() {
+        let p = write_tmp("ok.zip", &zip_with_comment("ok"));
+        assert_eq!(package_health(&p), PackageHealth::Valid);
         let _ = std::fs::remove_file(&p);
     }
 
+    /// 尾部截断：旧实现只读首条目，此处必然漏报。
     #[test]
-    fn truncated_unitypackage_is_corrupt() {
-        let full = good_upk();
-        let p = tmp("truncupk.unitypackage");
-        std::fs::write(&p, &full[..full.len() / 2]).unwrap();
-        assert!(is_corrupt_package(&p));
-        let _ = std::fs::remove_file(&p);
-    }
-
-    #[test]
-    fn good_unitypackage_is_not_corrupt() {
-        let p = tmp("okupk.unitypackage");
-        std::fs::write(&p, good_upk()).unwrap();
-        assert!(!is_corrupt_package(&p));
+    fn unitypackage_tail_truncation_is_corrupt() {
+        let full = unitypackage_multi(8, 8192);
+        let p = write_tmp("tail.unitypackage", &full[..full.len() / 2]);
+        assert_eq!(package_health(&p), PackageHealth::Corrupt);
         let _ = std::fs::remove_file(&p);
     }
 
     #[test]
-    fn uncheckable_ext_never_corrupt() {
-        let p = tmp("junk.rar");
-        std::fs::write(&p, b"\x00\x01garbage").unwrap();
-        assert!(!is_corrupt_package(&p));
+    fn good_unitypackage_is_valid() {
+        let p = write_tmp("ok.unitypackage", &unitypackage_multi(4, 4096));
+        assert_eq!(package_health(&p), PackageHealth::Valid);
         let _ = std::fs::remove_file(&p);
     }
 
     #[test]
-    fn scan_finds_corrupt_in_id_dirs() {
-        let root = tmp("root");
-        let item = root.join("3D饰品").join("1234567_Test");
-        std::fs::create_dir_all(&item).unwrap();
-        let bad = item.join("pack.zip");
-        let full = good_zip();
-        std::fs::write(&bad, &full[..full.len() / 2]).unwrap();
-        let good = item.join("ok.zip");
-        std::fs::write(&good, good_zip()).unwrap();
-        let found = scan_corrupt_in_library(&root);
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].path, bad);
-        assert_eq!(found[0].id, "1234567");
-        let _ = std::fs::remove_dir_all(&root);
+    fn unparsable_exts_are_indeterminate() {
+        for tag in ["junk.rar", "junk.7z", "junk.bin"] {
+            let p = write_tmp(tag, b"\x00\x01garbage");
+            assert_eq!(package_health(&p), PackageHealth::Indeterminate, "{tag}");
+            assert!(!is_corrupt_package(&p), "{tag}");
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+
+    /// 空文件即便格式不可解析也确证损坏：0 字节不可能是有效包。
+    #[test]
+    fn empty_unparsable_is_corrupt() {
+        let p = write_tmp("empty.rar", b"");
+        assert_eq!(package_health(&p), PackageHealth::Corrupt);
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]
-    fn scan_ignores_non_id_dirs() {
-        let root = tmp("root2");
-        let item = root.join("3D饰品").join("misc");
-        std::fs::create_dir_all(&item).unwrap();
-        let full = good_zip();
-        std::fs::write(item.join("pack.zip"), &full[..full.len() / 2]).unwrap();
-        assert!(scan_corrupt_in_library(&root).is_empty());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn id_dir_boundaries() {
-        assert_eq!(item_id_of("1234_x").as_deref(), None);
-        assert_eq!(item_id_of("12345_x").as_deref(), Some("12345"));
-        assert_eq!(item_id_of("12345678_x").as_deref(), Some("12345678"));
-        assert_eq!(item_id_of("123456789_x").as_deref(), None);
-        assert_eq!(item_id_of("1234567x").as_deref(), None);
+    fn extension_dispatch_is_case_insensitive() {
+        assert!(is_checkable(Path::new("a.ZIP")));
+        assert!(is_checkable(Path::new("a.UnityPackage")));
+        assert!(!is_checkable(Path::new("a.rar")));
+        assert!(!is_checkable(Path::new("a")));
     }
 }

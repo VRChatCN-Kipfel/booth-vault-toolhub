@@ -15,6 +15,8 @@ use engine::session::make_session;
 /// 运行命令，返回退出码。
 pub fn run(cli: Cli) -> u8 {
     let config = load_config();
+    // CLI flag 与配置项取或：任一声明即开启取证保留。
+    let keep_failed = cli.keep_failed || engine::config::keep_failed_downloads(&config);
     match cli.command {
         Command::Download {
             shop,
@@ -31,6 +33,7 @@ pub fn run(cli: Cli) -> u8 {
             dry_run,
             limit,
             cookie.as_deref(),
+            keep_failed,
             cli.json,
         ),
         Command::Organize {
@@ -46,6 +49,7 @@ pub fn run(cli: Cli) -> u8 {
             id.as_deref(),
             dry_run,
             cookie.as_deref(),
+            keep_failed,
             cli.json,
         ),
         Command::Search {
@@ -61,6 +65,7 @@ pub fn run(cli: Cli) -> u8 {
             dry_run,
             id.as_deref(),
             cookie.as_deref(),
+            keep_failed,
             cli.json,
         ),
         Command::Audit {
@@ -68,9 +73,14 @@ pub fn run(cli: Cli) -> u8 {
             dry_run,
             no_fix,
         } => cmd_audit(&config, base.as_deref(), dry_run, no_fix, cli.json),
-        Command::VersionAudit { base, fix, cookie } => {
-            cmd_version_audit(&config, base.as_deref(), fix, cookie.as_deref(), cli.json)
-        }
+        Command::VersionAudit { base, fix, cookie } => cmd_version_audit(
+            &config,
+            base.as_deref(),
+            fix,
+            cookie.as_deref(),
+            keep_failed,
+            cli.json,
+        ),
         Command::Library { base } => cmd_library(&config, base.as_deref(), cli.json),
         Command::Shell { command } => cmd_shell(command),
         Command::UpdateCheck { proxy } => cmd_update_check(proxy, cli.json),
@@ -92,6 +102,7 @@ fn cmd_download(
     dry_run: bool,
     limit: usize,
     cookie: Option<&str>,
+    keep_failed: bool,
     json: bool,
 ) -> u8 {
     let out_root = match download_root(config, out) {
@@ -153,7 +164,14 @@ fn cmd_download(
         if limit > 0 && done >= limit {
             break;
         }
-        match process_download_one(&client, &out_root, &item_id, dry_run, rate_limit) {
+        match process_download_one(
+            &client,
+            &out_root,
+            &item_id,
+            dry_run,
+            rate_limit,
+            keep_failed,
+        ) {
             Ok(true) => done += 1,
             Ok(false) => {}
             Err(e) => failures.push(format!("{item_id}: {e}")),
@@ -186,6 +204,7 @@ fn process_download_one(
     item_id: &str,
     dry_run: bool,
     rate_limit: f64,
+    keep_failed: bool,
 ) -> Result<bool, String> {
     let item = engine::fetch::fetch_item(client, item_id)
         .map_err(|e| format!("获取商品元数据失败: {e}"))?;
@@ -206,11 +225,16 @@ fn process_download_one(
     engine::organize::write_booth_txt(&folder, &item);
     for (url, fname) in files {
         let dest = folder.join(engine::clean::sanitize(&fname, 120));
-        // 幂等：已存在且有效则跳过。
-        if dest.exists() && !engine::cover::looks_html(&std::fs::read(&dest).unwrap_or_default()) {
+        // 幂等：已存在且有效则跳过（判定与整理链共用同一实现，含完整性校验）。
+        if engine::organize::is_locally_valid(&dest) {
             continue;
         }
-        engine::download::download(client, &url, &dest, true, 0.0).map_err(|e| {
+        let dl_opts = engine::download::DownloadOptions {
+            check_html: true,
+            rate_limit: 0.0,
+            keep_failed,
+        };
+        engine::download::download(client, &url, &dest, dl_opts).map_err(|e| {
             format!(
                 "下载失败 {fname}: {}",
                 engine::download::with_cookie_hint(e)
@@ -248,6 +272,7 @@ fn cmd_organize(
     force_id: Option<&str>,
     dry_run: bool,
     cookie: Option<&str>,
+    keep_failed: bool,
     json: bool,
 ) -> u8 {
     let out_root = match download_root(config, out) {
@@ -262,6 +287,7 @@ fn cmd_organize(
         out_root: &out_root,
         dry_run,
         cookie: cookie.as_deref(),
+        keep_failed_downloads: keep_failed,
     };
     let mut ok = 0usize;
     let mut failures: Vec<String> = Vec::new();
@@ -329,6 +355,7 @@ fn cmd_search(
     dry_run: bool,
     force_id: Option<&str>,
     cookie: Option<&str>,
+    keep_failed: bool,
     json: bool,
 ) -> u8 {
     let base = match download_root(config, base_dir) {
@@ -370,7 +397,14 @@ fn cmd_search(
             continue;
         }
         // 完整路径：搜索 + 整理。
-        match process_search_file(&client, path, &base, force_id, cookie.as_deref()) {
+        match process_search_file(
+            &client,
+            path,
+            &base,
+            force_id,
+            cookie.as_deref(),
+            keep_failed,
+        ) {
             Ok(Some(id)) => matched.push(id),
             Ok(None) => {}
             Err(e) => failures.push(format!("{}: {e}", path.display())),
@@ -401,6 +435,7 @@ fn process_search_file(
     base: &Path,
     force_id: Option<&str>,
     cookie: Option<&str>,
+    keep_failed: bool,
 ) -> Result<Option<String>, String> {
     let fname = path
         .file_name()
@@ -447,6 +482,7 @@ fn process_search_file(
         out_root: base,
         dry_run: false,
         cookie,
+        keep_failed_downloads: keep_failed,
     };
     let outcome = engine::organize::organize_archive(client, path, &item.id, &opts, icon_fn);
     if !outcome.ok {
@@ -623,6 +659,7 @@ fn cmd_version_audit(
     base: Option<&Path>,
     fix: bool,
     cookie: Option<&str>,
+    keep_failed: bool,
     json: bool,
 ) -> u8 {
     let base = match download_root(config, base) {
@@ -667,6 +704,7 @@ fn cmd_version_audit(
                     &r.path,
                     item,
                     cookie.as_deref(),
+                    keep_failed,
                 );
                 if n > 0 {
                     fixed += n;

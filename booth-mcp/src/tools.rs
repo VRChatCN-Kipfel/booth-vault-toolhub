@@ -32,6 +32,9 @@ struct DownloadParams {
     /// BOOTH 登录 Cookie（下载免费文件必需）。
     #[serde(default)]
     cookie: Option<String>,
+    /// 下载失败时保留 .part 供取证（默认读配置，缺省关闭；保留件不产生续传能力）。
+    #[serde(default)]
+    keep_failed: Option<bool>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -59,6 +62,9 @@ struct OrganizeParams {
     /// BOOTH 登录 Cookie（补全商品页其他免费版本）。
     #[serde(default)]
     cookie: Option<String>,
+    /// 下载失败时保留 .part 供取证（默认读配置，缺省关闭；保留件不产生续传能力）。
+    #[serde(default)]
+    keep_failed: Option<bool>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -220,6 +226,10 @@ impl BoothServer {
         let rate_limit = config
             .rate_limit_secs
             .unwrap_or_else(default_rate_limit_secs);
+        // 入参优先，其次配置项，缺省关闭。
+        let keep_failed = params
+            .keep_failed
+            .unwrap_or_else(|| engine::config::keep_failed_downloads(&config));
 
         // 解析散链/裸 ID。
         let mut ids: Vec<String> = Vec::new();
@@ -267,7 +277,14 @@ impl BoothServer {
             if params.limit > 0 && done >= params.limit {
                 break;
             }
-            match download_one(&client, &out_root, &item_id, params.dry_run, rate_limit) {
+            match download_one(
+                &client,
+                &out_root,
+                &item_id,
+                params.dry_run,
+                rate_limit,
+                keep_failed,
+            ) {
                 Ok(true) => done += 1,
                 Ok(false) => {}
                 Err(e) => failures.push(format!("{item_id}: {e}")),
@@ -296,10 +313,14 @@ impl BoothServer {
             }
         };
         let client = make_session(&config, params.cookie.as_deref());
+        let keep_failed = params
+            .keep_failed
+            .unwrap_or_else(|| engine::config::keep_failed_downloads(&config));
         let opts = engine::organize::OrganizeOptions {
             out_root: &out_root,
             dry_run: params.dry_run,
             cookie: params.cookie.as_deref(),
+            keep_failed_downloads: keep_failed,
         };
         let mut ok = 0usize;
         let mut failures: Vec<String> = Vec::new();
@@ -386,6 +407,7 @@ impl BoothServer {
                 &base,
                 params.id.as_deref(),
                 params.cookie.as_deref(),
+                engine::config::keep_failed_downloads(&config),
             ) {
                 Ok(Some(id)) => matched.push(id),
                 Ok(None) => {}
@@ -509,6 +531,7 @@ impl BoothServer {
                         &r.path,
                         item,
                         params.cookie.as_deref(),
+                        engine::config::keep_failed_downloads(&config),
                     );
                     fixed += n;
                     failures.extend(errs.into_iter().map(|e| format!("{}: {e}", r.id)));
@@ -596,6 +619,7 @@ fn download_one(
     item_id: &str,
     dry_run: bool,
     rate_limit: f64,
+    keep_failed: bool,
 ) -> Result<bool, String> {
     let item = engine::fetch::fetch_item(client, item_id)
         .map_err(|e| format!("获取商品元数据失败: {e}"))?;
@@ -611,10 +635,16 @@ fn download_one(
     engine::organize::write_booth_txt(&folder, &item);
     for (url, fname) in files {
         let dest = folder.join(engine::clean::sanitize(&fname, 120));
-        if dest.exists() && !engine::cover::looks_html(&std::fs::read(&dest).unwrap_or_default()) {
+        // 幂等：已存在且有效则跳过（判定与整理链共用同一实现，含完整性校验）。
+        if engine::organize::is_locally_valid(&dest) {
             continue;
         }
-        engine::download::download(client, &url, &dest, true, 0.0).map_err(|e| {
+        let dl_opts = engine::download::DownloadOptions {
+            check_html: true,
+            rate_limit: 0.0,
+            keep_failed,
+        };
+        engine::download::download(client, &url, &dest, dl_opts).map_err(|e| {
             format!(
                 "下载失败 {fname}: {}",
                 engine::download::with_cookie_hint(e)
@@ -641,6 +671,7 @@ fn process_search_file(
     base: &std::path::Path,
     force_id: Option<&str>,
     cookie: Option<&str>,
+    keep_failed: bool,
 ) -> Result<Option<String>, String> {
     let fname = path
         .file_name()
@@ -685,6 +716,7 @@ fn process_search_file(
         out_root: base,
         dry_run: false,
         cookie,
+        keep_failed_downloads: keep_failed,
     };
     let outcome = engine::organize::organize_archive(client, path, &item.id, &opts, icon_fn);
     if !outcome.ok {

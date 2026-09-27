@@ -186,6 +186,7 @@ pub fn save_app_config(
     proxy: bool,
     proxy_url: String,
     cookie: String,
+    keep_failed_downloads: bool,
 ) -> Result<(), String> {
     let mut cfg = load_config();
     apply_gui_settings(
@@ -195,6 +196,7 @@ pub fn save_app_config(
             proxy,
             proxy_url,
             cookie,
+            keep_failed_downloads,
         },
     );
     save_user_config(&cfg)
@@ -220,6 +222,7 @@ pub fn download(
     let rate_limit = config
         .rate_limit_secs
         .unwrap_or_else(default_rate_limit_secs);
+    let keep_failed = engine::config::keep_failed_downloads(&config);
     let limit = limit.unwrap_or(0);
 
     let mut ids: Vec<String> = Vec::new();
@@ -288,7 +291,14 @@ pub fn download(
             if limit > 0 && d >= limit {
                 break;
             }
-            match download_one(&client, &out_root, &item_id, dry_run, rate_limit) {
+            match download_one(
+                &client,
+                &out_root,
+                &item_id,
+                dry_run,
+                rate_limit,
+                keep_failed,
+            ) {
                 Ok(true) => {
                     d += 1;
                     let _ = on_event.send(ProgressEvent::ItemDone {
@@ -340,6 +350,7 @@ fn download_one(
     item_id: &str,
     dry_run: bool,
     rate_limit: f64,
+    keep_failed: bool,
 ) -> Result<bool, String> {
     let item = engine::fetch::fetch_item(client, item_id)
         .map_err(|e| format!("获取商品元数据失败: {e}"))?;
@@ -355,10 +366,16 @@ fn download_one(
     engine::organize::write_booth_txt(&folder, &item);
     for (url, fname) in files {
         let dest = folder.join(engine::clean::sanitize(&fname, 120));
-        if dest.exists() && !engine::cover::looks_html(&std::fs::read(&dest).unwrap_or_default()) {
+        // 幂等：已存在且有效则跳过（判定与整理链共用同一实现，含完整性校验）。
+        if engine::organize::is_locally_valid(&dest) {
             continue;
         }
-        engine::download::download(client, &url, &dest, true, 0.0).map_err(|e| {
+        let dl_opts = engine::download::DownloadOptions {
+            check_html: true,
+            rate_limit: 0.0,
+            keep_failed,
+        };
+        engine::download::download(client, &url, &dest, dl_opts).map_err(|e| {
             format!(
                 "下载失败 {fname}: {}",
                 engine::download::with_cookie_hint(e)
@@ -440,6 +457,7 @@ pub fn organize(
                 out_root: &out_root,
                 dry_run,
                 cookie: cookie.as_deref(),
+                keep_failed_downloads: engine::config::keep_failed_downloads(&config),
             };
             let outcome =
                 engine::organize::organize_archive(&client, &path, &item_id, &opts, icon_fn);
@@ -536,6 +554,7 @@ pub fn search(
     let base = resolve_root(&config, base_dir.as_deref())?;
     let cookie = resolve_cookie(cookie.as_deref(), &config);
     let client = make_session(&config, cookie.as_deref());
+    let keep_failed = engine::config::keep_failed_downloads(&config);
     let files = expand_directories(&files);
     let total = files.len();
 
@@ -597,7 +616,14 @@ pub fn search(
                     }
                 }
             } else {
-                match process_search_file(&client, path, &base, file_force, cookie.as_deref()) {
+                match process_search_file(
+                    &client,
+                    path,
+                    &base,
+                    file_force,
+                    cookie.as_deref(),
+                    keep_failed,
+                ) {
                     Ok(Some(id)) => {
                         matched += 1;
                         let _ = on_event.send(ProgressEvent::ItemDone {
@@ -705,6 +731,7 @@ fn process_search_file(
     base: &std::path::Path,
     force_id: Option<&str>,
     cookie: Option<&str>,
+    keep_failed: bool,
 ) -> Result<Option<String>, String> {
     let item = if let Some(id) = force_id.filter(|s| !s.is_empty()) {
         engine::fetch::fetch_item(client, id).map_err(|e| format!("指定 ID {id} 获取失败: {e}"))?
@@ -719,6 +746,7 @@ fn process_search_file(
         out_root: base,
         dry_run: false,
         cookie,
+        keep_failed_downloads: keep_failed,
     };
     let outcome = engine::organize::organize_archive(client, path, &item.id, &opts, icon_fn);
     if !outcome.ok {
@@ -982,6 +1010,7 @@ pub fn fix_mismatch(
             out_root: &base_path,
             dry_run: false,
             cookie: cookie.as_deref(),
+            keep_failed_downloads: engine::config::keep_failed_downloads(&config),
         };
         let mut fixed = 0usize;
         let mut failed = 0usize;
@@ -1104,6 +1133,7 @@ pub fn backfill_free(
                         &path,
                         &item,
                         cookie.as_deref(),
+                        engine::config::keep_failed_downloads(&config),
                     );
                     if errs.is_empty() {
                         done += 1;

@@ -97,6 +97,7 @@ cd gui && npm run tauri dev # GUI 开发
 - 统一 CLI 必须提供结构化输出（`--json`）与语义化退出码（0 成功/1 有失败/2 致命），MCP 依赖它判断成败。
 - 网络代理为**配置项**，不得硬编码个人代理地址。优先级：配置文件 `proxy` > `HTTPS_PROXY`（无缺省回退）> reqwest 系统默认（Windows 读系统代理注册表）。
 - 自更新检查（`update_check`）多通道契约：**Atom feed（`releases.atom`）为主**（无 API 配额限流，成熟库 feed-rs 解析），HTML 重定向 + API 作兜底。所有通道显式超时（20s），防单入口挂起；代理/直连 client 去重（`use_proxy=false` 时只发一次）。失败区分「网络不可达」与「仓库无 Release」两种 error 文案。内置 gh-proxy 类镜像（`MIRRORS`）**仅用于下载阶段**，查版本阶段不发起镜像请求（实测镜像对 feed 全 403）。
+- **下载失败留痕**：任何失败（传输 / 假 HTML / rename）统一走 `download::fail` —— 默认清理 `{dest}.part` 并上报；仅当 `keep_failed_downloads` 开启（配置项 / CLI `--keep-failed` / MCP `keep_failed` / 设置页）才保留，错误串附绝对路径。**保留件不产生续传能力**（两条下载路径都是 `File::create` 从头写，重试即截断重来），价值仅在于取证；全仓无自动回收，长期开启会持续占用空间。
 
 ### 版本注入契约（CI/发布线）
 
@@ -128,25 +129,26 @@ cd gui && npm run tauri dev # GUI 开发
 
 ### 幂等 / 归档
 
-12. 无 manifest，纯文件系统推导状态：存在+非空+非 HTML 伪装+非损坏包即有效，扫描幂等。可校验格式（zip/unitypackage）须真实解析通过——断下载残留的半截文件 size>0 且魔数正常，仅靠前三条会被判为已完成而永久跳过，换节点重跑也补不回来；rar/7z 无内置解析器，不校验（宁可漏报，不可误报）。
+12. 无 manifest，纯文件系统推导状态：存在+非空+非 HTML 伪装+非确证损坏即有效，扫描幂等。可解析格式（zip/unitypackage）须真实结构校验通过——断下载残留的半截文件 size>0 且魔数正常，仅靠前三条会被判为已完成而永久跳过，换节点重跑也补不回来。两类判据不同：zip 看尾部中央目录（EOCD，能定位即证前缀完整），unitypackage 是 gzip+tar 流无尾置索引，须解压到流末尾。其余格式无内置解析器，判为无法判定（宁可漏报，不可误报）。
 13. **假文件魔数校验**：头 256 字节 lstrip 后 `<!doctype`/`<html` 即判伪（未登录返回伪装 zip/png 的登录页 HTML）。
 14. **移动后属性丢失 → 图标失效**：copy 后重补属性；跨盘移动保留 mtime。
 15. 空目录链清理：跳过隐藏文件（desktop.ini/Thumbs.db/.DS_Store），walk-up 清理 max 6 级，root 不删。
 16. macOS NFD 归一化：去重/比对前 `unicode-normalization` 归一化。
+17. **强制重归档不清空目标**：既有内容就地留档为「旧版本_\<UTC 时间戳\>」子目录（`organize::quarantine_existing`）。`remove_dir_all` 不可逆，用户旧三件套一旦混入新目录即无法恢复；既往留档目录与 desktop.ini/Thumbs.db/.DS_Store 原地保留（防嵌套留档）。留档为**纯人工**回收，不自动清理。
+18. **覆盖既有文件须「确证损坏」**：`package_health` 三态——`Valid` 跳过、`Corrupt`（可解析格式校验失败 / 空文件）才可覆盖、`Indeterminate`（rar/7z 等无解析器）保留并只报警。覆盖不可逆，宁可漏报。
 
 ### 安装器 vendor 模板 / PATH 契约
 
-17. `gui/src-tauri/wix/main.wxs` 与 `gui/src-tauri/nsis/installer.nsi` **vendor 自 tauri-bundler v2.11.5**：
+19. `gui/src-tauri/wix/main.wxs` 与 `gui/src-tauri/nsis/installer.nsi` **vendor 自 tauri-bundler v2.11.5**：
     升级 Tauri 大版本必须对照官方模板同步合并（文件头有警告注释），否则 MSI/NSIS 打包可能失效。
-18. **强制重归档不清空目标**：既有内容就地留档为「旧版本_\<UTC 时间戳\>」子目录（`organize::quarantine_existing`）。`remove_dir_all` 不可逆，用户旧三件套一旦混入新目录即无法恢复；既往留档目录与 desktop.ini/Thumbs.db/.DS_Store 原地保留（防嵌套留档）。
     模板一律 **ASCII**：Tauri 渲染输出无 BOM，makensis/candle 按 ANSI 读，中文会乱码。
-18. 三个 booth 二进制**不**挂 `bundle.externalBin`（GUI 编译期强制 sidecar 文件存在，与 stage-cli 时序冲突），
+20. 三个 booth 二进制**不**挂 `bundle.externalBin`（GUI 编译期强制 sidecar 文件存在，与 stage-cli 时序冲突），
     由 `beforeBundleCommand` 钩子 `gui/scripts/stage-cli.mjs` 生成：
     - MSI fragment `gui/src-tauri/wix/generated.wxs`（绝对路径），经 `featureRefs` 挂 `External` feature；
     - NSIS `{project_out}/nsis/generated.nsh` + 把 EnVar.dll 预置到 `{project_out}/nsis/plugins/`。
     **路径基准**：tauri-cli 打包前 `set_current_dir(dirs.tauri)`（切到 src-tauri），故
     `template`/`fragmentPaths`/`nsis.template` 均相对 src-tauri 解析。
-19. **四可选组件契约**（booth CLI / booth MCP / booth Shell / Add to user PATH，默认全选）：
+21. **四可选组件契约**（booth CLI / booth MCP / booth Shell / Add to user PATH，默认全选）：
     PATH 写**用户级 HKCU**（perMachine 安装也写当前用户），卸载按原生机制清理
     （MSI `Environment` 表 `Action=set Part=last` / NSIS `EnVar::DeleteValue`），
     重装幂等不重复追加（NSIS 已实测）。改动须重新实测安装/卸载/重装。

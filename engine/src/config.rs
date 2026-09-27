@@ -33,6 +33,9 @@ pub struct AppConfig {
     /// BOOTH 登录 Cookie（仅用户目录；CLI `--cookie` / MCP 参数优先）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cookie: Option<String>,
+    /// 下载失败时保留 `.part` 供取证。缺省关闭：清理并上报。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_failed_downloads: Option<bool>,
 }
 
 /// GUI 设置页载荷（camelCase，与 Tauri invoke 对齐）。
@@ -43,6 +46,7 @@ pub struct GuiSettings {
     pub proxy: bool,
     pub proxy_url: String,
     pub cookie: String,
+    pub keep_failed_downloads: bool,
 }
 
 /// 用户目录配置文件名。
@@ -91,6 +95,11 @@ pub fn resolve_cookie(arg: Option<&str>, config: &AppConfig) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// 下载失败是否保留临时文件。缺省关闭：失败即清理并上报。
+pub fn keep_failed_downloads(config: &AppConfig) -> bool {
+    config.keep_failed_downloads.unwrap_or(false)
+}
+
 /// 把已加载的配置投影成 GUI 设置页状态。
 pub fn gui_settings_from_config(cfg: &AppConfig) -> GuiSettings {
     GuiSettings {
@@ -98,6 +107,7 @@ pub fn gui_settings_from_config(cfg: &AppConfig) -> GuiSettings {
         proxy: cfg.proxy_enabled.unwrap_or(true),
         proxy_url: cfg.proxy.clone().unwrap_or_default(),
         cookie: cfg.cookie.clone().unwrap_or_default(),
+        keep_failed_downloads: keep_failed_downloads(cfg),
     }
 }
 
@@ -107,6 +117,7 @@ pub fn apply_gui_settings(cfg: &mut AppConfig, g: &GuiSettings) {
     cfg.proxy_enabled = Some(g.proxy);
     cfg.proxy = nonempty_opt(&g.proxy_url);
     cfg.cookie = nonempty_opt(&g.cookie);
+    cfg.keep_failed_downloads = Some(g.keep_failed_downloads);
 }
 
 fn nonempty_opt(s: &str) -> Option<String> {
@@ -340,6 +351,7 @@ mod tests {
             proxy: true,
             proxy_url: "http://127.0.0.1:7890".to_string(),
             cookie: "sid=abc".to_string(),
+            keep_failed_downloads: true,
         };
         apply_gui_settings(&mut cfg, &g);
         assert_eq!(cfg.download_root.as_deref(), Some("D:/BOOTH"));

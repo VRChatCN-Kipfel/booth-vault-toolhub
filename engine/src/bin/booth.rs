@@ -23,6 +23,10 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// 下载失败时保留 .part 供取证（默认关闭：清理并上报；无续传能力）。
+    #[arg(long, global = true)]
+    keep_failed: bool,
+
     #[command(subcommand)]
     command: Command,
 }
