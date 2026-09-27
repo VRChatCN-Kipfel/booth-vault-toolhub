@@ -238,6 +238,18 @@ jobs:
           mkdir -p stage
           cp target/release/booth stage/
           cp target/release/booth-mcp stage/
+      # 记录版本元数据：仅 tag 触发时写入 tag 名（与 windows job 保持一致）。
+      # macOS 工件同样必须携带 version.txt：release 聚合 job 的「Inject bundle version」
+      # 依赖它判定发布 tag，缺失会静默退化为 Nightly Build（实测 dmg 版本号为 0.0.0，
+      # 而 Windows 安装包为 1.0.0）。写进 stage/ 以便随 stage/** 一并上传。
+      - name: Write version marker
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "${{ github.ref_name }}" > stage/version.txt
+          else
+            echo "" > stage/version.txt
+          fi
       - name: Upload booth binaries (macOS)
         uses: actions/upload-artifact@v4
         with:

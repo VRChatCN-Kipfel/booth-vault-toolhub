@@ -254,6 +254,11 @@ jobs:
 
       # ---- 便携版组装（仅 Windows）----
 
+      # 注意：zip 必须落在被 upload 的目录**内部**，否则不会进入工件、聚合发布时
+      # `packages/**/*-lite.zip` 匹配不到（实测 Release 缺失 lite 便携版）。
+      # full 版一直是 `cd dist/full && 7z ... .`（zip 在 dist/full 内）故正常；
+      # lite 原先 `cd dist && 7z ... lite/`（zip 在 dist/ 下、被上传目录之外）故丢失。
+
       # Lite 便携版：GUI exe + 三 CLI + portable.txt（依赖系统 WebView2）
       - name: Assemble lite portable
         if: matrix.platform == 'windows'
@@ -265,7 +270,7 @@ jobs:
           cp "$GUI_BIN" dist/lite/booth-vault-toolhub.exe
           cp target/${{ matrix.rust_target }}/release/booth.exe target/${{ matrix.rust_target }}/release/booth-mcp.exe target/${{ matrix.rust_target }}/release/booth-shell.exe dist/lite/
           touch dist/lite/portable.txt
-          cd dist && 7z a -r -tzip booth-vault-toolhub-${{ matrix.arch }}-lite.zip lite/
+          cd dist/lite && 7z a -r -tzip booth-vault-toolhub-${{ matrix.arch }}-lite.zip .
 
       # Full 版：内置 WebView2 fixed runtime（对应架构 cab，latest）
       - name: Download WebView2 fixed runtime (latest)
@@ -370,6 +375,10 @@ jobs:
     runs-on: ubuntu-slim
     permissions:
       contents: write
+      # 跨 run 下载上游 CI 的 booth-binaries-* 工件需要 actions:read；仓库默认
+      # workflow 权限为 read，但此处 permissions 一旦显式声明即只保留列出的项，
+      # 故必须显式加上，否则 download-artifact 拿不到其它 run 的工件（403/空结果）。
+      actions: read
     if: >-
       github.event_name == 'workflow_dispatch'
       || (github.event_name == 'workflow_run'
@@ -418,15 +427,37 @@ jobs:
       # 下载 CI 全平台 booth 二进制（Windows x64/x86/arm64 + macOS arm64/x64），
       # 作为独立 CLI 附件随 release 发布。booth-shell 仅 Windows。
       # 不用 merge-multiple：各工件（架构）保持独立子目录，避免同名二进制被覆盖。
+      #
+      # ⚠ 必须显式指定 run-id + github-token：download-artifact@v4 在缺省时只从**当前
+      # run**（即本 release run）取工件，而 booth-binaries-* 在上游 CI run 中，结果会
+      # 静默下载 0 个（"Total of 0 artifact(s) downloaded"），随后 `find packages binaries`
+      # 因 binaries 不存在而 exit 1，发布整体失败。workflow_run 触发时上游 run id 即
+      # github.event.workflow_run.id（与 package job 的 ci-run 解析同源）。
       - name: Download booth binaries
         uses: actions/download-artifact@v4
         with:
           pattern: booth-binaries-*
           path: binaries
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
 
       - name: List packages
         shell: bash
         run: find packages binaries -type f
+
+      # 硬校验：booth 二进制是 Release 的必要附件，静默 0 下载必须显式失败，
+      # 不产出「无 CLI 附件」的残缺 Release。
+      - name: Verify booth binaries present
+        shell: bash
+        run: |
+          set -euo pipefail
+          count=$(find binaries -type f \( -name 'booth' -o -name 'booth.exe' \) | wc -l)
+          echo "booth binaries found: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::booth 二进制未下载到（binaries/ 为空），拒绝产出残缺 Release"
+            exit 1
+          fi
+          find binaries -type f | sort
 
       # 精简：筛掉发布元数据（version.txt），只留可执行二进制。
       - name: Prepare release binaries
@@ -444,9 +475,9 @@ jobs:
           prerelease: ${{ steps.flags.outputs.prerelease }}
           generate_release_notes: true
           files: |
-            packages/**/*.msi
-            packages/**/*.exe
-            packages/**/*-lite.zip
-            packages/**/*-full.zip
-            packages/**/*.dmg
+            packages/*.msi
+            packages/*-setup.exe
+            packages/*-lite.zip
+            packages/*-full.zip
+            packages/*.dmg
             binaries/**/*
