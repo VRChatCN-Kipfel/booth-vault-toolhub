@@ -128,7 +128,7 @@ cd gui && npm run tauri dev # GUI 开发
 
 ### 幂等 / 归档
 
-12. 无 manifest，纯文件系统推导状态：存在+非空+非 HTML 伪装即有效，扫描幂等。
+12. 无 manifest，纯文件系统推导状态：存在+非空+非 HTML 伪装+非损坏包即有效，扫描幂等。可校验格式（zip/unitypackage）须真实解析通过——断下载残留的半截文件 size>0 且魔数正常，仅靠前三条会被判为已完成而永久跳过，换节点重跑也补不回来；rar/7z 无内置解析器，不校验（宁可漏报，不可误报）。
 13. **假文件魔数校验**：头 256 字节 lstrip 后 `<!doctype`/`<html` 即判伪（未登录返回伪装 zip/png 的登录页 HTML）。
 14. **移动后属性丢失 → 图标失效**：copy 后重补属性；跨盘移动保留 mtime。
 15. 空目录链清理：跳过隐藏文件（desktop.ini/Thumbs.db/.DS_Store），walk-up 清理 max 6 级，root 不删。
@@ -138,6 +138,7 @@ cd gui && npm run tauri dev # GUI 开发
 
 17. `gui/src-tauri/wix/main.wxs` 与 `gui/src-tauri/nsis/installer.nsi` **vendor 自 tauri-bundler v2.11.5**：
     升级 Tauri 大版本必须对照官方模板同步合并（文件头有警告注释），否则 MSI/NSIS 打包可能失效。
+18. **强制重归档不清空目标**：既有内容就地留档为「旧版本_\<UTC 时间戳\>」子目录（`organize::quarantine_existing`）。`remove_dir_all` 不可逆，用户旧三件套一旦混入新目录即无法恢复；既往留档目录与 desktop.ini/Thumbs.db/.DS_Store 原地保留（防嵌套留档）。
     模板一律 **ASCII**：Tauri 渲染输出无 BOM，makensis/candle 按 ANSI 读，中文会乱码。
 18. 三个 booth 二进制**不**挂 `bundle.externalBin`（GUI 编译期强制 sidecar 文件存在，与 stage-cli 时序冲突），
     由 `beforeBundleCommand` 钩子 `gui/scripts/stage-cli.mjs` 生成：

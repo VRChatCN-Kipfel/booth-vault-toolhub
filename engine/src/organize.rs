@@ -259,10 +259,13 @@ pub fn organize_archive(
     let mut moved = false;
     let mut exists = false;
     if archive != dest_arc {
-        if dest_arc.exists() {
+        if dest_arc.exists() && valid_local_file(&dest_arc) {
             exists = true;
             message.push_str("；目标文件已存在，跳过移动");
         } else {
+            if dest_arc.exists() {
+                message.push_str("；目标文件损坏，覆盖重入");
+            }
             match std::fs::rename(archive, &dest_arc) {
                 Ok(()) => {
                     message.push_str("；已移入");
@@ -427,11 +430,11 @@ pub fn reorganize_dir(
     let mut message = format!("目标: {}", folder.display());
     let mut moved = false;
     if source != folder {
-        // 强制重归档：目标目录已存在（可能残留旧三件套）先整体清空。
-        if folder.exists()
-            && let Err(e) = std::fs::remove_dir_all(&folder)
-        {
-            return OrganizeOutcome::fail(format!("清旧目录失败 {}: {e}", folder.display()));
+        // 强制重归档：目标既有内容先就地留档，不清空（清空不可逆）。
+        match quarantine_existing(&folder) {
+            Ok(Some(q)) => message.push_str(&format!("；旧内容已留档 {}", q.display())),
+            Ok(None) => {}
+            Err(e) => return OrganizeOutcome::fail(e),
         }
         if let Err(e) = std::fs::create_dir_all(&folder) {
             return OrganizeOutcome::fail(format!("创建目录失败 {}: {e}", folder.display()));
@@ -512,7 +515,9 @@ fn archive_name(archive: &Path) -> String {
         .to_string()
 }
 
-/// 文件有效：存在、非空且非 HTML 伪装（未登录时 BOOTH 返回伪装成文件的登录页）。
+/// 文件有效：存在、非空、非 HTML 伪装（未登录时 BOOTH 返回伪装成文件的登录页）、
+/// 且非可校验格式的损坏包（断下载残留的半截 zip/unitypackage 必须判为无效，
+/// 否则换节点重跑仍会被跳过，损坏文件永久留在库里）。
 fn valid_local_file(p: &Path) -> bool {
     if !p.is_file() {
         return false;
@@ -529,7 +534,88 @@ fn valid_local_file(p: &Path) -> bool {
     use std::io::Read;
     let mut head = [0u8; 256];
     let n = fh.read(&mut head).unwrap_or(0);
-    !crate::cover::looks_html(&head[..n])
+    if crate::cover::looks_html(&head[..n]) {
+        return false;
+    }
+    !crate::integrity::is_corrupt_package(p)
+}
+
+/// 强制重归档时既有内容的留档目录名前缀。
+const LEGACY_PREFIX: &str = "旧版本_";
+
+/// 把目标目录既有内容就地留档为「旧版本_<UTC 时间戳>」子目录。
+///
+/// 强制重归档原先直接 `remove_dir_all` 清空目标：用户旧三件套与新内容一旦混入
+/// 即不可恢复。留档目录留在目标目录内供人工核对，既往留档与系统文件原地保留
+/// （避免嵌套留档）。无内容可留档时返回 `Ok(None)`。
+pub fn quarantine_existing(folder: &Path) -> Result<Option<PathBuf>, String> {
+    if !folder.is_dir() {
+        return Ok(None);
+    }
+    let entries: Vec<PathBuf> = match std::fs::read_dir(folder) {
+        Ok(rd) => rd
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| !kept_in_place(p))
+            .collect(),
+        Err(e) => return Err(format!("读取目标目录失败 {}: {e}", folder.display())),
+    };
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    let dest = folder.join(format!("{LEGACY_PREFIX}{}", utc_stamp()));
+    if let Err(e) = std::fs::create_dir_all(&dest) {
+        return Err(format!("创建留档目录失败 {}: {e}", dest.display()));
+    }
+    for src in &entries {
+        let name = src.file_name().unwrap_or_default().to_os_string();
+        let dst = dest.join(name);
+        if std::fs::rename(src, &dst).is_err()
+            && let Err(e) = std::fs::copy(src, &dst)
+        {
+            return Err(format!("留档失败 {}: {e}", src.display()));
+        }
+    }
+    Ok(Some(dest))
+}
+
+/// 留档时原地保留：既往留档目录与系统文件。
+fn kept_in_place(p: &Path) -> bool {
+    let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    (p.is_dir() && name.starts_with(LEGACY_PREFIX))
+        || matches!(name, "desktop.ini" | "Thumbs.db" | ".DS_Store")
+}
+
+/// UTC `YYYYmmdd-HHMMSS`：留档目录名需可读且字典序即时间序，不引入额外依赖。
+fn utc_stamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let (y, m, d) = civil_from_days(secs.div_euclid(86400));
+    let rem = secs.rem_euclid(86400);
+    format!(
+        "{y:04}{m:02}{d:02}-{:02}{:02}{:02}",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
+/// 1970-01-01 起天数 → (年, 月, 日)（Howard Hinnant 算法）。
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 /// 默认图标实现：Windows → shell_win；macOS → Finder 自定义图标；其余空操作。
@@ -567,6 +653,22 @@ mod tests {
         dir
     }
 
+    /// 最小合法 zip（单条目 Stored）：存在性判定需真实可解析字节，
+    /// 仅有魔数的假 zip 会被完整性校验判为损坏。
+    fn minimal_zip() -> Vec<u8> {
+        use std::io::Write;
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut buf);
+            let o = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            w.start_file("a.txt", o).unwrap();
+            w.write_all(b"x").unwrap();
+            w.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
     fn free_var(files: Vec<(&str, &str)>) -> VariationJson {
         VariationJson {
             price: Some(0),
@@ -582,6 +684,61 @@ mod tests {
                 musics: vec![],
             }),
         }
+    }
+
+    #[test]
+    fn quarantine_missing_dir_is_none() {
+        let dir = tmpdir("q-missing");
+        assert_eq!(quarantine_existing(&dir.join("nope")).unwrap(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quarantine_skips_when_only_system_files() {
+        let dir = tmpdir("q-sys");
+        std::fs::write(dir.join("desktop.ini"), b"[ViewState]").unwrap();
+        assert_eq!(quarantine_existing(&dir).unwrap(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quarantine_moves_content_into_legacy_dir() {
+        let dir = tmpdir("q-move");
+        std::fs::write(dir.join("pack.zip"), b"x").unwrap();
+        std::fs::write(dir.join("cover.jpg"), b"y").unwrap();
+        let q = quarantine_existing(&dir)
+            .unwrap()
+            .expect("should quarantine");
+        assert_eq!(q.parent(), Some(dir.as_path()));
+        let name = q.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with("旧版本_"), "got {name}");
+        assert!(q.join("pack.zip").exists());
+        assert!(q.join("cover.jpg").exists());
+        assert!(!dir.join("pack.zip").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quarantine_does_not_nest_previous_archive() {
+        let dir = tmpdir("q-nest");
+        let prev = dir.join("旧版本_20260101-000000");
+        std::fs::create_dir_all(&prev).unwrap();
+        std::fs::write(prev.join("old.zip"), b"o").unwrap();
+        std::fs::write(dir.join("new.zip"), b"n").unwrap();
+        let q = quarantine_existing(&dir)
+            .unwrap()
+            .expect("should quarantine");
+        assert_ne!(q, prev);
+        assert!(q.join("new.zip").exists());
+        assert!(prev.join("old.zip").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn utc_stamp_is_orderable() {
+        let s = utc_stamp();
+        assert_eq!(s.len(), 15, "got {s}");
+        assert!(s.chars().all(|c| c.is_ascii_digit() || c == '-'));
     }
 
     #[test]
@@ -709,7 +866,7 @@ mod tests {
     #[test]
     fn missing_free_files_existing_exact_name_skipped() {
         let dir = tmpdir("exact");
-        std::fs::write(dir.join("file.zip"), b"PK\x03\x04").unwrap();
+        std::fs::write(dir.join("file.zip"), minimal_zip()).unwrap();
         let item = ItemJson {
             variations: vec![free_var(vec![("https://u/f.zip", "file.zip")])],
             ..ItemJson::default()

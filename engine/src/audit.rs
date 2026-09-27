@@ -1077,8 +1077,49 @@ mod tests {
         }
     }
 
+    /// 按扩展名写真实可解析的包：完整性校验会拒绝仅含魔数的假包，
+    /// 测试内的"已存在"必须站得住校验，否则会被当成待重下的损坏文件。
     fn write_pkg(dir: &Path, name: &str) {
-        std::fs::write(dir.join(name), b"PK\x03\x04").unwrap();
+        let lower = name.to_ascii_lowercase();
+        let bytes = if lower.ends_with(".unitypackage") {
+            minimal_unitypackage()
+        } else if lower.ends_with(".zip") {
+            minimal_zip()
+        } else {
+            b"PK\x03\x04".to_vec()
+        };
+        std::fs::write(dir.join(name), &bytes).unwrap();
+    }
+
+    fn minimal_zip() -> Vec<u8> {
+        use std::io::Write;
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut buf);
+            let o = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            w.start_file("a.txt", o).unwrap();
+            w.write_all(b"x").unwrap();
+            w.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    fn minimal_unitypackage() -> Vec<u8> {
+        use std::io::Write;
+        let mut tar_buf = Vec::new();
+        {
+            let mut b = tar::Builder::new(&mut tar_buf);
+            let mut h = tar::Header::new_gnu();
+            let data = b"Assets/X.prefab";
+            h.set_size(data.len() as u64);
+            h.set_cksum();
+            b.append_data(&mut h, "guid/pathname", &data[..]).unwrap();
+            b.finish().unwrap();
+        }
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(&tar_buf).unwrap();
+        e.finish().unwrap()
     }
 
     #[test]
