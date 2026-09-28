@@ -140,6 +140,7 @@ export function SettingsPage() {
     boothRoot, setBoothRoot,
     proxy, setProxy, proxyUrl, setProxyUrl,
     cookie, setCookie, save,
+    keepFailedDownloads, setKeepFailedDownloads,
   } = useAppConfigStore();
   const { checking, info, check } = useUpdateStore();
 
@@ -270,6 +271,21 @@ export function SettingsPage() {
           onChange={(e) => setCookie(e.target.value)}
           placeholder="从浏览器复制 BOOTH 登录 Cookie"
         />
+      </Section>
+
+      <Section>
+        <PanelLabel extra={
+          <CheckLabel>
+            <Checkbox
+              checked={keepFailedDownloads}
+              onChange={(e) => setKeepFailedDownloads(e.target.checked)}
+            />
+            保留
+          </CheckLabel>
+        }>
+          失败临时文件
+        </PanelLabel>
+        <Muted>下载失败时保留 .part 供取证，只存本地。</Muted>
       </Section>
 
       <Section>

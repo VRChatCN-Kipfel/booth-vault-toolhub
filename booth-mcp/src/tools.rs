@@ -32,6 +32,9 @@ struct DownloadParams {
     /// BOOTH 登录 Cookie（下载免费文件必需）。
     #[serde(default)]
     cookie: Option<String>,
+    /// 下载失败时保留 .part 供取证（默认读配置，缺省关闭；保留件不产生续传能力）。
+    #[serde(default)]
+    keep_failed: Option<bool>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -59,6 +62,9 @@ struct OrganizeParams {
     /// BOOTH 登录 Cookie（补全商品页其他免费版本）。
     #[serde(default)]
     cookie: Option<String>,
+    /// 下载失败时保留 .part 供取证（默认读配置，缺省关闭；保留件不产生续传能力）。
+    #[serde(default)]
+    keep_failed: Option<bool>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -152,6 +158,9 @@ struct LibraryParams {
     /// 归档根目录（默认读配置 download_root）。
     #[serde(default)]
     base: Option<String>,
+    /// 忽略索引强制重扫（索引漏掉的变化用这条兜底）。
+    #[serde(default)]
+    refresh: bool,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -167,6 +176,41 @@ struct LibraryRow {
     name: String,
     category: String,
     path: String,
+}
+
+// ── preview ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+struct PreviewParams {
+    /// 压缩包路径（zip / unitypackage，可多个）。
+    archive: Vec<String>,
+    /// 每个包最多列出多少条（默认 200，0 = 不限）。
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct PreviewResult {
+    command: String,
+    archives: Vec<ArchivePreviewRow>,
+    failures: Vec<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct ArchivePreviewRow {
+    path: String,
+    format: String,
+    total_entries: usize,
+    truncated: bool,
+    entries: Vec<EntryRow>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct EntryRow {
+    name: String,
+    size: u64,
+    compressed_size: Option<u64>,
+    method: String,
 }
 
 // ── update_check ───────────────────────────────────────────────
@@ -220,6 +264,10 @@ impl BoothServer {
         let rate_limit = config
             .rate_limit_secs
             .unwrap_or_else(default_rate_limit_secs);
+        // 入参优先，其次配置项，缺省关闭。
+        let keep_failed = params
+            .keep_failed
+            .unwrap_or_else(|| engine::config::keep_failed_downloads(&config));
 
         // 解析散链/裸 ID。
         let mut ids: Vec<String> = Vec::new();
@@ -267,7 +315,14 @@ impl BoothServer {
             if params.limit > 0 && done >= params.limit {
                 break;
             }
-            match download_one(&client, &out_root, &item_id, params.dry_run, rate_limit) {
+            match download_one(
+                &client,
+                &out_root,
+                &item_id,
+                params.dry_run,
+                rate_limit,
+                keep_failed,
+            ) {
                 Ok(true) => done += 1,
                 Ok(false) => {}
                 Err(e) => failures.push(format!("{item_id}: {e}")),
@@ -296,10 +351,14 @@ impl BoothServer {
             }
         };
         let client = make_session(&config, params.cookie.as_deref());
+        let keep_failed = params
+            .keep_failed
+            .unwrap_or_else(|| engine::config::keep_failed_downloads(&config));
         let opts = engine::organize::OrganizeOptions {
             out_root: &out_root,
             dry_run: params.dry_run,
             cookie: params.cookie.as_deref(),
+            keep_failed_downloads: keep_failed,
         };
         let mut ok = 0usize;
         let mut failures: Vec<String> = Vec::new();
@@ -386,6 +445,7 @@ impl BoothServer {
                 &base,
                 params.id.as_deref(),
                 params.cookie.as_deref(),
+                engine::config::keep_failed_downloads(&config),
             ) {
                 Ok(Some(id)) => matched.push(id),
                 Ok(None) => {}
@@ -509,6 +569,7 @@ impl BoothServer {
                         &r.path,
                         item,
                         params.cookie.as_deref(),
+                        engine::config::keep_failed_downloads(&config),
                     );
                     fixed += n;
                     failures.extend(errs.into_iter().map(|e| format!("{}: {e}", r.id)));
@@ -527,7 +588,7 @@ impl BoothServer {
 
     /// 列出归档库存（只读）。
     #[tool(
-        description = "列出归档库存：ID / 标题 / 类目 / 路径。类目取 ID 目录的父文件夹名，不联网。"
+        description = "列出归档库存：ID / 标题 / 类目 / 路径。类目取 ID 目录的父文件夹名，不联网。走持久化索引（按分类目录 mtime 增量），稳态秒开；refresh=true 强制重扫。"
     )]
     async fn library(&self, Parameters(params): Parameters<LibraryParams>) -> CallToolResult {
         let config = load_config();
@@ -540,7 +601,9 @@ impl BoothServer {
         if !base.is_dir() {
             return tool_error(&format!("FATAL: {} 不存在", base.display()));
         }
-        let items = engine::audit::list_library(&base);
+        // 走持久化索引：稳态下只 stat 各分类目录，不再逐商品扫一遍。
+        let cache = engine::config::library_cache_path();
+        let items = engine::audit::list_library_cached(&base, cache.as_deref(), params.refresh);
         let result = LibraryResult {
             command: "library".to_string(),
             total: items.len(),
@@ -553,6 +616,44 @@ impl BoothServer {
                     path: i.path.display().to_string(),
                 })
                 .collect(),
+        };
+        let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+        CallToolResult::success(vec![ContentBlock::text(text)])
+    }
+
+    /// 预览压缩包内条目（只读，不联网）。
+    #[tool(
+        description = "预览本地 zip / unitypackage 的条目清单（名称 / 大小 / 压缩后大小 / 压缩方法），只读不联网。用于确认包内容与商品是否对应，或核对归档文件是否完整。"
+    )]
+    async fn preview(&self, Parameters(params): Parameters<PreviewParams>) -> CallToolResult {
+        let limit = params.limit.unwrap_or(200);
+        let mut archives = Vec::new();
+        let mut failures = Vec::new();
+        for p in &params.archive {
+            match engine::integrity::preview_archive(std::path::Path::new(p), limit) {
+                Ok(pv) => archives.push(ArchivePreviewRow {
+                    path: pv.path.display().to_string(),
+                    format: pv.format,
+                    total_entries: pv.total_entries,
+                    truncated: pv.truncated,
+                    entries: pv
+                        .entries
+                        .into_iter()
+                        .map(|e| EntryRow {
+                            name: e.name,
+                            size: e.size,
+                            compressed_size: e.compressed_size,
+                            method: e.method,
+                        })
+                        .collect(),
+                }),
+                Err(e) => failures.push(format!("{p}: {e}")),
+            }
+        }
+        let result = PreviewResult {
+            command: "preview".to_string(),
+            archives,
+            failures,
         };
         let text = serde_json::to_string_pretty(&result).unwrap_or_default();
         CallToolResult::success(vec![ContentBlock::text(text)])
@@ -596,6 +697,7 @@ fn download_one(
     item_id: &str,
     dry_run: bool,
     rate_limit: f64,
+    keep_failed: bool,
 ) -> Result<bool, String> {
     let item = engine::fetch::fetch_item(client, item_id)
         .map_err(|e| format!("获取商品元数据失败: {e}"))?;
@@ -611,10 +713,16 @@ fn download_one(
     engine::organize::write_booth_txt(&folder, &item);
     for (url, fname) in files {
         let dest = folder.join(engine::clean::sanitize(&fname, 120));
-        if dest.exists() && !engine::cover::looks_html(&std::fs::read(&dest).unwrap_or_default()) {
+        // 幂等：已存在且有效则跳过（判定与整理链共用同一实现，含完整性校验）。
+        if engine::organize::is_locally_valid(&dest) {
             continue;
         }
-        engine::download::download(client, &url, &dest, true, 0.0).map_err(|e| {
+        let dl_opts = engine::download::DownloadOptions {
+            check_html: true,
+            rate_limit: 0.0,
+            keep_failed,
+        };
+        engine::download::download(client, &url, &dest, dl_opts).map_err(|e| {
             format!(
                 "下载失败 {fname}: {}",
                 engine::download::with_cookie_hint(e)
@@ -641,6 +749,7 @@ fn process_search_file(
     base: &std::path::Path,
     force_id: Option<&str>,
     cookie: Option<&str>,
+    keep_failed: bool,
 ) -> Result<Option<String>, String> {
     let fname = path
         .file_name()
@@ -685,6 +794,7 @@ fn process_search_file(
         out_root: base,
         dry_run: false,
         cookie,
+        keep_failed_downloads: keep_failed,
     };
     let outcome = engine::organize::organize_archive(client, path, &item.id, &opts, icon_fn);
     if !outcome.ok {

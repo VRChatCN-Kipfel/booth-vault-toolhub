@@ -23,6 +23,10 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// 下载失败时保留 .part 供取证（默认关闭：清理并上报；无续传能力）。
+    #[arg(long, global = true)]
+    keep_failed: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -120,11 +124,23 @@ enum Command {
         #[arg(long)]
         cookie: Option<String>,
     },
-    /// 列出归档库存（ID / 标题 / 类目 / 路径）。
+    /// 列出归档库存（ID / 标题 / 类目 / 路径）。走持久化索引，稳态秒开。
     Library {
         /// 归档根目录。
         #[arg(long)]
         base: Option<PathBuf>,
+        /// 忽略索引强制重扫（索引漏掉的变化用这条兜底）。
+        #[arg(long)]
+        refresh: bool,
+    },
+    /// 预览压缩包内条目（zip / unitypackage），不联网。
+    Preview {
+        /// 压缩包路径。
+        #[arg(required = true)]
+        archive: Vec<PathBuf>,
+        /// 每个包最多列出多少条（0 = 不限）。
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
     },
 }
 

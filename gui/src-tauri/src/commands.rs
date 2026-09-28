@@ -186,6 +186,7 @@ pub fn save_app_config(
     proxy: bool,
     proxy_url: String,
     cookie: String,
+    keep_failed_downloads: bool,
 ) -> Result<(), String> {
     let mut cfg = load_config();
     apply_gui_settings(
@@ -195,6 +196,7 @@ pub fn save_app_config(
             proxy,
             proxy_url,
             cookie,
+            keep_failed_downloads,
         },
     );
     save_user_config(&cfg)
@@ -220,6 +222,7 @@ pub fn download(
     let rate_limit = config
         .rate_limit_secs
         .unwrap_or_else(default_rate_limit_secs);
+    let keep_failed = engine::config::keep_failed_downloads(&config);
     let limit = limit.unwrap_or(0);
 
     let mut ids: Vec<String> = Vec::new();
@@ -288,7 +291,14 @@ pub fn download(
             if limit > 0 && d >= limit {
                 break;
             }
-            match download_one(&client, &out_root, &item_id, dry_run, rate_limit) {
+            match download_one(
+                &client,
+                &out_root,
+                &item_id,
+                dry_run,
+                rate_limit,
+                keep_failed,
+            ) {
                 Ok(true) => {
                     d += 1;
                     let _ = on_event.send(ProgressEvent::ItemDone {
@@ -340,6 +350,7 @@ fn download_one(
     item_id: &str,
     dry_run: bool,
     rate_limit: f64,
+    keep_failed: bool,
 ) -> Result<bool, String> {
     let item = engine::fetch::fetch_item(client, item_id)
         .map_err(|e| format!("获取商品元数据失败: {e}"))?;
@@ -355,10 +366,16 @@ fn download_one(
     engine::organize::write_booth_txt(&folder, &item);
     for (url, fname) in files {
         let dest = folder.join(engine::clean::sanitize(&fname, 120));
-        if dest.exists() && !engine::cover::looks_html(&std::fs::read(&dest).unwrap_or_default()) {
+        // 幂等：已存在且有效则跳过（判定与整理链共用同一实现，含完整性校验）。
+        if engine::organize::is_locally_valid(&dest) {
             continue;
         }
-        engine::download::download(client, &url, &dest, true, 0.0).map_err(|e| {
+        let dl_opts = engine::download::DownloadOptions {
+            check_html: true,
+            rate_limit: 0.0,
+            keep_failed,
+        };
+        engine::download::download(client, &url, &dest, dl_opts).map_err(|e| {
             format!(
                 "下载失败 {fname}: {}",
                 engine::download::with_cookie_hint(e)
@@ -440,6 +457,7 @@ pub fn organize(
                 out_root: &out_root,
                 dry_run,
                 cookie: cookie.as_deref(),
+                keep_failed_downloads: engine::config::keep_failed_downloads(&config),
             };
             let outcome =
                 engine::organize::organize_archive(&client, &path, &item_id, &opts, icon_fn);
@@ -536,6 +554,7 @@ pub fn search(
     let base = resolve_root(&config, base_dir.as_deref())?;
     let cookie = resolve_cookie(cookie.as_deref(), &config);
     let client = make_session(&config, cookie.as_deref());
+    let keep_failed = engine::config::keep_failed_downloads(&config);
     let files = expand_directories(&files);
     let total = files.len();
 
@@ -597,7 +616,14 @@ pub fn search(
                     }
                 }
             } else {
-                match process_search_file(&client, path, &base, file_force, cookie.as_deref()) {
+                match process_search_file(
+                    &client,
+                    path,
+                    &base,
+                    file_force,
+                    cookie.as_deref(),
+                    keep_failed,
+                ) {
                     Ok(Some(id)) => {
                         matched += 1;
                         let _ = on_event.send(ProgressEvent::ItemDone {
@@ -705,6 +731,7 @@ fn process_search_file(
     base: &std::path::Path,
     force_id: Option<&str>,
     cookie: Option<&str>,
+    keep_failed: bool,
 ) -> Result<Option<String>, String> {
     let item = if let Some(id) = force_id.filter(|s| !s.is_empty()) {
         engine::fetch::fetch_item(client, id).map_err(|e| format!("指定 ID {id} 获取失败: {e}"))?
@@ -719,6 +746,7 @@ fn process_search_file(
         out_root: base,
         dry_run: false,
         cookie,
+        keep_failed_downloads: keep_failed,
     };
     let outcome = engine::organize::organize_archive(client, path, &item.id, &opts, icon_fn);
     if !outcome.ok {
@@ -982,6 +1010,7 @@ pub fn fix_mismatch(
             out_root: &base_path,
             dry_run: false,
             cookie: cookie.as_deref(),
+            keep_failed_downloads: engine::config::keep_failed_downloads(&config),
         };
         let mut fixed = 0usize;
         let mut failed = 0usize;
@@ -1028,14 +1057,24 @@ pub struct LibraryRow {
 
 /// list_library：本地扫描库存，不联网。
 #[tauri::command]
-pub async fn list_library(base: Option<String>) -> Result<Vec<LibraryRow>, String> {
+pub async fn list_library(
+    base: Option<String>,
+    force: Option<bool>,
+) -> Result<Vec<LibraryRow>, String> {
     let config = load_config();
     let base_path = resolve_root(&config, base.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || {
         if !base_path.is_dir() {
             return Err(format!("FATAL: {} 不存在", base_path.display()));
         }
-        Ok(engine::audit::list_library(&base_path)
+        // 走持久化索引：稳态下只 stat 各分类目录，不再逐商品扫一遍。
+        let cache = engine::config::library_cache_path();
+        Ok(
+            engine::audit::list_library_cached(
+                &base_path,
+                cache.as_deref(),
+                force.unwrap_or(false),
+            )
             .into_iter()
             .map(|i| LibraryRow {
                 id: i.id,
@@ -1043,10 +1082,78 @@ pub async fn list_library(base: Option<String>) -> Result<Vec<LibraryRow>, Strin
                 category: i.category,
                 path: i.path.display().to_string(),
             })
-            .collect())
+            .collect(),
+        )
     })
     .await
     .map_err(|e| format!("扫描库存失败: {e}"))?
+}
+
+/// 打包预览载荷（供两个 preview 命令共用）。
+fn preview_payload(paths: &[std::path::PathBuf], limit: usize) -> serde_json::Value {
+    let mut archives = Vec::new();
+    let mut failures = Vec::new();
+    for p in paths {
+        match engine::integrity::preview_archive(p, limit) {
+            Ok(pv) => archives.push(serde_json::json!({
+                "path": pv.path.display().to_string(),
+                "name": pv.path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                "format": pv.format,
+                "totalEntries": pv.total_entries,
+                "truncated": pv.truncated,
+                "entries": pv.entries.iter().map(|e| serde_json::json!({
+                    "name": e.name,
+                    "size": e.size,
+                    "compressedSize": e.compressed_size,
+                    "method": e.method,
+                })).collect::<Vec<_>>(),
+            })),
+            Err(e) => failures.push(format!("{}: {e}", p.display())),
+        }
+    }
+    serde_json::json!({ "archives": archives, "failures": failures })
+}
+
+/// 预览指定压缩包的条目（只读，不联网）。
+#[tauri::command]
+pub async fn preview_archives(
+    paths: Vec<String>,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let limit = limit.unwrap_or(engine::integrity::PREVIEW_LIMIT);
+    let paths: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+    // 预览要全量解压（unitypackage 还会读干 gzip 流），耗时不可预测——
+    // 必须移出主线程，否则大包时整个界面冻结。
+    tauri::async_runtime::spawn_blocking(move || Ok(preview_payload(&paths, limit)))
+        .await
+        .map_err(|e| format!("预览任务失败: {e}"))?
+}
+
+/// 预览某个商品目录内所有压缩包的条目（只读，不联网）。
+///
+/// 目录里的包按名字排序，只取 `is_checkable` 认得的格式；其余文件不出现在结果里。
+#[tauri::command]
+pub async fn preview_dir(dir: String, limit: Option<usize>) -> Result<serde_json::Value, String> {
+    let limit = limit.unwrap_or(engine::integrity::PREVIEW_LIMIT);
+    // 同 `preview_archives`：目录内可能有多个大包，解压必须移出主线程。
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = std::path::PathBuf::from(dir);
+        if !dir.is_dir() {
+            return Err(format!("目录不存在：{}", dir.display()));
+        }
+        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .map_err(|e| format!("读取目录失败：{e}"))?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && engine::integrity::is_checkable(p))
+            .collect();
+        paths.sort();
+        Ok(preview_payload(&paths, limit))
+    })
+    .await
+    .map_err(|e| format!("预览任务失败: {e}"))?
 }
 
 /// backfill_free：对指定商品目录补免费文件。
@@ -1104,6 +1211,7 @@ pub fn backfill_free(
                         &path,
                         &item,
                         cookie.as_deref(),
+                        engine::config::keep_failed_downloads(&config),
                     );
                     if errs.is_empty() {
                         done += 1;

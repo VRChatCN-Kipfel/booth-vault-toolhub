@@ -1,58 +1,146 @@
 /**
- * 库存页：scan_library 列表，按 ID / 标题 / 类目筛选。
+ * 库存页：scan_library 列表，按 ID / 标题 / 类目筛选；行内展开压缩包条目预览。
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import styled from 'styled-components';
 import { invoke } from '@tauri-apps/api/core';
 import {
   AccentButton, Input, ObsPanel, Badge, PageShell, PanelLabel,
-  Section, FlexSection, Row, ListRow, EmptyState, Counter, Muted,
+  Section, FlexSection, Row, ListRow, EmptyState, Counter, Muted, TextButton,
 } from '../components/ui';
 import { QueueActions } from '../components/QueueActions';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
+import { useLibraryStore } from '../store/libraryStore';
 
-type LibraryRow = {
-  id: string;
+type EntryRow = {
   name: string;
-  category: string;
+  size: number;
+  compressedSize: number | null;
+  method: string;
+};
+
+type ArchivePreview = {
   path: string;
+  name: string;
+  format: string;
+  totalEntries: number;
+  truncated: boolean;
+  entries: EntryRow[];
+};
+
+type PreviewPayload = {
+  archives: ArchivePreview[];
+  failures: string[];
 };
 
 const ScanList = styled(ObsPanel)`
   flex: 1;
 `;
 
+const PreviewBox = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  background: var(--bvt-surface);
+  border: 1px solid var(--bvt-border);
+  border-radius: var(--bvt-radius);
+  max-height: 420px;
+  overflow-y: auto;
+`;
+
+const ArchiveBlock = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+`;
+
+const ArchiveHead = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+
+  .nm {
+    font-weight: 600;
+    word-break: break-all;
+  }
+`;
+
+const EntryTable = styled.table`
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--bvt-mono);
+  font-size: var(--bvt-fz-sm);
+
+  td {
+    padding: 2px 6px;
+    border-top: 1px solid var(--bvt-border);
+    vertical-align: top;
+  }
+
+  td.nm {
+    word-break: break-all;
+  }
+
+  td.num {
+    text-align: right;
+    white-space: nowrap;
+    width: 1%;
+  }
+`;
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
+}
+
 export function LibraryPage() {
   const boothRoot = useAppConfigStore((s) => s.boothRoot);
-  const [items, setItems] = useState<LibraryRow[]>([]);
+  const { items, loading, error: err, load } = useLibraryStore();
   const [q, setQ] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState('');
+  const [openPath, setOpenPath] = useState('');
+  const [preview, setPreview] = useState<PreviewPayload | null>(null);
+  const [previewErr, setPreviewErr] = useState('');
+  const [previewLoading, setPreviewLoading] = useState(false);
 
-  const reload = useCallback(async () => {
-    if (!boothRoot) {
-      setErr('先在设置里填归档根目录');
-      setItems([]);
+  // 有缓存时 `load` 不会把界面打回加载态：先渲染缓存，后台静默刷新。
+  useEffect(() => {
+    void load(boothRoot);
+  }, [boothRoot, load]);
+
+  const reload = useCallback(() => load(boothRoot, true), [boothRoot, load]);
+
+  const togglePreview = useCallback(async (path: string) => {
+    if (openPath === path) {
+      setOpenPath('');
+      setPreview(null);
+      setPreviewErr('');
       return;
     }
-    setLoading(true);
-    setErr('');
+    setOpenPath(path);
+    setPreview(null);
+    setPreviewErr('');
+    setPreviewLoading(true);
     try {
-      const rows = await invoke<LibraryRow[]>('list_library', { base: boothRoot });
-      setItems(rows);
+      const data = await invoke<PreviewPayload>('preview_dir', { dir: path });
+      setPreview(data);
     } catch (e) {
-      setErr(String(e));
-      setItems([]);
+      setPreviewErr(String(e));
     } finally {
-      setLoading(false);
+      setPreviewLoading(false);
     }
-  }, [boothRoot]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+  }, [openPath]);
 
   const view = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -84,7 +172,8 @@ export function LibraryPage() {
           <AccentButton onClick={() => void reload()} disabled={loading || !boothRoot}>
             {loading ? '扫描中…' : '刷新'}
           </AccentButton>
-          {err && <Muted>{err}</Muted>}
+          {!boothRoot && <Muted>先在设置里填归档根目录</Muted>}
+          {boothRoot && err && <Muted>{err}</Muted>}
         </Row>
       </Section>
 
@@ -92,12 +181,52 @@ export function LibraryPage() {
         <PanelLabel>商品</PanelLabel>
         <ScanList>
           {view.map((it) => (
-            <ListRow key={`${it.id}-${it.path}`}>
-              <Badge kind="ok">{it.category || '未分类'}</Badge>
-              <span>{it.id}</span>
-              <span className="grow">{it.name}</span>
-              <QueueActions id={it.id} path={it.path} />
-            </ListRow>
+            <Fragment key={`${it.id}-${it.path}`}>
+              <ListRow>
+                <Badge kind="ok">{it.category || '未分类'}</Badge>
+                <span>{it.id}</span>
+                <span className="grow">{it.name}</span>
+                <TextButton onClick={() => void togglePreview(it.path)}>
+                  {openPath === it.path ? '收起' : '内容'}
+                </TextButton>
+                <QueueActions id={it.id} path={it.path} />
+              </ListRow>
+              {openPath === it.path && (
+                <PreviewBox>
+                  {previewLoading && <Muted>读取中…</Muted>}
+                  {previewErr && <Muted>{previewErr}</Muted>}
+                  {!previewLoading && !previewErr && preview?.archives.length === 0 && (
+                    <Muted>该目录内没有可预览的压缩包</Muted>
+                  )}
+                  {preview?.archives.map((a) => (
+                    <ArchiveBlock key={a.path}>
+                      <ArchiveHead>
+                        <Badge kind="run">{a.format}</Badge>
+                        <span className="nm">{a.name}</span>
+                        <Muted>{a.totalEntries} 条</Muted>
+                      </ArchiveHead>
+                      {a.entries.length > 0 && (
+                        <EntryTable>
+                          <tbody>
+                            {a.entries.map((e, i) => (
+                              <tr key={`${i}-${e.name}`}>
+                                <td className="nm">{e.name}</td>
+                                <td className="num">{fmtBytes(e.size)}</td>
+                                <td className="num">
+                                  {e.compressedSize == null ? '—' : fmtBytes(e.compressedSize)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </EntryTable>
+                      )}
+                      {a.truncated && <Muted>已截断，仅列前 {a.entries.length} 条</Muted>}
+                    </ArchiveBlock>
+                  ))}
+                  {preview?.failures.map((f) => <Muted key={f}>{f}</Muted>)}
+                </PreviewBox>
+              )}
+            </Fragment>
           ))}
           {view.length === 0 && (
             <EmptyState

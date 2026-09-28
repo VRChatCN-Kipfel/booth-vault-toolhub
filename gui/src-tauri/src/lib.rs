@@ -5,8 +5,8 @@ pub mod portable;
 
 use commands::{
     TaskRegistry, audit, backfill_free, cancel_task, download, fix_mismatch, list_library,
-    load_app_config, mismatch_audit, organize, save_app_config, search, set_app_icon, update_check,
-    version_audit,
+    load_app_config, mismatch_audit, organize, preview_archives, preview_dir, save_app_config,
+    search, set_app_icon, update_check, version_audit,
 };
 use tauri::Manager;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
@@ -40,6 +40,8 @@ pub fn run() {
             version_audit,
             backfill_free,
             list_library,
+            preview_archives,
+            preview_dir,
             mismatch_audit,
             fix_mismatch,
             update_check,
@@ -49,6 +51,23 @@ pub fn run() {
             set_app_icon,
         ])
         .setup(|app| {
+            // 启动预热：后台把库存索引刷一遍，用户切到库存页时直接命中缓存。
+            // 独立线程，不阻塞窗口创建；未配根目录/目录不存在时静默跳过。
+            std::thread::spawn(|| {
+                let config = engine::config::load_config();
+                let Some(root) = config
+                    .download_root
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                else {
+                    return;
+                };
+                engine::audit::refresh_library_cache(
+                    std::path::Path::new(root),
+                    engine::config::library_cache_path().as_deref(),
+                );
+            });
             if app.handle().get_webview_window("main").is_some() {
                 return Ok(());
             }

@@ -97,6 +97,15 @@ cd gui && npm run tauri dev # GUI 开发
 - 统一 CLI 必须提供结构化输出（`--json`）与语义化退出码（0 成功/1 有失败/2 致命），MCP 依赖它判断成败。
 - 网络代理为**配置项**，不得硬编码个人代理地址。优先级：配置文件 `proxy` > `HTTPS_PROXY`（无缺省回退）> reqwest 系统默认（Windows 读系统代理注册表）。
 - 自更新检查（`update_check`）多通道契约：**Atom feed（`releases.atom`）为主**（无 API 配额限流，成熟库 feed-rs 解析），HTML 重定向 + API 作兜底。所有通道显式超时（20s），防单入口挂起；代理/直连 client 去重（`use_proxy=false` 时只发一次）。失败区分「网络不可达」与「仓库无 Release」两种 error 文案。内置 gh-proxy 类镜像（`MIRRORS`）**仅用于下载阶段**，查版本阶段不发起镜像请求（实测镜像对 feed 全 403）。
+- **下载失败留痕**：任何失败（传输 / 假 HTML / 结构损坏 / rename）统一走 `download::fail` —— 默认清理 `{dest}.part` 并上报；仅当 `keep_failed_downloads` 开启（配置项 / CLI `--keep-failed` / MCP `keep_failed` / 设置页）才保留，错误串附绝对路径。**保留件不产生续传能力**（两条下载路径都是 `File::create` 从头写，重试即截断重来），价值仅在于取证；全仓无自动回收，长期开启会持续占用空间。
+- **落盘前须过结构校验**：`rename` 前对 `.part` 跑 `integrity::package_health_of`（按目标扩展名分派，因为扩展名在目标名上、内容还在临时文件里），损坏即走 `fail()` 不落盘。否则坏包会静默落地，直到下一轮 `is_locally_valid` 才发现要重下——届时 `.part` 已不在，留痕开关够不着。
+- **库存列表走持久化索引**：`audit::list_library_cached` 以**分类目录的 `mtime_ns`** 为变更指纹（与 Score Studio 以 `size_mtime_ns` 作文件指纹同构，粒度到目录），未变的分类直接复用缓存条目。
+    - **结果集必须与 `scan_library` 一致**（差分测试 `cached_matches_scan_library` 守着）。以下三处语义**不可为提速而省略**——省掉任何一处都是静默少列，且不报错：递归（丢了会让嵌套商品目录整条消失，而 `audit` / `version_audit` 仍列得出）、`path.is_dir()`（`DirEntry::file_type()` 不跟随重解析点，实测对 Windows junction 返回 `is_dir=false`，把另一块盘的库 junction 进来时该库显示 0 件）、`is_hidden`（否则带隐藏属性的商品目录会被列出）。
+    - 提速来源是**不做与结果无关的工作**：三件套 `exists`（封面/图标/ini）与 `extract_version_tag`。后者原先每次调用都重编译两遍 `fancy_regex`，实测占 `scan_library` 耗时约 80%，现提进 `OnceLock`（收益同时覆盖 `audit` / `version_audit` / GUI 巡检）。**不得反过来省掉 `is_dir` / 递归 / `is_hidden`**——那三样决定结果集。
+    - 索引条目必须存**真实目录名**（`CachedItem.dir`）：`ID_DIR_RE` 的分隔符类含全角空格、全角连字符、日文长音且可重复，按 `{id}_{name}` 拼出的路径会指向不存在的目录，而 CLI / MCP / GUI 都直接拿它访问磁盘。缺该字段的旧索引会被判为不可解析而整体丢弃（退化成全扫），这是刻意的不兼容。
+    - 索引写盘走 temp + rename（`write_index_atomic`）：直接 `std::fs::write` 会先截断，并发读者（GUI 的启动预热线程、另一个 CLI）可能读到半截 JSON。
+    - 索引落在**用户配置目录**（`config::library_cache_path()`），**不得写进 BOOTH 库**——库是只读资产。
+    - 已知边界：分类目录**内部**的深层变化不改变该目录 mtime，不会被自动察觉；`force` / `--refresh` 为兜底。换库根时按缓存里的 `root` 字段判定不复用。
 
 ### 版本注入契约（CI/发布线）
 
@@ -128,24 +137,30 @@ cd gui && npm run tauri dev # GUI 开发
 
 ### 幂等 / 归档
 
-12. 无 manifest，纯文件系统推导状态：存在+非空+非 HTML 伪装即有效，扫描幂等。
+12. 无 manifest，纯文件系统推导状态：存在+非空+非 HTML 伪装+非确证损坏即有效，扫描幂等。可解析格式（zip/unitypackage）须真实结构校验通过——断下载残留的半截文件 size>0 且魔数正常，仅靠前三条会被判为已完成而永久跳过，换节点重跑也补不回来。两类判据不同：zip 看尾部中央目录（EOCD，能定位即证前缀完整），unitypackage 是 gzip+tar 流无尾置索引，须解压到流末尾。其余格式无内置解析器，判为无法判定（宁可漏报，不可误报）。
+    - **中央目录一次解析三用**：zip 的 `zip_entries()` 同时服务完整性判定、条目预览与 `booth preview` 子命令，不得为预览再解析一遍。
+    - **unitypackage 的预览与完整性共用同一次遍历**：`unitypackage_walk` 在遍历条目的同时把 gzip 内层流读干以触发 CRC32/ISIZE，故它的 `is_some()` **既是预览结果也是完整性结论**（与 zip 侧「中央目录一次解析三用」同构）。代价是**预览不是廉价操作**——大包预览会真的解压一遍，勿在热路径反复调用。
+    - **版本判定与结构校验的分工**：`local_file_versions` / `LocalScan::versions` 只读文件名，是零成本筛选层；「已存在」的最终判决必须在 `LocalScan::missing_free_files` 的匹配分支对候选文件做结构校验后作出（截断包的廉价判据全过，不可在筛选层断言有效性）。
+    - **同轮多处判定用 `LocalScan`**：一次 `read_dir` + 校验按需，避免巡检链上对每个 unitypackage 重复全量解压。
 13. **假文件魔数校验**：头 256 字节 lstrip 后 `<!doctype`/`<html` 即判伪（未登录返回伪装 zip/png 的登录页 HTML）。
 14. **移动后属性丢失 → 图标失效**：copy 后重补属性；跨盘移动保留 mtime。
 15. 空目录链清理：跳过隐藏文件（desktop.ini/Thumbs.db/.DS_Store），walk-up 清理 max 6 级，root 不删。
 16. macOS NFD 归一化：去重/比对前 `unicode-normalization` 归一化。
+17. **强制重归档不清空目标**：既有内容就地留档为「旧版本_\<UTC 时间戳\>」子目录（`organize::quarantine_existing`）。`remove_dir_all` 不可逆，用户旧三件套一旦混入新目录即无法恢复；既往留档目录与 desktop.ini/Thumbs.db/.DS_Store 原地保留（防嵌套留档）。留档为**纯人工**回收，不自动清理。
+18. **覆盖既有文件须「确证损坏」**：`package_health` 三态——`Valid` 跳过、`Corrupt`（可解析格式校验失败 / 空文件）才可覆盖、`Indeterminate`（rar/7z 等无解析器）保留并只报警。覆盖不可逆，宁可漏报。
 
 ### 安装器 vendor 模板 / PATH 契约
 
-17. `gui/src-tauri/wix/main.wxs` 与 `gui/src-tauri/nsis/installer.nsi` **vendor 自 tauri-bundler v2.11.5**：
+19. `gui/src-tauri/wix/main.wxs` 与 `gui/src-tauri/nsis/installer.nsi` **vendor 自 tauri-bundler v2.11.5**：
     升级 Tauri 大版本必须对照官方模板同步合并（文件头有警告注释），否则 MSI/NSIS 打包可能失效。
     模板一律 **ASCII**：Tauri 渲染输出无 BOM，makensis/candle 按 ANSI 读，中文会乱码。
-18. 三个 booth 二进制**不**挂 `bundle.externalBin`（GUI 编译期强制 sidecar 文件存在，与 stage-cli 时序冲突），
+20. 三个 booth 二进制**不**挂 `bundle.externalBin`（GUI 编译期强制 sidecar 文件存在，与 stage-cli 时序冲突），
     由 `beforeBundleCommand` 钩子 `gui/scripts/stage-cli.mjs` 生成：
     - MSI fragment `gui/src-tauri/wix/generated.wxs`（绝对路径），经 `featureRefs` 挂 `External` feature；
     - NSIS `{project_out}/nsis/generated.nsh` + 把 EnVar.dll 预置到 `{project_out}/nsis/plugins/`。
     **路径基准**：tauri-cli 打包前 `set_current_dir(dirs.tauri)`（切到 src-tauri），故
     `template`/`fragmentPaths`/`nsis.template` 均相对 src-tauri 解析。
-19. **四可选组件契约**（booth CLI / booth MCP / booth Shell / Add to user PATH，默认全选）：
+21. **四可选组件契约**（booth CLI / booth MCP / booth Shell / Add to user PATH，默认全选）：
     PATH 写**用户级 HKCU**（perMachine 安装也写当前用户），卸载按原生机制清理
     （MSI `Environment` 表 `Action=set Part=last` / NSIS `EnVar::DeleteValue`），
     重装幂等不重复追加（NSIS 已实测）。改动须重新实测安装/卸载/重装。
