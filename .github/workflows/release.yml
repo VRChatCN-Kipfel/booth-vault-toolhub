@@ -89,7 +89,7 @@ jobs:
             portable: false
     runs-on: ${{ matrix.runs_on }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 解析 CI 运行 ID：workflow_run 直接用上游运行；workflow_dispatch 取所选分支上
       # 最近一次 CI push 运行，查不到则失败（与下载失败同等处理）。
@@ -110,7 +110,7 @@ jobs:
 
       # 下载 CI 构建的对应平台/架构 booth 二进制；缺失即失败，不产出残缺包
       - name: Download booth binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: booth-binaries-${{ matrix.platform }}-${{ matrix.arch }}
           path: binaries
@@ -129,7 +129,7 @@ jobs:
           components: rustfmt, clippy
           targets: ${{ matrix.rust_target }}
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -305,7 +305,7 @@ jobs:
       # 上传产物（带架构后缀；macOS 见下方 TODO）
       - name: Upload MSI installer
         if: matrix.msi
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: booth-vault-toolhub-packages-${{ matrix.platform }}-${{ matrix.arch }}-msi
           path: target/${{ matrix.rust_target }}/release/bundle/msi/**
@@ -313,7 +313,7 @@ jobs:
           retention-days: 30
       - name: Upload NSIS installer
         if: matrix.platform == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: booth-vault-toolhub-packages-${{ matrix.platform }}-${{ matrix.arch }}-nsis
           path: target/${{ matrix.rust_target }}/release/bundle/nsis/**
@@ -321,7 +321,7 @@ jobs:
           retention-days: 30
       - name: Upload Lite portable
         if: matrix.platform == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: booth-vault-toolhub-packages-${{ matrix.platform }}-${{ matrix.arch }}-lite
           path: dist/lite/**
@@ -329,7 +329,7 @@ jobs:
           retention-days: 30
       - name: Upload Full portable
         if: matrix.platform == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: booth-vault-toolhub-packages-${{ matrix.platform }}-${{ matrix.arch }}-full
           path: dist/full/**
@@ -338,7 +338,7 @@ jobs:
       # macOS：上传 dmg 安装包（unsigned，见 Build GUI bundle (macOS) 注释）
       - name: Upload dmg installer
         if: matrix.platform == 'macos'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: booth-vault-toolhub-packages-${{ matrix.platform }}-${{ matrix.arch }}-dmg
           path: target/${{ matrix.rust_target }}/release/bundle/dmg/**
@@ -357,7 +357,7 @@ jobs:
           fi
       - name: Upload release meta artifact
         if: matrix.platform == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-meta
           path: release-meta.txt
@@ -386,7 +386,7 @@ jobs:
           && startsWith(github.event.workflow_run.head_branch, 'v'))
     steps:
       - name: Download release metadata
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-meta
           path: meta
@@ -418,7 +418,7 @@ jobs:
           echo "should_release=$SHOULD_RELEASE" >> "$GITHUB_OUTPUT"
 
       - name: Download all packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: booth-vault-toolhub-packages-*
           merge-multiple: true
@@ -434,7 +434,7 @@ jobs:
       # 因 binaries 不存在而 exit 1，发布整体失败。workflow_run 触发时上游 run id 即
       # github.event.workflow_run.id（与 package job 的 ci-run 解析同源）。
       - name: Download booth binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: booth-binaries-*
           path: binaries
@@ -468,7 +468,7 @@ jobs:
 
       - name: Create GitHub Release
         if: steps.flags.outputs.should_release == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.flags.outputs.tag }}
           name: ${{ steps.flags.outputs.tag }}
