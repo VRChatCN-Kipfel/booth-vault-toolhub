@@ -175,6 +175,41 @@ struct LibraryRow {
     path: String,
 }
 
+// ── preview ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+struct PreviewParams {
+    /// 压缩包路径（zip / unitypackage，可多个）。
+    archive: Vec<String>,
+    /// 每个包最多列出多少条（默认 200，0 = 不限）。
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct PreviewResult {
+    command: String,
+    archives: Vec<ArchivePreviewRow>,
+    failures: Vec<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct ArchivePreviewRow {
+    path: String,
+    format: String,
+    total_entries: usize,
+    truncated: bool,
+    entries: Vec<EntryRow>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct EntryRow {
+    name: String,
+    size: u64,
+    compressed_size: Option<u64>,
+    method: String,
+}
+
 // ── update_check ───────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
@@ -576,6 +611,44 @@ impl BoothServer {
                     path: i.path.display().to_string(),
                 })
                 .collect(),
+        };
+        let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+        CallToolResult::success(vec![ContentBlock::text(text)])
+    }
+
+    /// 预览压缩包内条目（只读，不联网）。
+    #[tool(
+        description = "预览本地 zip / unitypackage 的条目清单（名称 / 大小 / 压缩后大小 / 压缩方法），只读不联网。用于确认包内容与商品是否对应，或核对归档文件是否完整。"
+    )]
+    async fn preview(&self, Parameters(params): Parameters<PreviewParams>) -> CallToolResult {
+        let limit = params.limit.unwrap_or(200);
+        let mut archives = Vec::new();
+        let mut failures = Vec::new();
+        for p in &params.archive {
+            match engine::integrity::preview_archive(std::path::Path::new(p), limit) {
+                Ok(pv) => archives.push(ArchivePreviewRow {
+                    path: pv.path.display().to_string(),
+                    format: pv.format,
+                    total_entries: pv.total_entries,
+                    truncated: pv.truncated,
+                    entries: pv
+                        .entries
+                        .into_iter()
+                        .map(|e| EntryRow {
+                            name: e.name,
+                            size: e.size,
+                            compressed_size: e.compressed_size,
+                            method: e.method,
+                        })
+                        .collect(),
+                }),
+                Err(e) => failures.push(format!("{p}: {e}")),
+            }
+        }
+        let result = PreviewResult {
+            command: "preview".to_string(),
+            archives,
+            failures,
         };
         let text = serde_json::to_string_pretty(&result).unwrap_or_default();
         CallToolResult::success(vec![ContentBlock::text(text)])

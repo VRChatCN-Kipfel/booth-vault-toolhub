@@ -130,6 +130,15 @@ enum Command {
         #[arg(long)]
         base: Option<PathBuf>,
     },
+    /// 预览压缩包内条目（zip / unitypackage），不联网。
+    Preview {
+        /// 压缩包路径。
+        #[arg(required = true)]
+        archive: Vec<PathBuf>,
+        /// 每个包最多列出多少条（0 = 不限）。
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand)]

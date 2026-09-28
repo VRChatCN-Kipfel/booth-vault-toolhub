@@ -98,24 +98,112 @@ pub fn target_folder(out_root: &Path, item: &ItemJson, item_id: &str) -> PathBuf
 /// 元组比较，`Ver_2.0` 与 `Ver_2.00` 视为同版本）则跳过；
 /// 否则目标文件名已存在且为有效文件（存在、非空、非 HTML 伪装）则跳过；
 /// 其余列为缺失。
-/// 目录内资源文件名提取的版本标记（跳过封面/图标/sidecar）。
+/// 目录内带版本号的资源文件：`(文件名, 版本号)`。
 ///
-/// 只采信通过 `is_locally_valid` 的文件：版本短路在 `missing_free_files` 里是
-/// **跨文件**判定（不同后缀也算同版本），若让半截包贡献版本号，"别处有同版本号 +
-/// 目标文件已损坏"会被判为已存在，完整性校验在那条分支上就够不着了。
-pub fn local_file_versions(dest_dir: &Path) -> Vec<String> {
+/// 本层只读文件名，是**零成本筛选**——用来快速判断「本地是否可能已有该版本」。
+/// 有效性判决不在这里：截断包长度非 0、魔数正常、非 HTML，四条廉价判据全过，
+/// 故"有版本号"不等于"文件有效"。真正的判决在 `LocalScan::missing_free_files`
+/// 的匹配分支里对候选文件做结构校验后作出。
+///
+/// sidecar 过滤前置（`cover.jpg` / `booth.txt` / `desktop.ini` 等），免得它们被
+/// 白做一次结构校验。
+fn local_file_entries(dest_dir: &Path) -> Vec<(String, String)> {
     let Ok(rd) = std::fs::read_dir(dest_dir) else {
         return Vec::new();
     };
     rd.filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.is_file())
-        .filter(|p| is_locally_valid(p))
-        .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
-        .filter(|n| !is_sidecar_name(n))
-        .map(|n| extract_version_tag(&n))
-        .filter(|v| !v.is_empty())
+        .filter_map(|e| {
+            let p = e.path();
+            if !p.is_file() {
+                return None;
+            }
+            let name = p.file_name()?.to_str()?.to_string();
+            if is_sidecar_name(&name) {
+                return None;
+            }
+            let ver = extract_version_tag(&name);
+            if ver.is_empty() {
+                return None;
+            }
+            Some((name, ver))
+        })
         .collect()
+}
+
+/// 目录本地文件快照：一次 `read_dir`，结构校验按需触发。
+///
+/// 巡检链（`version_audit`）每件商品原先要跑 3~4 次目录扫描，且每个 unitypackage
+/// 会被反复全量解压（实测 128 MiB 包约 948 ms/次，zip 同规模仅 13 ms）。本结构把
+/// 扫描收敛为一次，并把结构校验推迟到「版本号匹配、即将据此跳过下载」那一刻，
+/// 只对那一个候选文件做校验——库已最新时绝大多数文件根本不会进入校验。
+pub struct LocalScan {
+    dir: PathBuf,
+    entries: Vec<(String, String)>,
+}
+
+impl LocalScan {
+    pub fn scan(dest_dir: &Path) -> Self {
+        Self {
+            dir: dest_dir.to_path_buf(),
+            entries: local_file_entries(dest_dir),
+        }
+    }
+
+    /// 目录内**未经结构校验**的版本号列表。
+    pub fn versions(&self) -> Vec<String> {
+        self.entries.iter().map(|(_, v)| v.clone()).collect()
+    }
+
+    /// 目录内最新版本号（未经结构校验）。
+    pub fn latest(&self) -> String {
+        latest_version_tag(self.versions())
+    }
+
+    /// 是否存在**通过结构校验**且版本号匹配的资源文件。
+    fn has_valid_version(&self, ver: &str) -> bool {
+        self.entries
+            .iter()
+            .filter(|(_, v)| crate::version::ver_eq(v, ver))
+            .any(|(name, _)| is_locally_valid(&self.dir.join(name)))
+    }
+
+    /// 本地缺失的免费文件：`(url, filename)`。
+    ///
+    /// 判定：目标文件名已存在且为有效文件则跳过；否则若**别处**存在同版本且
+    /// 有效的资源文件（不同后缀也算同版本）则跳过；其余列为缺失。
+    pub fn missing_free_files(&self, item: &ItemJson) -> Vec<(String, String)> {
+        let mut missing = Vec::new();
+        for (url, fname) in free_downloads(item) {
+            let dest = self.dir.join(sanitize(&fname, 120));
+            if is_locally_valid(&dest) {
+                continue;
+            }
+            let remote_ver = extract_version_tag(&fname);
+            if !remote_ver.is_empty() && self.has_valid_version(&remote_ver) {
+                continue;
+            }
+            missing.push((url, fname));
+        }
+        missing
+    }
+
+    /// 是否应提示可更新：有远程免费文件，且本地缺文件或远程文件名版本更新。
+    pub fn free_updateable(&self, item: &ItemJson) -> bool {
+        if free_downloads(item).is_empty() {
+            return false;
+        }
+        if !self.missing_free_files(item).is_empty() {
+            return true;
+        }
+        crate::version::ver_gt(&remote_free_version_tag(item), &self.latest())
+    }
+}
+
+/// 目录内资源文件名提取的版本标记（跳过封面/图标/sidecar）。
+///
+/// 便于单次调用的包装；同轮多处判定请改用 `LocalScan` 以免重复扫描与重复校验。
+pub fn local_file_versions(dest_dir: &Path) -> Vec<String> {
+    LocalScan::scan(dest_dir).versions()
 }
 
 fn is_sidecar_name(name: &str) -> bool {
@@ -157,43 +245,19 @@ pub fn remote_free_version_tag(item: &ItemJson) -> String {
 
 /// 本地文件名的最新版本标记。
 pub fn local_file_version_tag(dest_dir: &Path) -> String {
-    latest_version_tag(local_file_versions(dest_dir))
+    LocalScan::scan(dest_dir).latest()
 }
 
 /// 是否应提示可更新：有远程免费文件，且本地缺文件或远程文件名版本更新。
+///
+/// 单次调用的包装；同轮多处判定请改用 `LocalScan`。
 pub fn free_updateable(dest_dir: &Path, item: &ItemJson) -> bool {
-    let remotes = free_downloads(item);
-    if remotes.is_empty() {
-        return false;
-    }
-    if !missing_free_files(dest_dir, item).is_empty() {
-        return true;
-    }
-    crate::version::ver_gt(
-        &remote_free_version_tag(item),
-        &local_file_version_tag(dest_dir),
-    )
+    LocalScan::scan(dest_dir).free_updateable(item)
 }
 
+/// 单次调用的包装；同轮多处判定请改用 `LocalScan`。
 pub fn missing_free_files(dest_dir: &Path, item: &ItemJson) -> Vec<(String, String)> {
-    let local_vers = local_file_versions(dest_dir);
-    let mut missing = Vec::new();
-    for (url, fname) in free_downloads(item) {
-        let dest = dest_dir.join(sanitize(&fname, 120));
-        let remote_ver = extract_version_tag(&fname);
-        if !remote_ver.is_empty()
-            && local_vers
-                .iter()
-                .any(|v| crate::version::ver_eq(v, &remote_ver))
-        {
-            continue;
-        }
-        if is_locally_valid(&dest) {
-            continue;
-        }
-        missing.push((url, fname));
-    }
-    missing
+    LocalScan::scan(dest_dir).missing_free_files(item)
 }
 
 /// 免费版本补全：下载 `dest_dir` 缺失的免费文件。

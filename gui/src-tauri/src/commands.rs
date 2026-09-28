@@ -1078,6 +1078,64 @@ pub async fn list_library(base: Option<String>) -> Result<Vec<LibraryRow>, Strin
     .map_err(|e| format!("扫描库存失败: {e}"))?
 }
 
+/// 打包预览载荷（供两个 preview 命令共用）。
+fn preview_payload(paths: &[std::path::PathBuf], limit: usize) -> serde_json::Value {
+    let mut archives = Vec::new();
+    let mut failures = Vec::new();
+    for p in paths {
+        match engine::integrity::preview_archive(p, limit) {
+            Ok(pv) => archives.push(serde_json::json!({
+                "path": pv.path.display().to_string(),
+                "name": pv.path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                "format": pv.format,
+                "totalEntries": pv.total_entries,
+                "truncated": pv.truncated,
+                "entries": pv.entries.iter().map(|e| serde_json::json!({
+                    "name": e.name,
+                    "size": e.size,
+                    "compressedSize": e.compressed_size,
+                    "method": e.method,
+                })).collect::<Vec<_>>(),
+            })),
+            Err(e) => failures.push(format!("{}: {e}", p.display())),
+        }
+    }
+    serde_json::json!({ "archives": archives, "failures": failures })
+}
+
+/// 预览指定压缩包的条目（只读，不联网）。
+#[tauri::command]
+pub fn preview_archives(
+    paths: Vec<String>,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let limit = limit.unwrap_or(engine::integrity::PREVIEW_LIMIT);
+    let paths: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+    Ok(preview_payload(&paths, limit))
+}
+
+/// 预览某个商品目录内所有压缩包的条目（只读，不联网）。
+///
+/// 目录里的包按名字排序，只取 `is_checkable` 认得的格式；其余文件不出现在结果里。
+#[tauri::command]
+pub fn preview_dir(dir: String, limit: Option<usize>) -> Result<serde_json::Value, String> {
+    let dir = std::path::PathBuf::from(dir);
+    if !dir.is_dir() {
+        return Err(format!("目录不存在：{}", dir.display()));
+    }
+    let limit = limit.unwrap_or(engine::integrity::PREVIEW_LIMIT);
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("读取目录失败：{e}"))?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && engine::integrity::is_checkable(p))
+        .collect();
+    paths.sort();
+    Ok(preview_payload(&paths, limit))
+}
+
 /// backfill_free：对指定商品目录补免费文件。
 #[tauri::command]
 pub fn backfill_free(

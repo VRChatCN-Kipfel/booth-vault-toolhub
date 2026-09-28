@@ -107,7 +107,18 @@ pub fn download(
     {
         return Err(fail(&tmp, keep, cookie_required_msg()));
     }
-    // 4) 原子落盘。
+    // 4) 结构校验：传输成功不等于内容完整（半截包魔数正常、长度非 0，HTML 检查过不了它）。
+    //    不在此拦下的话坏包会静默落地，直到下一轮 `is_locally_valid` 才发现要重下，
+    //    届时 `.part` 早已不存在，`keep_failed` 也够不着——开关会名不副实。
+    //    只对可解析格式生效；rar/7z 判为无法判定，不拦（宁可漏报，不可误报）。
+    if crate::integrity::package_health_of(&tmp, dest) == crate::integrity::PackageHealth::Corrupt {
+        return Err(fail(
+            &tmp,
+            keep,
+            format!("下载内容损坏，未落盘：{}", dest.display()),
+        ));
+    }
+    // 5) 原子落盘。
     if let Err(e) = std::fs::rename(&tmp, dest) {
         return Err(fail(&tmp, keep, format!("rename {tmp:?} -> {dest:?}: {e}")));
     }
@@ -285,9 +296,8 @@ mod tests {
         }
     }
 
-    /// 本地 HTTP 服务，若干次回固定 HTML（模拟 BOOTH 未登录时的登录页伪装）。
-    /// 用本地回环而非外网，测试不依赖网络可用性。
-    fn serve_html(times: usize) -> String {
+    /// 本地 HTTP 服务，若干次回固定字节。用回环而非外网，不依赖网络可用性。
+    fn serve_bytes(times: usize, body: Vec<u8>) -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -298,16 +308,66 @@ mod tests {
                 };
                 let mut buf = [0u8; 2048];
                 let _ = s.read(&mut buf);
-                let body = "<!doctype html><html><body>login</body></html>";
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\
-                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                let mut resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
-                );
-                let _ = s.write_all(resp.as_bytes());
+                )
+                .into_bytes();
+                resp.extend_from_slice(&body);
+                let _ = s.write_all(&resp);
             }
         });
         format!("http://127.0.0.1:{port}/x.zip")
+    }
+
+    /// 模拟 BOOTH 未登录时返回的登录页伪装。
+    fn serve_html(times: usize) -> String {
+        serve_bytes(
+            times,
+            b"<!doctype html><html><body>login</body></html>".to_vec(),
+        )
+    }
+
+    fn zip_bytes() -> Vec<u8> {
+        use std::io::Write;
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut buf);
+            let o = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            w.start_file("a.txt", o).unwrap();
+            w.write_all(b"hello").unwrap();
+            w.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    /// 传输成功但结构损坏：必须在落盘前拦下。否则坏包静默落地，直到下一轮
+    /// `is_locally_valid` 才发现要重下，而那时 `.part` 已不在，留痕开关够不着。
+    #[test]
+    fn corrupt_payload_is_rejected_before_rename() {
+        let dir = tmpdir("corrupt");
+        let dest = dir.join("x.zip");
+        let full = zip_bytes();
+        let url = serve_bytes(4, full[..full.len() - 1].to_vec());
+        let err = download(&client(), &url, &dest, opts(false)).unwrap_err();
+        assert!(err.contains("损坏"), "{err}");
+        assert!(!dest.exists(), "损坏内容不得落盘");
+        assert!(!part_path(&dest).exists(), "默认应清理临时文件");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 对照组：完整包正常落盘且不留 `.part`。
+    #[test]
+    fn intact_payload_lands() {
+        let dir = tmpdir("intact");
+        let dest = dir.join("y.zip");
+        let url = serve_bytes(4, zip_bytes());
+        download(&client(), &url, &dest, opts(false)).unwrap();
+        assert!(dest.exists());
+        assert!(!part_path(&dest).exists(), "落盘后不应留 .part");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

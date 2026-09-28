@@ -10,9 +10,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::clean::extract_version_tag;
-use crate::organize::{
-    free_updateable, local_file_version_tag, missing_free_files, remote_free_version_tag,
-};
+use crate::organize::{LocalScan, remote_free_version_tag};
 use crate::version;
 
 /// HIDDEN 属性位。
@@ -506,10 +504,13 @@ where
                 continue;
             }
         };
-        let local = local_file_version_tag(&d.path);
+        // 同一目录只扫一次：三个判定原先各扫一遍（free_updateable 内部又扫两遍），
+        // 每件商品要跑 3~4 次目录遍历并对每个 unitypackage 重复全量解压。
+        let scan = LocalScan::scan(&d.path);
+        let local = scan.latest();
         let official = remote_free_version_tag(&item);
-        let missing = missing_free_files(&d.path, &item).len();
-        let updateable = free_updateable(&d.path, &item);
+        let missing = scan.missing_free_files(&item).len();
+        let updateable = scan.free_updateable(&item);
         if !progress(VersionEvent::Compared {
             dir: &d,
             local: &local,

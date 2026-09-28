@@ -82,6 +82,7 @@ pub fn run(cli: Cli) -> u8 {
             cli.json,
         ),
         Command::Library { base } => cmd_library(&config, base.as_deref(), cli.json),
+        Command::Preview { archive, limit } => cmd_preview(&archive, limit, cli.json),
         Command::Shell { command } => cmd_shell(command),
         Command::UpdateCheck { proxy } => cmd_update_check(proxy, cli.json),
     }
@@ -817,6 +818,54 @@ fn cmd_library(config: &AppConfig, base: Option<&Path>, json: bool) -> u8 {
 }
 
 /// update_check 命令（检查工具自更新）。
+/// preview 命令：列出压缩包内条目（不联网）。
+fn cmd_preview(archives: &[std::path::PathBuf], limit: usize, json: bool) -> u8 {
+    let mut reports = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+    for path in archives {
+        match engine::integrity::preview_archive(path, limit) {
+            Ok(pv) => reports.push(pv),
+            Err(e) => failures.push(format!("{}: {e}", path.display())),
+        }
+    }
+    if json {
+        let payload = serde_json::json!({
+            "command": "preview",
+            "archives": reports.iter().map(|p| serde_json::json!({
+                "path": p.path.display().to_string(),
+                "format": p.format,
+                "total_entries": p.total_entries,
+                "truncated": p.truncated,
+                "entries": p.entries.iter().map(|e| serde_json::json!({
+                    "name": e.name,
+                    "size": e.size,
+                    "compressed_size": e.compressed_size,
+                    "method": e.method,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+            "failures": failures,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+    } else {
+        for p in &reports {
+            println!("{} [{}] {} 条", p.path.display(), p.format, p.total_entries);
+            for e in &p.entries {
+                match e.compressed_size {
+                    Some(c) => println!("   {:>10} {:>10}  {}", e.size, c, e.name),
+                    None => println!("   {:>10} {:>10}  {}", e.size, "-", e.name),
+                }
+            }
+            if p.truncated {
+                println!("   … 已截断，仅列前 {} 条", p.entries.len());
+            }
+        }
+        for f in &failures {
+            println!("   ! {f}");
+        }
+    }
+    if failures.is_empty() { 0 } else { 1 }
+}
+
 fn cmd_update_check(use_proxy: bool, json: bool) -> u8 {
     let info = engine::update::check_update(use_proxy);
     if json {
