@@ -572,6 +572,14 @@ pub fn list_library(root: &Path) -> Vec<LibraryItem> {
 struct CachedItem {
     id: String,
     name: String,
+    /// 磁盘上的**真实目录名**。
+    ///
+    /// 不可由 `id` + `name` 反推：`ID_DIR_RE` 的分隔符类是 `[\s_\-－　ー]+`
+    /// （全角空格、全角连字符、日文长音，且可重复），真实目录可能是 `1234567-Dress`、
+    /// `2345678　Hair`、`4567890ーーFoo`。按 `{id}_{name}` 拼出来的路径会指向
+    /// 不存在的目录，而 CLI 的 `path`、MCP 的 `LibraryRow.path`、GUI 的
+    /// `preview_dir` / `revealItemInDir` 都直接拿它去访问磁盘。
+    dir: String,
 }
 
 /// 单个分类目录的缓存。
@@ -601,38 +609,82 @@ fn dir_mtime_ns(p: &Path) -> Option<u64> {
         .map(|d| d.as_nanos() as u64)
 }
 
-/// 扫一层分类目录取出其中的 ID 目录。
+/// 递归收集 `root` 下的商品目录，按「所属分类目录」分组。
 ///
-/// 只读目录名：id 与名称都从名字解析、分类来自父目录名，**不做任何文件级 stat**。
-/// 原路径经 `scan_library` 时每个商品目录要查封面/图标/ini 三次 `exists`——
-/// 列库存根本用不到，916 目录下即约 2700 次无谓系统调用。
+/// 结果集必须与 `scan_library` 一致（差分测试 `cached_matches_scan_library` 守着），
+/// 因此三处语义不可省：
 ///
-/// 用 `DirEntry::file_type()` 而非 `path.is_dir()`：Windows 的 readdir 已带回类型，
-/// 后者会额外触发一次 stat。
-fn scan_category(cat_path: &Path) -> Vec<CachedItem> {
-    let Ok(rd) = std::fs::read_dir(cat_path) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in rd.filter_map(Result::ok) {
-        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+/// - **`path.is_dir()`，不用 `DirEntry::file_type()`**：后者不跟随重解析点，
+///   实测对 Windows junction 返回 `is_dir=false, is_symlink=true`。把另一块盘的库
+///   junction 进来是常见用法，用 `file_type()` 会让这类库显示 0 件。
+/// - **递归任意深度**：`scan_library` 的契约是「递归扫描 root 下所有 ID 目录」，
+///   类目取 ID 目录的父目录名——父目录未必是 root 的一级子目录。只扫两层会让
+///   `root/分类/子分类/1234567_名` 整条消失，而 `audit` / `version_audit` 仍走
+///   `scan_library`，于是同一套 GUI 里「巡检列得出、库存列不出」。
+/// - **`is_hidden` 过滤**：带 Windows 隐藏属性的商品目录不得列出。
+///
+/// 相对 `scan_library` 省掉的是它给每个商品目录做的三次 `exists`（封面/图标/ini）
+/// 与按文件名的版本解析——那两项与 `LibraryItem` 无关，才是本次提速的来源。
+fn walk_library_dirs(root: &Path) -> BTreeMap<PathBuf, Vec<CachedItem>> {
+    let mut out: BTreeMap<PathBuf, Vec<CachedItem>> = BTreeMap::new();
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        if let Ok(Some(caps)) = ID_RE
-            .get_or_init(|| Regex::new(ID_DIR_RE).expect("valid regex"))
-            .captures(&name)
-            && let (Some(id), Some(nm)) = (caps.get(1), caps.get(2))
-        {
-            out.push(CachedItem {
-                id: id.as_str().to_string(),
-                name: nm.as_str().to_string(),
-            });
+        for entry in entries.filter_map(Result::ok) {
+            // `file_type()` 的信息 readdir 已带回，零额外系统调用；只有 symlink /
+            // junction 需要回退到 `path.is_dir()` 确认（`file_type` 对 junction
+            // 返回 `is_symlink` 而非 `is_dir`）。
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            let is_dir = if ft.is_dir() {
+                true
+            } else if ft.is_symlink() {
+                entry.path().is_dir()
+            } else {
+                false
+            };
+            if !is_dir {
+                continue;
+            }
+            let path = entry.path();
+            if is_hidden(&path) {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if let Ok(Some(caps)) = ID_RE
+                .get_or_init(|| Regex::new(ID_DIR_RE).expect("valid regex"))
+                .captures(&name)
+                && let (Some(id), Some(nm)) = (caps.get(1), caps.get(2))
+            {
+                let cat = path.parent().unwrap_or(root).to_path_buf();
+                out.entry(cat).or_default().push(CachedItem {
+                    id: id.as_str().to_string(),
+                    name: nm.as_str().to_string(),
+                    dir: name.clone(),
+                });
+            }
+            // 只有 symlink / junction 才需要 canonicalize 判重（防环路）：普通目录
+            // 的路径本身唯一，而对每个目录都做 canonicalize 在 Windows 上是一次
+            // 额外的 CreateFile 查询——库里有几千个目录时这笔开销很可观。
+            if ft.is_symlink()
+                && let Ok(canonical) = path.canonicalize()
+                && !visited.insert(canonical)
+            {
+                continue;
+            }
+            // 匹配后仍继续深入：`walk_dirs` 对 ID 目录同样递归（支持嵌套商品目录）。
+            stack.push(path);
         }
     }
-    out.sort_by(|a, b| a.id.cmp(&b.id));
+    for items in out.values_mut() {
+        items.sort_by(|a, b| a.id.cmp(&b.id));
+    }
     out
 }
 
@@ -678,51 +730,67 @@ pub fn list_library_cached(
     };
     index.root = root_key;
 
+    let scanned = walk_library_dirs(root);
     let mut out = Vec::new();
-    let mut next = BTreeMap::new();
-    let Ok(rd) = std::fs::read_dir(root) else {
-        return out;
-    };
-    for entry in rd.filter_map(Result::ok) {
-        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let cat_path = entry.path();
-        let Some(cat_name) = cat_path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if is_hidden(&cat_path) {
-            continue;
-        }
+    let mut next: BTreeMap<String, CachedCategory> = BTreeMap::new();
+    for (cat_path, scanned_items) in scanned {
         let Some(mtime_ns) = dir_mtime_ns(&cat_path) else {
             continue;
         };
-        let items = match index.categories.get(cat_name) {
+        // 键取**相对路径**而非分类名：递归后同名子分类（如两个分类下都有「子分类」）
+        // 会互相覆盖，丢失其中一支。
+        let key = cat_path
+            .strip_prefix(root)
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| cat_path.to_string_lossy().to_string());
+        let items = match index.categories.get(&key) {
             Some(c) if c.mtime_ns == mtime_ns => c.items.clone(),
-            _ => scan_category(&cat_path),
+            _ => scanned_items,
         };
+        let cat_name = cat_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
         for it in &items {
             out.push(LibraryItem {
                 id: it.id.clone(),
                 name: it.name.clone(),
-                path: cat_path.join(format!("{}_{}", it.id, it.name)),
-                category: cat_name.to_string(),
+                path: cat_path.join(&it.dir),
+                category: cat_name.clone(),
             });
         }
-        next.insert(cat_name.to_string(), CachedCategory { mtime_ns, items });
+        next.insert(key, CachedCategory { mtime_ns, items });
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
 
     index.categories = next;
-    if let Some(p) = cache_file {
-        if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(s) = serde_json::to_string(&index) {
-            let _ = std::fs::write(p, s);
-        }
-    }
+    write_index_atomic(cache_file, &index);
     out
+}
+
+/// 原子写索引：`std::fs::write` 先截断再写，并发读者（GUI 的启动预热线程、
+/// 另一个 CLI 进程）可能读到半截 JSON。解析失败会被 `.ok()` 吞掉、退化成全扫，
+/// 自愈但没必要冒这个险——同卷 rename 是原子的。
+fn write_index_atomic(path: Option<&Path>, index: &LibraryIndex) {
+    let Some(p) = path else {
+        return;
+    };
+    let Ok(s) = serde_json::to_string(index) else {
+        return;
+    };
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = p.with_extension("json.tmp");
+    if std::fs::write(&tmp, &s).is_err() {
+        return;
+    }
+    if std::fs::rename(&tmp, p).is_err() {
+        // rename 失败（跨卷等）退化为普通写：宁可缓存偶尔被读坏，也不要静默丢失。
+        let _ = std::fs::write(p, s);
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 /// 错位检测结果：目录所在分类与官方分类不一致的商品。
@@ -1045,11 +1113,65 @@ mod tests {
         v["categories"]["3D服饰"]["items"]
             .as_array_mut()
             .unwrap()
-            .push(serde_json::json!({ "id": "9999999", "name": "Ghost" }));
+            .push(serde_json::json!({ "id": "9999999", "name": "Ghost", "dir": "9999999_Ghost" }));
         std::fs::write(&cache, serde_json::to_string(&v).unwrap()).unwrap();
 
         let out = list_library_cached(&base, Some(&cache), false);
         assert!(out.iter().any(|i| i.id == "9999999"), "应采信缓存");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 形态齐全的库：覆盖会被「只扫 `{id}_{name}` 两层」吞掉的三种情形——
+    /// 非下划线分隔符、嵌套商品目录、点前缀隐藏目录。
+    fn make_realistic_lib(root: &Path) {
+        // 分隔符各异：ID_DIR_RE 允许全角空格 / 全角连字符 / 日文长音，且可重复。
+        // 只要按 `{id}_{name}` 反推目录名，这三条的路径就全部指向不存在的位置。
+        std::fs::create_dir_all(root.join("3D服饰").join("1234567-Dress")).unwrap();
+        std::fs::create_dir_all(root.join("3D服饰").join("2345678　Hair")).unwrap();
+        std::fs::create_dir_all(root.join("3D服饰").join("4567890ーーFoo")).unwrap();
+        // 嵌套：类目取 ID 目录的父目录名，此处是「子分类」而非 root 的一级子目录。
+        std::fs::create_dir_all(root.join("3D服饰").join("子分类").join("5678901_Nested")).unwrap();
+        std::fs::create_dir_all(root.join("3D工具").join("6789012_Tool")).unwrap();
+        // 点前缀隐藏目录不得列出（Windows 隐藏属性同理，但测试里不好造）。
+        std::fs::create_dir_all(root.join(".hidden").join("1111111_Ghost")).unwrap();
+    }
+
+    /// 差分：`list_library_cached` 的结果集必须与 `list_library` 完全一致。
+    ///
+    /// 换遍历实现只为提速，对外契约没变——这是防止「为了快而悄悄少列几条」的唯一
+    /// 屏障。现有测试全用 `make_lib` 造 `{id}_{name}` 两层目录，上面三种形态一个都
+    /// 盖不住，所以单独造一个形态齐全的库来对拍。
+    #[test]
+    fn cached_matches_scan_library() {
+        let base = tmpdir("lib-diff");
+        make_realistic_lib(&base);
+        let cache = base.join("idx.json");
+
+        let expected = list_library(&base);
+        let got = list_library_cached(&base, Some(&cache), false);
+        // 第二次命中索引，结果不得与首次不同（缓存不得引入偏差）。
+        let got_cached = list_library_cached(&base, Some(&cache), false);
+
+        assert_eq!(
+            got.len(),
+            expected.len(),
+            "条目数不一致\n期望 {expected:?}\n实际 {got:?}"
+        );
+        for (a, b) in got.iter().zip(expected.iter()) {
+            assert_eq!(a.id, b.id);
+            assert_eq!(a.name, b.name);
+            assert_eq!(a.category, b.category);
+            assert_eq!(a.path, b.path);
+            // 路径必须真实存在：CLI 的 `path`、MCP 的 `LibraryRow.path`、GUI 的
+            // `preview_dir` / `revealItemInDir` 都直接拿它去访问磁盘。
+            assert!(a.path.is_dir(), "路径不存在：{}", a.path.display());
+        }
+        assert_eq!(got_cached, got, "命中索引后结果发生了变化");
+        assert!(!got.iter().any(|i| i.id == "1111111"), "隐藏目录不得列出");
+        assert!(
+            got.iter().any(|i| i.id == "5678901"),
+            "嵌套商品目录不得丢失"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -1081,7 +1203,7 @@ mod tests {
         v["categories"]["3D服饰"]["items"]
             .as_array_mut()
             .unwrap()
-            .push(serde_json::json!({ "id": "9999999", "name": "Ghost" }));
+            .push(serde_json::json!({ "id": "9999999", "name": "Ghost", "dir": "9999999_Ghost" }));
         std::fs::write(&cache, serde_json::to_string(&v).unwrap()).unwrap();
 
         let out = list_library_cached(&base, Some(&cache), true);

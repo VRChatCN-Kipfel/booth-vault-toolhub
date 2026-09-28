@@ -99,8 +99,11 @@ cd gui && npm run tauri dev # GUI 开发
 - 自更新检查（`update_check`）多通道契约：**Atom feed（`releases.atom`）为主**（无 API 配额限流，成熟库 feed-rs 解析），HTML 重定向 + API 作兜底。所有通道显式超时（20s），防单入口挂起；代理/直连 client 去重（`use_proxy=false` 时只发一次）。失败区分「网络不可达」与「仓库无 Release」两种 error 文案。内置 gh-proxy 类镜像（`MIRRORS`）**仅用于下载阶段**，查版本阶段不发起镜像请求（实测镜像对 feed 全 403）。
 - **下载失败留痕**：任何失败（传输 / 假 HTML / 结构损坏 / rename）统一走 `download::fail` —— 默认清理 `{dest}.part` 并上报；仅当 `keep_failed_downloads` 开启（配置项 / CLI `--keep-failed` / MCP `keep_failed` / 设置页）才保留，错误串附绝对路径。**保留件不产生续传能力**（两条下载路径都是 `File::create` 从头写，重试即截断重来），价值仅在于取证；全仓无自动回收，长期开启会持续占用空间。
 - **落盘前须过结构校验**：`rename` 前对 `.part` 跑 `integrity::package_health_of`（按目标扩展名分派，因为扩展名在目标名上、内容还在临时文件里），损坏即走 `fail()` 不落盘。否则坏包会静默落地，直到下一轮 `is_locally_valid` 才发现要重下——届时 `.part` 已不在，留痕开关够不着。
-- **库存列表走持久化索引**：`audit::list_library_cached` 以**分类目录的 `mtime_ns`** 为变更指纹（与 Score Studio 以 `size_mtime_ns` 作文件指纹同构，粒度到目录），未变的分类直接复用缓存条目，于是稳态下只需 ~25 次 `stat` 而非逐商品扫一遍。
-    - 列库存**不得做三件套 stat**：id/名称都从目录名解析、分类取自父目录名，封面/图标/ini 的存在性与结果无关（实测 916 目录下那 2700 次无谓调用占总耗时的 97%）。遍历用 `DirEntry::file_type()` 而非 `path.is_dir()`，后者在 Windows 上会多一次 stat。
+- **库存列表走持久化索引**：`audit::list_library_cached` 以**分类目录的 `mtime_ns`** 为变更指纹（与 Score Studio 以 `size_mtime_ns` 作文件指纹同构，粒度到目录），未变的分类直接复用缓存条目。
+    - **结果集必须与 `scan_library` 一致**（差分测试 `cached_matches_scan_library` 守着）。以下三处语义**不可为提速而省略**——省掉任何一处都是静默少列，且不报错：递归（丢了会让嵌套商品目录整条消失，而 `audit` / `version_audit` 仍列得出）、`path.is_dir()`（`DirEntry::file_type()` 不跟随重解析点，实测对 Windows junction 返回 `is_dir=false`，把另一块盘的库 junction 进来时该库显示 0 件）、`is_hidden`（否则带隐藏属性的商品目录会被列出）。
+    - 提速来源是**不做与结果无关的工作**：三件套 `exists`（封面/图标/ini）与 `extract_version_tag`。后者原先每次调用都重编译两遍 `fancy_regex`，实测占 `scan_library` 耗时约 80%，现提进 `OnceLock`（收益同时覆盖 `audit` / `version_audit` / GUI 巡检）。**不得反过来省掉 `is_dir` / 递归 / `is_hidden`**——那三样决定结果集。
+    - 索引条目必须存**真实目录名**（`CachedItem.dir`）：`ID_DIR_RE` 的分隔符类含全角空格、全角连字符、日文长音且可重复，按 `{id}_{name}` 拼出的路径会指向不存在的目录，而 CLI / MCP / GUI 都直接拿它访问磁盘。缺该字段的旧索引会被判为不可解析而整体丢弃（退化成全扫），这是刻意的不兼容。
+    - 索引写盘走 temp + rename（`write_index_atomic`）：直接 `std::fs::write` 会先截断，并发读者（GUI 的启动预热线程、另一个 CLI）可能读到半截 JSON。
     - 索引落在**用户配置目录**（`config::library_cache_path()`），**不得写进 BOOTH 库**——库是只读资产。
     - 已知边界：分类目录**内部**的深层变化不改变该目录 mtime，不会被自动察觉；`force` / `--refresh` 为兜底。换库根时按缓存里的 `root` 字段判定不复用。
 

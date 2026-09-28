@@ -84,16 +84,23 @@ const BARE_VERSION_RE: &str = r"[_\-\s](\d+\.\d+(?:\.\d+)*)\s*$";
 /// 整理名必须保留版本号（如 `メカ弾エフェクトVer_2.00` → 带 `Ver_2.00`），
 /// 否则同一商品的不同版本会被合并覆盖。
 pub fn extract_version_tag(filename: &str) -> String {
+    // 两条正则必须缓存：本函数对**每个文件名**调用一次，原先每次都重新编译两遍
+    // fancy_regex —— 实测 920 个商品目录上占 `scan_library` 耗时约 80%（1788ms /
+    // 2245ms），而调用方 `list_library` 根本用不到版本字段。同文件 `split_camel`
+    // 早已是 OnceLock 写法，这里补上即可，收益同时覆盖 `audit` / `version_audit`
+    // / GUI 巡检（它们每次都要先白烧这一笔）。
+    static VERSION: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static BARE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let stem = basename_stem(filename);
-    if let Ok(Some(caps)) = Regex::new(&format!("(?i){VERSION_RE}"))
-        .expect("valid regex")
+    if let Ok(Some(caps)) = VERSION
+        .get_or_init(|| Regex::new(&format!("(?i){VERSION_RE}")).expect("valid regex"))
         .captures(stem)
         && let Some(g) = caps.get(1)
     {
         return format!("Ver_{}", g.as_str());
     }
-    if let Ok(Some(caps)) = Regex::new(BARE_VERSION_RE)
-        .expect("valid regex")
+    if let Ok(Some(caps)) = BARE
+        .get_or_init(|| Regex::new(BARE_VERSION_RE).expect("valid regex"))
         .captures(stem)
         && let Some(g) = caps.get(1)
     {
