@@ -42,6 +42,30 @@ const ANALYTICS_PREFIXES: [&str; 8] = [
     "_clsk",
 ];
 
+/// 明显是 HTTP 请求头、而非 cookie 的名字。
+///
+/// 用户实操里常把 DevTools 的 Request Headers **整块**复制过来，块里混着
+/// `accept` / `referer` / `sec-ch-ua` 等；万一 `cookie:` 行没被识别到，
+/// 这一层兜底，避免把它们注入成 cookie。这些名字不会与业务 cookie 重名。
+///
+/// 注：HTTP/2 伪头（`:authority` / `:method` …）以冒号开头，键名解析后为空，
+/// 在更早一步就被丢弃，无需在此列出。
+const HTTP_HEADER_NAMES: &[&str] = &[
+    "accept",
+    "cache-control",
+    "connection",
+    "content-",
+    "dnt",
+    "host",
+    "origin",
+    "pragma",
+    "priority",
+    "referer",
+    "sec-",
+    "user-agent",
+    "x-requested-with",
+];
+
 /// 构建 blocking Client。
 ///
 /// `cookie`: 'k=v; k2=v2' 串 / Netscape cookies.txt 路径 / 存原始 Cookie 串的文本文件路径。
@@ -105,31 +129,40 @@ impl SanitizedCookie {
     }
 }
 
-/// 是否分析类 cookie（会话项永远不算）。
-fn is_analytics(key: &str) -> bool {
+/// 是否与 BOOTH 登录无关：分析类 cookie，或整块 Headers 粘贴时混入的 HTTP 头名。
+/// 会话项永远不算无关。
+fn is_irrelevant(key: &str) -> bool {
     if key.eq_ignore_ascii_case(SESSION_COOKIE) {
         return false;
     }
     let k = key.to_ascii_lowercase();
-    ANALYTICS_PREFIXES.iter().any(|p| k.starts_with(p))
+    ANALYTICS_PREFIXES
+        .iter()
+        .chain(HTTP_HEADER_NAMES.iter())
+        .any(|p| k.starts_with(p))
 }
 
 /// 把用户粘贴的各种形态归一成 `k=v` 列表。
 ///
 /// 自动识别的粘贴形态（无需用户调整）：
-/// - `k=v; k2=v2`（DevTools → Application → Cookies 手工拼、扩展导出）
-/// - `Cookie: k=v; k2=v2`（请求头整行）
+/// - **DevTools 表格整块复制**（Application → Cookies，制表符分隔）
+/// - `k=v; k2=v2` 串
+/// - `Cookie: k=v; k2=v2`（请求头整行，含嵌在整块 Headers 里的那一行）
 /// - cURL 命令（`-H 'cookie: …'` / `--header` / `-b` / `--cookie`）
 /// - 多行文本（每行 `k=v` 或 `k: v`）
 ///
-/// 同时剔除分析类 cookie（见 `ANALYTICS_PREFIXES`）。**保底**：若剔除后
-/// 一条不剩，则原样保留——宁可多带几条，也不能把用户的 cookie 清空。
+/// 同时剔除无关项（见 `is_irrelevant`）。**保底**：若剔除后一条不剩，
+/// 则原样保留——宁可多带几条，也不能把用户的 cookie 清空。
 pub fn sanitize_cookie(raw: &str) -> SanitizedCookie {
     let payload = extract_cookie_payload(raw);
+    // DevTools 表格形态的列序与字符串形态完全不同，必须单独解析，
+    // 不能落到下面的 `=` / `:` 切分逻辑上（否则一条都进不去）。
+    if let Some(rows) = parse_tabular_rows(&payload) {
+        return finalize(rows);
+    }
     let mut all: Vec<(String, String)> = Vec::new();
-    let mut duplicates = 0usize;
     for seg in payload.split([';', '\n', '\r']) {
-        let seg = seg.trim().trim_matches(|c| c == '"' || c == '\'').trim();
+        let seg = seg.trim().trim_matches(['"', '\'']).trim();
         if seg.is_empty() {
             continue;
         }
@@ -141,21 +174,30 @@ pub fn sanitize_cookie(raw: &str) -> SanitizedCookie {
                 None => continue,
             },
         };
+        all.push((k.to_string(), v.to_string()));
+    }
+    finalize(all)
+}
+
+/// 归一收尾：去重（同名保留后者）→ 剔除无关项 → 保底。
+fn finalize(rows: Vec<(String, String)>) -> SanitizedCookie {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut duplicates = 0usize;
+    for (k, v) in rows {
         if k.is_empty() || k.contains(char::is_whitespace) {
             continue;
         }
-        if let Some(pos) = all.iter().position(|(k2, _)| k2.eq_ignore_ascii_case(k)) {
-            all[pos] = (k.to_string(), v.to_string());
+        if let Some(pos) = pairs.iter().position(|(k2, _)| k2.eq_ignore_ascii_case(&k)) {
+            pairs[pos] = (k, v);
             duplicates += 1;
             continue;
         }
-        all.push((k.to_string(), v.to_string()));
+        pairs.push((k, v));
     }
-
     let (mut keep, mut dropped): (Vec<_>, Vec<_>) =
-        all.into_iter().partition(|(k, _)| !is_analytics(k));
+        pairs.into_iter().partition(|(k, _)| !is_irrelevant(k));
     if keep.is_empty() {
-        // 全是分析类 → 保底放行，不退化成空 cookie
+        // 全是无关项 → 保底放行，不退化成空 cookie（swap 后 dropped 自然为空）
         std::mem::swap(&mut keep, &mut dropped);
     }
     SanitizedCookie {
@@ -165,10 +207,37 @@ pub fn sanitize_cookie(raw: &str) -> SanitizedCookie {
     }
 }
 
+/// 解析 DevTools → Application → Cookies 表格的复制结果（制表符分隔）。
+///
+/// 列序：`Name · Value · Domain · Path · Expires · Size · HttpOnly · Secure · SameSite …`
+/// 与 Netscape cookies.txt **不同**（后者是 `domain · flag · path · secure · expires · name · value`），
+/// 两者的 name/value 列号完全不同，不能共用索引。
+///
+/// 判据：制表符分隔 ≥4 列，且**第 3 列**（domain）含 `booth`。
+/// 不满足即返回 `None`，交回字符串形态处理。
+fn parse_tabular_rows(text: &str) -> Option<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() < 4 {
+            continue;
+        }
+        let (name, value, domain) = (parts[0].trim(), parts[1].trim(), parts[2].trim());
+        if name.is_empty() || !domain.contains("booth") {
+            continue;
+        }
+        out.push((name.to_string(), value.to_string()));
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
 /// 从整段文本里取出真正的 cookie 载荷。
 fn extract_cookie_payload(raw: &str) -> String {
     let trimmed = raw.trim();
-    // cURL 命令（DevTools「Copy as cURL」）：以 `curl` 开头即按命令行解析。
+    // 1) cURL 命令（DevTools「Copy as cURL」）：以 `curl` 开头即按命令行解析。
     // 判据只看开头，不能要求含 "cookie" 字样——`curl -b '…'` 形态里没有该词。
     if trimmed
         .get(..4)
@@ -177,11 +246,31 @@ fn extract_cookie_payload(raw: &str) -> String {
     {
         return v;
     }
-    // 整行请求头 `Cookie: …`（ASCII 前缀，可用长度差切回原文）
+    // 2) 优先定位 `cookie:` 行。用户实操形态是 Network → 某请求 → Headers 面板
+    //    **整块复制**，块里还混着 `:authority`/`accept`/`referer` 等——只认这一行。
+    //    没有这一步，`cookie: xxx` 的标签会混进键名（含空格被丢弃），
+    //    结果反倒把真正的会话 cookie 弄丢、留下满屏 HTTP 头名。
+    if let Some(v) = grab_cookie_header_line(trimmed) {
+        return v;
+    }
+    // 3) 整行 `Cookie: …`（单行、无换行）
     if let Some(rest) = trimmed.to_ascii_lowercase().strip_prefix("cookie:") {
         return trimmed[trimmed.len() - rest.len()..].to_string();
     }
     trimmed.to_string()
+}
+
+/// 在多行文本中定位 `cookie:` 行并取其值（大小写不敏感）。
+fn grab_cookie_header_line(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let l = line.trim();
+        if l.get(..7)
+            .is_some_and(|p| p.eq_ignore_ascii_case("cookie:"))
+        {
+            return Some(l[7..].trim().to_string());
+        }
+    }
+    None
 }
 
 /// 从 cURL 命令里提取 cookie 值。
@@ -315,11 +404,15 @@ fn parse_cookie(cookie_arg: &str) -> Jar {
     if p.is_file()
         && let Ok(text) = std::fs::read_to_string(p)
     {
-        // Netscape cookies.txt：含制表符且非注释行 → 逐行解析
-        if text
-            .lines()
-            .any(|l| l.contains('\t') && !l.starts_with('#'))
-        {
+        // Netscape cookies.txt：7 列且**首列是 domain** —— 这是与 DevTools 表格复制的
+        // 关键区别（后者首列是 name、第 3 列才是 domain）。判据若混用，两者索引错位，
+        // 结果是 cookie 一条都进不去。非 Netscape 的制表符文本交回 `add_cookie_string`，
+        // 由 `sanitize_cookie` → `parse_tabular_rows` 识别。
+        let is_netscape = text.lines().any(|l| {
+            let p: Vec<&str> = l.split('\t').collect();
+            p.len() >= 7 && p[0].contains("booth")
+        });
+        if is_netscape {
             for line in text.lines() {
                 let line = line.trim_end();
                 if line.is_empty() || line.starts_with('#') {
@@ -480,6 +573,63 @@ mod tests {
         let s = sanitize_cookie("_plaza_session_nktz7u=ML\ncf_clearance=MCF\n__cf_bm=MB");
         assert_eq!(s.pairs.len(), 3, "实际：{:?}", s.pairs);
         assert!(s.has_session());
+    }
+
+    /// 用户实操形态：DevTools → Network → 某个 .json → Request Headers 整块复制。
+    /// 块里除了 `cookie` 还有 `:authority`/`accept`/`referer` 等，**绝不能当成 cookie**。
+    #[test]
+    fn extracts_cookie_from_full_request_headers_paste() {
+        let raw = ":authority: booth.pm\n:method: GET\n\
+                   :path: /items/8900909/wish_list_items.json\n:scheme: https\n\
+                   accept: application/json\naccept-encoding: gzip, deflate, br, zstd\n\
+                   accept-language: zh-CN,zh;q=0.9,ja;q=0.8,en;q=0.7\n\
+                   cache-control: no-cache\ncontent-type: application/json\n\
+                   cookie: _plaza_session_nktz7u=HDR; cf_clearance=CF\n\
+                   dnt: 1\npragma: no-cache\npriority: u=1, i\n\
+                   referer: https://booth.pm/zh-cn/items/8567213\n\
+                   sec-ch-ua: \"Chromium\";v=\"153\", \"Not_A Brand\";v=\"8\"";
+        let s = sanitize_cookie(raw);
+        let kept: Vec<&str> = s.pairs.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(kept.len(), 2, "应只留 cookie 行的两项，实际：{kept:?}");
+        assert!(s.has_session(), "实际：{:?}", s.pairs);
+        for junk in ["accept", "referer", ":method", "content-type", "dnt"] {
+            assert!(!kept.contains(&junk), "{junk} 被当成 cookie：{kept:?}");
+        }
+    }
+
+    /// 单行 `Cookie:` 前缀 + 大小写混写。
+    #[test]
+    fn cookie_header_line_case_insensitive() {
+        let s = sanitize_cookie("COOKIE: _plaza_session_nktz7u=UP; cf_clearance=C");
+        assert!(s.has_session());
+        assert_eq!(s.pairs.len(), 2, "实际：{:?}", s.pairs);
+    }
+
+    /// 用户实操形态 B：DevTools → Application → Cookies **表格整块复制**（TSV）。
+    ///
+    /// 列序是 `Name / Value / Domain / Path / Expires / Size / HttpOnly / …`，
+    /// 与 Netscape cookies.txt **完全不同**（后者 domain 在第 0 列、name/value 在 5/6 列）。
+    /// 若沿用后者索引，或按 `=`/`:` 切分，都会整块解析失败——cookie 一条都进不去。
+    #[test]
+    fn extracts_from_devtools_cookie_table_tsv() {
+        let raw = "__cf_bm\tBMVAL\t.booth.pm\t/\t2026-09-28T11:32:11.031Z\t206\t✓\t✓\tNone\t\t\tMedium\t\n\
+                   _ga\tGA1.1.111\t.booth.pm\t/\t2027-11-02T10:03:08.515Z\t30\t\t\t\t\t\tMedium\t\n\
+                   _plaza_session_nktz7u\tSESSVAL\t.booth.pm\t/\t2027-09-28T10:03:18.450Z\t921\t✓\t✓\tLax\t\t\tMedium\t\n\
+                   cf_clearance\tCFVAL\t.booth.pm\t/\t2027-09-28T10:03:08.781Z\t438\t✓\t✓\tNone\thttps://booth.pm\t\tMedium\t";
+        let s = sanitize_cookie(raw);
+        let kept: Vec<&str> = s.pairs.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(s.has_session(), "会话项丢失：{kept:?}");
+        assert!(kept.contains(&"cf_clearance"), "{kept:?}");
+        assert!(kept.contains(&"__cf_bm"), "{kept:?}");
+        assert!(!kept.contains(&"_ga"), "统计项未剔除：{kept:?}");
+        // 关键：值必须取自同行的第二列，不得串列
+        let sess = &s
+            .pairs
+            .iter()
+            .find(|(k, _)| k == SESSION_COOKIE)
+            .expect("会话项")
+            .1;
+        assert_eq!(sess, "SESSVAL");
     }
 
     /// 分析类剔除，但会话与 Cloudflare 相关项必须留下。

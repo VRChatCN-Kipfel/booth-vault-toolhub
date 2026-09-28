@@ -144,7 +144,10 @@ cd gui && npm run tauri dev # GUI 开发
     - **同轮多处判定用 `LocalScan`**：一次 `read_dir` + 校验按需，避免巡检链上对每个 unitypackage 重复全量解压。
 13. **假文件魔数校验**：头 256 字节 lstrip 后 `<!doctype`/`<html` 即判伪（未登录返回伪装 zip/png 的登录页 HTML）。
     - **Cookie 必须逐个注入**：`Jar::add_cookie_str` 解析的是**单个** `Set-Cookie`，整串一次性传入时只存进第一个，其余片段被当作该 cookie 的属性而**静默丢弃**。从浏览器复制的串首个常是 `_ga` 这类统计 cookie，会话 `_plaza_session_nktz7u` 与 `cf_clearance` 会一起丢失。上面那条魔数判据完全依赖 Cookie 送达，注入失效会被误报成「没填 Cookie」。实现见 `session::add_cookie_string`（逐个 `k=v` 注入），回归测试在 `session::tests`（含「会话 cookie 不在首位」一例）。
-    - **粘贴形态必须容错**：`session::sanitize_cookie` 统一归一四种形态——`k=v; k=v`、`Cookie: …` 请求头整行、cURL 命令（含 `-H`/`-b`）、多行文本——并剔除分析类 cookie（`ANALYTICS_PREFIXES`；`cf_clearance` / `__cf_bm` **刻意保留**，它们影响 Cloudflare 放行）。**保底**：全部命中黑名单时原样放行，绝不把用户的 cookie 清空。**不得要求用户按特定方式复制**——容错在这里是功能，不是优化。
+    - **粘贴形态必须容错**：`session::sanitize_cookie` 统一归一**五种**形态——DevTools **表格整块复制**（Application → Cookies，制表符分隔）、`k=v; k=v` 串、`Cookie: …` 整行（含嵌在整块 Request Headers 里的那一行）、cURL 命令（`-H`/`--header`/`-b`）、多行文本。
+        - **两套 TSV 索引不可混用**：DevTools 表格是 `Name · Value · Domain · Path · Expires …`（name 在**第 0 列**），Netscape cookies.txt 是 `domain · flag · path · secure · expires · name · value`（name 在**第 5 列**）。判据一旦混用，整块解析错位、**cookie 一条都进不去**——而错误表象是「未登录」，极易误判成用户没复制对。区分方式：domain 在第 3 列 → DevTools；在第 0 列 → Netscape。
+        - 剔除无关项：分析类 cookie（`ANALYTICS_PREFIXES`）与 HTTP 头名（`HTTP_HEADER_NAMES`，兜住「整块 Request Headers」粘贴）；`cf_clearance` / `__cf_bm` **刻意保留**（影响 Cloudflare 放行）。**保底**：全部命中黑名单时原样放行，绝不把用户的 cookie 清空。
+        - **不得要求用户按特定方式复制**——容错在这里是功能，不是优化。用户会从各个面板复制，任何形态都必须能进。
     - **登录态探针**：`session::check_cookie` 打 `GET /downloadables/1`（**一个不存在的 ID**）并**不跟随重定向**——302 到 `/users/sign_in` 即未登录，其它（404/200）即已登录。用不存在的 ID 是刻意的：零副作用、零带宽、不消耗下载额度，却能区分「cookie 有效」与「无效/缺失」。网络或代理不通返回 `unreachable`，**必须与「cookie 无效」分开报**，否则会把网络问题误报成凭证问题。三端入口：CLI `booth cookie-check`、MCP `cookie_check`、GUI 设置页「检测 Cookie」。
 14. **移动后属性丢失 → 图标失效**：copy 后重补属性；跨盘移动保留 mtime。
 15. 空目录链清理：跳过隐藏文件（desktop.ini/Thumbs.db/.DS_Store），walk-up 清理 max 6 级，root 不删。

@@ -322,14 +322,19 @@ export function SettingsPage() {
       <Section>
         <PanelLabel>Booth Cookie</PanelLabel>
         <CookieHelp>
-          免费文件下载也需要登录 Cookie，只存本地。获取方式：浏览器登录 BOOTH 后按
-          <b> F12</b> → <b>Application</b> → 左侧 <b>Cookies</b> → 选
-          <code>https://booth.pm</code> → 全选复制粘贴即可。
+          免费文件下载也需要登录 Cookie，只存本地。
           <br />
-          也可以直接粘贴请求头（<code>Cookie: …</code>）或 DevTools 的
-          <b> Copy as cURL</b>，无关内容会自动剔除，不必手动挑。
+          <b>获取方式</b>：在 BOOTH 任意页面按 <b>F12</b> → 顶部选 <b>Application</b> →
+          左侧 <b>Storage → Cookies → https://booth.pm</b> → 在表格里<b>全选复制</b>，
+          整块粘到这里即可（不用刷新页面，也不用挑请求）。
+          <br />
+          也支持这两种：<b>Network</b> → 刷新 → 点任一 <code>.json</code> →
+          <b> Headers → Request Headers → Cookie</b> 那一行的值；或右键请求 →
+          <b> Copy as cURL</b> 整段粘贴。
+          <br />
+          以上格式会自动识别，统计类内容自动剔除，不必手动挑。
           登录态依赖的是 <code>_plaza_session_nktz7u</code> 这一条——
-          若粘贴内容里没有它，检测会直接告诉您。
+          粘贴内容里若没有它，「检测」会直接告诉您。
           <br />
           Cookie 会过期，下载报错时先点一下「检测」。
         </CookieHelp>
