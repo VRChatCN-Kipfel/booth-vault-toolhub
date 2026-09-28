@@ -12,6 +12,8 @@
 //! 判为无法判定而非损坏——宁可漏报，不可误报。若将来接入 7z 解析，
 //! 未知压缩法导致的失败同样应落在无法判定一侧。
 
+use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
@@ -62,6 +64,23 @@ pub enum PackageHealth {
     Indeterminate,
 }
 
+/// 归档内条目名的字节 → 字符串。
+///
+/// BOOTH 上大量日文商品由日文 Windows 打包，zip 条目名多为 **Shift-JIS 且未设
+/// UTF-8 标志位**（tar 侧同理）；直接按 UTF-8 lossy 解会得到 `ÄOô_é╛éó…` 这类
+/// 乱码，预览直接失去意义。故按 UTF-8 → Shift-JIS → Windows-1252 逐级降级。
+fn decode_name(raw: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(raw) {
+        return s.to_string();
+    }
+    let (cow, _, had_errors) = encoding_rs::SHIFT_JIS.decode(raw);
+    if !had_errors {
+        return cow.into_owned();
+    }
+    let (cow, _, _) = encoding_rs::WINDOWS_1252.decode(raw);
+    cow.into_owned()
+}
+
 /// 小写扩展名（不含点）。
 fn ext_of(path: &Path) -> Option<String> {
     path.extension()
@@ -94,7 +113,7 @@ pub fn package_health_of(file: &Path, ext_source: &Path) -> PackageHealth {
     }
     let intact = match ext_of(ext_source).as_deref() {
         Some("zip") => zip_entries(file).is_some(),
-        Some("unitypackage") => unitypackage_intact(file),
+        Some("unitypackage") => unitypackage_walk(file).is_some(),
         _ => return PackageHealth::Indeterminate,
     };
     if intact {
@@ -128,33 +147,10 @@ pub fn zip_entries(path: &Path) -> Option<Vec<EntryInfo>> {
     for i in 0..zip.len() {
         let f = zip.by_index_raw(i).ok()?;
         out.push(EntryInfo {
-            name: f.name().to_string(),
+            name: decode_name(f.name_raw()),
             size: f.size(),
             compressed_size: Some(f.compressed_size()),
             method: format!("{:?}", f.compression()).to_ascii_lowercase(),
-        });
-    }
-    Some(out)
-}
-
-/// unitypackage（gzip + tar）的条目列表；解析失败返回 `None`。
-///
-/// 只遍历 tar header，**不读条目内容、不读干 gzip 流**——因此明显快于
-/// `package_health`（后者为抓尾部截断必须全量解压）。预览场景够用，
-/// 但**不能拿它的成功当完整性结论**。
-pub fn unitypackage_entries(path: &Path) -> Option<Vec<EntryInfo>> {
-    let fh = std::fs::File::open(path).ok()?;
-    let dec = GzDecoder::new(fh);
-    let mut archive = Archive::new(dec);
-    let entries = archive.entries().ok()?;
-    let mut out = Vec::new();
-    for e in entries {
-        let e = e.ok()?;
-        out.push(EntryInfo {
-            name: e.path().ok()?.to_string_lossy().to_string(),
-            size: e.size(),
-            compressed_size: None,
-            method: "tar".to_string(),
         });
     }
     Some(out)
@@ -166,7 +162,7 @@ pub fn unitypackage_entries(path: &Path) -> Option<Vec<EntryInfo>> {
 pub fn preview_archive(path: &Path, limit: usize) -> Result<ArchivePreview, String> {
     let (format, listed) = match ext_of(path).as_deref() {
         Some("zip") => ("zip", zip_entries(path)),
-        Some("unitypackage") => ("unitypackage", unitypackage_entries(path)),
+        Some("unitypackage") => ("unitypackage", unitypackage_walk(path)),
         _ => {
             return Err(format!(
                 "不支持的格式（仅 zip / unitypackage）：{}",
@@ -191,29 +187,76 @@ pub fn preview_archive(path: &Path, limit: usize) -> Result<ArchivePreview, Stri
     })
 }
 
-/// unitypackage 整体性：gzip+tar 无尾置索引，必须顺序解压到流末尾。
+/// unitypackage 单次遍历：解析真实资源路径，同时完成完整性校验。
 ///
-/// tar 迭代遇到结尾零块即停止，不会读完 gzip 余下字节，gzip 的 CRC32/ISIZE
-/// 校验也就不会触发——因此遍历完成后还需把内层流读干。
-fn unitypackage_intact(path: &Path) -> bool {
-    let Ok(fh) = std::fs::File::open(path) else {
-        return false;
-    };
+/// unitypackage 的 tar 结构是 `{guid}/asset` + `{guid}/pathname` + …，
+/// 直接列 GUID 目录对用户毫无意义；预览取的是 `pathname` 的内容（`Assets/…`），
+/// 大小取同 GUID 下 `asset` 的字节数——与 zip 的「中央目录一次解析两用」对称，
+/// 完整性判定与预览共用这一次遍历。
+///
+/// gzip+tar 无尾置索引，截断只能顺序解压到流末尾才发现；且 tar 迭代遇结尾零块
+/// 即停止、不会读完 gzip 余下字节，故遍历后还需把内层流读干以触发 CRC32/ISIZE。
+fn unitypackage_walk(path: &Path) -> Option<Vec<EntryInfo>> {
+    let fh = std::fs::File::open(path).ok()?;
     let dec = GzDecoder::new(fh);
     let mut archive = Archive::new(dec);
-    let Ok(entries) = archive.entries() else {
-        return false;
-    };
+    let entries = archive.entries().ok()?;
+
+    let mut asset_sizes: HashMap<String, u64> = HashMap::new();
+    let mut named: Vec<(String, String)> = Vec::new();
     let mut sink = std::io::sink();
+
     for entry in entries {
-        let Ok(mut e) = entry else {
-            return false;
-        };
-        if std::io::copy(&mut e, &mut sink).is_err() {
-            return false;
+        let mut e = entry.ok()?;
+        let raw = e.path_bytes().into_owned();
+        let (guid, base) = split_tar_path(&raw)?;
+        if base.eq_ignore_ascii_case("asset") {
+            asset_sizes.insert(guid, e.size());
+            std::io::copy(&mut e, &mut sink).ok()?;
+        } else if base.eq_ignore_ascii_case("pathname") {
+            let mut buf = Vec::new();
+            e.read_to_end(&mut buf).ok()?;
+            named.push((guid, decode_name(trim_bytes(&buf))));
+        } else {
+            std::io::copy(&mut e, &mut sink).ok()?;
         }
     }
-    std::io::copy(&mut archive.into_inner(), &mut sink).is_ok()
+    std::io::copy(&mut archive.into_inner(), &mut sink).ok()?;
+
+    let mut out: Vec<EntryInfo> = named
+        .into_iter()
+        .map(|(guid, name)| EntryInfo {
+            name,
+            size: asset_sizes.get(&guid).copied().unwrap_or(0),
+            compressed_size: None,
+            method: "unitypackage".to_string(),
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Some(out)
+}
+
+/// `{guid}/pathname` → `(guid, pathname)`。
+fn split_tar_path(raw: &[u8]) -> Option<(String, String)> {
+    let pos = raw.iter().rposition(|b| *b == b'/')?;
+    Some((
+        String::from_utf8_lossy(&raw[..pos]).into_owned(),
+        String::from_utf8_lossy(&raw[pos + 1..]).into_owned(),
+    ))
+}
+
+/// 去首尾 ASCII 空白（`pathname` 内容常带换行）。
+fn trim_bytes(b: &[u8]) -> &[u8] {
+    let start = b
+        .iter()
+        .position(|c| !c.is_ascii_whitespace())
+        .unwrap_or(b.len());
+    let end = b
+        .iter()
+        .rposition(|c| !c.is_ascii_whitespace())
+        .map(|i| i + 1)
+        .unwrap_or(start);
+    &b[start..end]
 }
 
 #[cfg(test)]
@@ -259,16 +302,26 @@ mod tests {
 
     /// 60 字节的微型夹具取一半连 gzip 头都不完整，会在「读首条目」之前就抛错，
     /// 恰好绕过被测行为——必须造足够大的多条目包，截断才落在首条目之后。
+    ///
+    /// 形态与真实包一致：每个资源一个 `{guid}/asset` + `{guid}/pathname`，
+    /// 这样遍历才能解析出真实资源路径与资源大小。
     fn unitypackage_multi(entries: usize, payload: usize) -> Vec<u8> {
         let mut tar_buf = Vec::new();
         {
             let mut b = tar::Builder::new(&mut tar_buf);
             let data = vec![b'x'; payload];
             for i in 0..entries {
+                let guid = format!("{i:032}");
                 let mut h = tar::Header::new_gnu();
                 h.set_size(data.len() as u64);
                 h.set_cksum();
-                b.append_data(&mut h, format!("guid{i}/pathname"), &data[..])
+                b.append_data(&mut h, format!("{guid}/asset"), &data[..])
+                    .unwrap();
+                let pn = format!("Assets/Item{i}.prefab");
+                let mut h2 = tar::Header::new_gnu();
+                h2.set_size(pn.len() as u64);
+                h2.set_cksum();
+                b.append_data(&mut h2, format!("{guid}/pathname"), pn.as_bytes())
                     .unwrap();
             }
             b.finish().unwrap();
@@ -315,14 +368,18 @@ mod tests {
         let _ = std::fs::remove_file(&p);
     }
 
+    /// 条目名取 `pathname` 内容（真实资源路径）而非 GUID 目录名，
+    /// 大小取同 GUID 下 `asset` 的字节数——列 GUID 对用户毫无意义。
     #[test]
-    fn unitypackage_entries_lists_all() {
+    fn unitypackage_walk_resolves_real_paths() {
         let p = write_tmp("list.unitypackage", &unitypackage_multi(5, 1024));
-        let entries = unitypackage_entries(&p).expect("should list");
+        let entries = unitypackage_walk(&p).expect("should list");
         assert_eq!(entries.len(), 5);
-        assert!(entries.iter().all(|e| e.name.ends_with("/pathname")));
+        assert_eq!(entries[0].name, "Assets/Item0.prefab");
+        assert_eq!(entries[4].name, "Assets/Item4.prefab");
         assert!(entries.iter().all(|e| e.size == 1024));
         assert!(entries.iter().all(|e| e.compressed_size.is_none()));
+        assert!(entries.iter().all(|e| e.method == "unitypackage"));
         let _ = std::fs::remove_file(&p);
     }
 
@@ -361,6 +418,29 @@ mod tests {
         let p2 = write_tmp("pv-bad.zip", &full[..full.len() - 1]);
         assert!(preview_archive(&p2, 0).unwrap_err().contains("无法解析"));
         let _ = std::fs::remove_file(&p2);
+    }
+
+    /// BOOTH 日文商品的 zip 条目名多为 Shift-JIS 且未设 UTF-8 标志位，
+    /// 按 UTF-8 lossy 解会得到乱码——预览对此直接失去意义。
+    #[test]
+    fn decode_name_handles_shift_jis() {
+        assert_eq!(decode_name(b"readme.txt"), "readme.txt");
+        assert_eq!(
+            decode_name("日本語ファイル.txt".as_bytes()),
+            "日本語ファイル.txt"
+        );
+
+        let (sjis, _, _) = encoding_rs::SHIFT_JIS.encode("三点だいしゅきツール");
+        assert_eq!(decode_name(&sjis), "三点だいしゅきツール");
+
+        let (sjis2, _, _) = encoding_rs::SHIFT_JIS.encode("利用規約（日本語版）.pdf");
+        assert_eq!(decode_name(&sjis2), "利用規約（日本語版）.pdf");
+    }
+
+    #[test]
+    fn decode_name_never_panics_on_junk() {
+        let _ = decode_name(&[0xff, 0xfe, 0x00, 0x81]);
+        let _ = decode_name(&[]);
     }
 
     #[test]
