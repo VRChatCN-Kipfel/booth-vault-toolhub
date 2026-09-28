@@ -1,4 +1,6 @@
 import { create } from 'zustand';
+import { useAppConfigStore } from './appConfigStore';
+import { useLibraryStore } from './libraryStore';
 
 export type TaskKind =
   | 'download'
@@ -71,6 +73,18 @@ type TaskState = {
   begin: (taskId: string, init: Pick<TaskRecord, 'kind' | 'label' | 'cmd' | 'args'>) => void;
   applyEvent: (taskId: string, evt: ProgressEvt) => void;
 };
+
+/**
+ * 任务结束后静默回写库存索引。
+ *
+ * 下载 / 归档 / 检索 / 修复都会改变库结构，而这些操作的进度事件都汇聚到本 store 的
+ * `finished` 分支——在此统一刷新，用户下次进库存页直接命中新缓存，不必手动点刷新，
+ * 也不必知道"缓存"这回事。失败静默：刷不上最多退化成一次全扫。
+ */
+function refreshLibraryCache() {
+  const root = useAppConfigStore.getState().boothRoot;
+  if (root) void useLibraryStore.getState().load(root);
+}
 
 export const useTaskStore = create<TaskState>((set) => ({
   tasks: {},
@@ -163,6 +177,8 @@ export const useTaskStore = create<TaskState>((set) => ({
             next.failed = evt.failed ?? errCount;
           }
           next.updateable = evt.updateable ?? next.updateable;
+          // 延到本次 set 之外再触发：reducer 内不做副作用。
+          queueMicrotask(refreshLibraryCache);
           break;
         }
         case 'cancelled':

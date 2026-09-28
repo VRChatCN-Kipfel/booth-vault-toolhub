@@ -51,6 +51,23 @@ pub fn run() {
             set_app_icon,
         ])
         .setup(|app| {
+            // 启动预热：后台把库存索引刷一遍，用户切到库存页时直接命中缓存。
+            // 独立线程，不阻塞窗口创建；未配根目录/目录不存在时静默跳过。
+            std::thread::spawn(|| {
+                let config = engine::config::load_config();
+                let Some(root) = config
+                    .download_root
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                else {
+                    return;
+                };
+                engine::audit::refresh_library_cache(
+                    std::path::Path::new(root),
+                    engine::config::library_cache_path().as_deref(),
+                );
+            });
             if app.handle().get_webview_window("main").is_some() {
                 return Ok(());
             }

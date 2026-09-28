@@ -636,6 +636,19 @@ fn scan_category(cat_path: &Path) -> Vec<CachedItem> {
     out
 }
 
+/// 刷新库存索引缓存（丢弃结果，只为把变化的分类重扫并落盘）。
+///
+/// 归档 / 下载 / 补全等写操作后调用：分类目录的 `mtime_ns` 已变，本次调用会把变化的
+/// 分类重扫并回写索引，于是用户下次进库存页直接命中新缓存，**不必手动刷新**。
+///
+/// 失败静默：缓存是加速手段，刷不上最多退化成一次全扫，不该让写操作因此报错。
+pub fn refresh_library_cache(root: &Path, cache_file: Option<&Path>) {
+    if !root.is_dir() {
+        return;
+    }
+    let _ = list_library_cached(root, cache_file, false);
+}
+
 /// 列出归档库存，带持久化索引。
 ///
 /// `cache_file`：索引落盘路径（`None` 表示不读写缓存）；`force`：忽略缓存强制重扫
