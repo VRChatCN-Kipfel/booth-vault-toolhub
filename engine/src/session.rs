@@ -338,7 +338,7 @@ pub fn check_cookie(config: &AppConfig, cookie: Option<&str>) -> CookieCheck {
             has_session: false,
         };
     };
-    let san = sanitize_cookie(raw);
+    let san = load_cookie_pairs(raw);
     let pair_count = san.pairs.len();
     let dropped_count = san.dropped.len();
     let has_session = san.has_session();
@@ -397,47 +397,46 @@ fn is_login_redirect(location: &str) -> bool {
     location.contains("/users/sign_in")
 }
 
-/// cookie 三态加载为 Jar：'k=v; k2=v2' 串 / Netscape cookies.txt 路径 / 文本文件内容。
-fn parse_cookie(cookie_arg: &str) -> Jar {
-    let jar = Jar::default();
+/// 解析 Netscape cookies.txt 行。
+///
+/// 列序：`domain · flag · path · secure · expires · name · value`
+/// —— name 在**第 5 列**、value 在**第 6 列**、domain 在**第 0 列**。
+/// 与 DevTools 表格（name 第 0 列 / value 第 1 列 / domain 第 3 列）**完全不同**，
+/// 判据混用会导致整块解析错位、cookie 一条都进不去。
+fn parse_netscape_rows(text: &str) -> Option<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() >= 7 && parts[0].contains("booth") {
+            out.push((parts[5].to_string(), parts[6].to_string()));
+        }
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+/// cookie 参数的统一入口：'k=v; k2=v2' 串 / Netscape cookies.txt 路径 / 存串的文本文件路径。
+///
+/// **注入与统计必须共用这里**。统计若绕过它、直接对参数本身调 `sanitize_cookie`，
+/// 传入文件路径时会把**路径字符串**当 cookie 解析（`D:` 被切成一条），
+/// 得出「生效 1 条、无会话项」这种与事实相反、且自相矛盾的结论。
+fn load_cookie_pairs(cookie_arg: &str) -> SanitizedCookie {
     let p = Path::new(cookie_arg);
     if p.is_file()
         && let Ok(text) = std::fs::read_to_string(p)
     {
-        // Netscape cookies.txt：7 列且**首列是 domain** —— 这是与 DevTools 表格复制的
-        // 关键区别（后者首列是 name、第 3 列才是 domain）。判据若混用，两者索引错位，
-        // 结果是 cookie 一条都进不去。非 Netscape 的制表符文本交回 `add_cookie_string`，
-        // 由 `sanitize_cookie` → `parse_tabular_rows` 识别。
-        let is_netscape = text.lines().any(|l| {
-            let p: Vec<&str> = l.split('\t').collect();
-            p.len() >= 7 && p[0].contains("booth")
-        });
-        if is_netscape {
-            for line in text.lines() {
-                let line = line.trim_end();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                let parts: Vec<&str> = line.split('\t').collect();
-                if parts.len() >= 7 && parts[0].contains("booth") {
-                    jar.add_cookie_str(
-                        &format!("{}={}", parts[5], parts[6]),
-                        &format!("https://{}/", parts[0])
-                            .parse()
-                            .expect("cookie domain"),
-                    );
-                }
-            }
-            return jar;
+        if let Some(rows) = parse_netscape_rows(&text) {
+            return finalize(rows);
         }
-        add_cookie_string(&jar, &text);
-        return jar;
+        return sanitize_cookie(&text);
     }
-    add_cookie_string(&jar, cookie_arg);
-    jar
+    sanitize_cookie(cookie_arg)
 }
 
-/// 注入 `.booth.pm`。先经 [`sanitize_cookie`] 归一与净化，再**逐个** `add_cookie_str`。
+/// 注入 `.booth.pm`。统一走 [`load_cookie_pairs`]，再**逐个** `add_cookie_str`。
 ///
 /// **必须逐个**：`Jar::add_cookie_str` 解析的是单个 `Set-Cookie` 头，
 /// `; ` 之后的片段会被当作该 cookie 的属性处理，未知属性名静默忽略。
@@ -445,11 +444,13 @@ fn parse_cookie(cookie_arg: &str) -> Jar {
 /// 往往是 `_ga` 这类与登录无关的统计 cookie，真正的会话 `_plaza_session_nktz7u`
 /// 会连同 `cf_clearance` 一起被丢掉，症状是「明明填了 Cookie，却提示请到设置页
 /// 填写 Cookie」（见 PR #56）。
-fn add_cookie_string(jar: &Jar, s: &str) {
+fn parse_cookie(cookie_arg: &str) -> Jar {
+    let jar = Jar::default();
     let url = "https://booth.pm/".parse().expect("booth.pm url");
-    for (k, v) in sanitize_cookie(s).pairs {
+    for (k, v) in load_cookie_pairs(cookie_arg).pairs {
         jar.add_cookie_str(&format!("{k}={v}"), &url);
     }
+    jar
 }
 
 #[cfg(test)]
@@ -603,6 +604,58 @@ mod tests {
         let s = sanitize_cookie("COOKIE: _plaza_session_nktz7u=UP; cf_clearance=C");
         assert!(s.has_session());
         assert_eq!(s.pairs.len(), 2, "实际：{:?}", s.pairs);
+    }
+
+    fn write_tmp_cookie_file(tag: &str, body: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "bvt_ck_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    /// 传**文件路径**时，统计必须基于文件内容，而不是把路径字符串当 cookie 解析。
+    ///
+    /// 曾经的缺陷：`check_cookie` 直接对参数调 `sanitize_cookie`，于是 `D:/…` 被
+    /// 切成一条名为 `D` 的 cookie，得出「生效 1 条、无会话项」——与它自己刚探测出的
+    /// 「登录态有效」自相矛盾。
+    #[test]
+    fn file_path_source_is_read_not_parsed_as_string() {
+        // DevTools 表格文件
+        let tsv = write_tmp_cookie_file(
+            "tsv",
+            "_ga\tGA1\t.booth.pm\t/\t2027-01-01T00:00:00.000Z\t30\n\
+             _plaza_session_nktz7u\tSESS\t.booth.pm\t/\t2027-01-01T00:00:00.000Z\t921\n\
+             cf_clearance\tCF\t.booth.pm\t/\t2027-01-01T00:00:00.000Z\t438\n",
+        );
+        let s = load_cookie_pairs(tsv.to_str().unwrap());
+        assert!(s.has_session(), "会话项丢失：{:?}", s.pairs);
+        assert_eq!(s.pairs.len(), 2, "实际：{:?}", s.pairs);
+        let _ = std::fs::remove_file(&tsv);
+
+        // Netscape cookies.txt
+        let ns = write_tmp_cookie_file(
+            "ns",
+            "# Netscape HTTP Cookie File\n\
+             .booth.pm\tTRUE\t/\tTRUE\t1900000000\t_plaza_session_nktz7u\tNSSESS\n\
+             .booth.pm\tTRUE\t/\tTRUE\t1900000000\tcf_clearance\tNSCF\n",
+        );
+        let s2 = load_cookie_pairs(ns.to_str().unwrap());
+        assert!(s2.has_session(), "Netscape 会话项丢失：{:?}", s2.pairs);
+        assert_eq!(
+            s2.pairs
+                .iter()
+                .find(|(k, _)| k == SESSION_COOKIE)
+                .unwrap()
+                .1,
+            "NSSESS"
+        );
+        let _ = std::fs::remove_file(&ns);
     }
 
     /// 用户实操形态 B：DevTools → Application → Cookies **表格整块复制**（TSV）。
