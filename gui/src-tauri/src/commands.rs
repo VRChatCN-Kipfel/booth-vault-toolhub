@@ -1283,6 +1283,31 @@ pub async fn update_check(use_proxy: bool) -> Result<serde_json::Value, String> 
     }))
 }
 
+/// check_cookie：检测 BOOTH Cookie 是否可用（单次探针，不触发下载）。
+///
+/// `cookie` 传空则用配置里的值，便于「先检测再保存」。
+#[tauri::command]
+pub async fn check_cookie(cookie: Option<String>) -> Result<serde_json::Value, String> {
+    let config = load_config();
+    let effective = cookie
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| config.cookie.clone());
+    let check = tauri::async_runtime::spawn_blocking(move || {
+        engine::session::check_cookie(&config, effective.as_deref())
+    })
+    .await
+    .map_err(|e| format!("检测任务失败: {e}"))?;
+    Ok(serde_json::json!({
+        "command": "cookie_check",
+        "state": check.state,
+        "ok": check.ok,
+        "detail": check.detail,
+        "pair_count": check.pair_count,
+        "dropped_count": check.dropped_count,
+        "has_session": check.has_session,
+    }))
+}
+
 fn app_icon_png(id: &str) -> &'static [u8] {
     match id {
         "zhuyin" => include_bytes!("../app-icons/zhuyin-256.png"),

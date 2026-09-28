@@ -142,6 +142,12 @@ enum Command {
         #[arg(long, default_value_t = 200)]
         limit: usize,
     },
+    /// 检测 BOOTH Cookie 是否可用。只发一个探针请求，不触发任何下载。
+    CookieCheck {
+        /// 直接给 Cookie 串（缺省读配置）。支持整串 / `Cookie:` 前缀 / cURL 命令。
+        #[arg(long)]
+        cookie: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

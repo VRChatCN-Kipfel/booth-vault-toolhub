@@ -143,6 +143,25 @@ struct VersionAuditParams {
     cookie: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+struct CookieCheckParams {
+    /// 直接给 Cookie 串（缺省读配置）。支持整串 / `Cookie:` 前缀 / cURL 命令。
+    #[serde(default)]
+    cookie: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct CookieCheckResult {
+    command: String,
+    /// `valid` / `invalid` / `unreachable` / `not_configured`
+    state: String,
+    ok: bool,
+    detail: String,
+    pair_count: usize,
+    dropped_count: usize,
+    has_session: bool,
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct VersionAuditResult {
     command: String,
@@ -677,6 +696,30 @@ impl BoothServer {
             release_title: info.release_title,
             release_body: info.release_body,
             error: info.error,
+        };
+        let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+        CallToolResult::success(vec![ContentBlock::text(text)])
+    }
+
+    /// 检测 BOOTH Cookie 是否可用。
+    #[tool(
+        description = "检测 BOOTH Cookie 是否可用。只发一个探针请求（不触发真实下载、不消耗额度），返回 state：valid（登录态有效）/ invalid（无效或已过期）/ unreachable（网络或代理不通）/ not_configured（未配置）；并报告净化后生效条数 pair_count、自动剔除的统计项条数 dropped_count、是否含会话项 has_session。下载前预检用。可直接传 cookie，缺省读配置。"
+    )]
+    async fn cookie_check(
+        &self,
+        Parameters(params): Parameters<CookieCheckParams>,
+    ) -> CallToolResult {
+        let config = load_config();
+        let cookie = params.cookie.or(config.cookie.clone());
+        let check = engine::session::check_cookie(&config, cookie.as_deref());
+        let result = CookieCheckResult {
+            command: "cookie_check".to_string(),
+            state: check.state,
+            ok: check.ok,
+            detail: check.detail,
+            pair_count: check.pair_count,
+            dropped_count: check.dropped_count,
+            has_session: check.has_session,
         };
         let text = serde_json::to_string_pretty(&result).unwrap_or_default();
         CallToolResult::success(vec![ContentBlock::text(text)])

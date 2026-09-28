@@ -2,8 +2,10 @@
  * 设置页：主题三选 + 明暗 + 归档根目录 + 代理 + Cookie + 保存。
  */
 
+import { useState } from 'react';
 import styled from 'styled-components';
 import { open } from '@tauri-apps/plugin-dialog';
+import { invoke } from '@tauri-apps/api/core';
 import {
   AccentButton, SecondaryButton, Input, PanelLabel, SegSlider, PageShell,
   Section, Row, Checkbox, CheckLabel, Muted,
@@ -19,6 +21,30 @@ import { brandMark } from '../theme/chrome';
 import { APP_ICON_NAMES, APP_ICON_ORDER, APP_ICON_SRC, FONTS, motifSidebarSrc, THEME_HINTS, THEME_NAMES, THEME_ORDER, THEMES } from '../theme/themes';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { error, information } from '../components/Dialog';
+
+/** Cookie 获取说明：多行、可读性优先；代码字样等宽突出。 */
+const CookieHelp = styled.div`
+  color: var(--bvt-text3);
+  font-size: var(--bvt-fz-sm);
+  line-height: 1.75;
+  b { font-weight: 600; }
+  code {
+    font-family: var(--bvt-mono);
+    font-size: var(--bvt-fz-xs);
+    background: var(--bvt-surface2);
+    border: 1px solid var(--bvt-border);
+    border-radius: var(--bvt-radius-sm);
+    padding: 0 4px;
+    white-space: nowrap;
+  }
+`;
+
+/** Cookie 检测结论：成败着色。 */
+const CkResult = styled.span<{ $ok: boolean }>`
+  color: ${({ $ok }) => ($ok ? 'var(--bvt-success)' : 'var(--bvt-danger)')};
+  font-size: var(--bvt-fz-sm);
+  line-height: 1.5;
+`;
 
 const ThemeGrid = styled.div`
   display: grid;
@@ -134,6 +160,15 @@ const VersionCard = styled.div`
   }
 `;
 
+type CookieCheck = {
+  state: string;
+  ok: boolean;
+  detail: string;
+  pair_count: number;
+  dropped_count: number;
+  has_session: boolean;
+};
+
 export function SettingsPage() {
   const { theme, mode, systemTheme, appIcon, setTheme, setMode, setAppIcon } = useThemeStore();
   const {
@@ -143,6 +178,8 @@ export function SettingsPage() {
     keepFailedDownloads, setKeepFailedDownloads,
   } = useAppConfigStore();
   const { checking, info, check } = useUpdateStore();
+  const [ck, setCk] = useState<CookieCheck | null>(null);
+  const [ckBusy, setCkBusy] = useState(false);
 
   const resolved = resolveMode(mode, systemTheme);
   const pal = THEMES[theme][resolved];
@@ -150,6 +187,26 @@ export function SettingsPage() {
   async function pickRoot() {
     const dir = await open({ directory: true, title: '选择 BOOTH 归档根目录' });
     if (dir) setBoothRoot(String(dir));
+  }
+
+  // 检测当前输入框的值（未保存也能测）；为空则让后端读已保存的配置。
+  async function doCheckCookie() {
+    setCkBusy(true);
+    try {
+      const r = await invoke<CookieCheck>('check_cookie', { cookie });
+      setCk(r);
+    } catch (e) {
+      setCk({
+        state: 'error',
+        ok: false,
+        detail: String(e),
+        pair_count: 0,
+        dropped_count: 0,
+        has_session: false,
+      });
+    } finally {
+      setCkBusy(false);
+    }
   }
 
   return (
@@ -264,13 +321,38 @@ export function SettingsPage() {
 
       <Section>
         <PanelLabel>Booth Cookie</PanelLabel>
-        <Muted>免费文件下载也需要登录 Cookie，只存本地。</Muted>
+        <CookieHelp>
+          免费文件下载也需要登录 Cookie，只存本地。获取方式：浏览器登录 BOOTH 后按
+          <b> F12</b> → <b>Application</b> → 左侧 <b>Cookies</b> → 选
+          <code>https://booth.pm</code> → 全选复制粘贴即可。
+          <br />
+          也可以直接粘贴请求头（<code>Cookie: …</code>）或 DevTools 的
+          <b> Copy as cURL</b>，无关内容会自动剔除，不必手动挑。
+          登录态依赖的是 <code>_plaza_session_nktz7u</code> 这一条——
+          若粘贴内容里没有它，检测会直接告诉您。
+          <br />
+          Cookie 会过期，下载报错时先点一下「检测」。
+        </CookieHelp>
         <Input
           type="password"
           value={cookie}
-          onChange={(e) => setCookie(e.target.value)}
+          onChange={(e) => {
+            setCookie(e.target.value);
+            setCk(null);
+          }}
           placeholder="从浏览器复制 BOOTH 登录 Cookie"
         />
+        <Row style={{ marginTop: 'var(--bvt-s2)' }}>
+          <SecondaryButton onClick={() => void doCheckCookie()} disabled={ckBusy}>
+            {ckBusy ? '检测中…' : '检测 Cookie'}
+          </SecondaryButton>
+          {ck && (
+            <CkResult $ok={ck.ok}>
+              {ck.ok ? '✓ ' : '✗ '}
+              {ck.detail}
+            </CkResult>
+          )}
+        </Row>
       </Section>
 
       <Section>
