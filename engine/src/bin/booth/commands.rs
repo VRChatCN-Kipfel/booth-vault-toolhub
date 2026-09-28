@@ -829,16 +829,8 @@ fn cmd_cookie_check(config: &AppConfig, cookie: Option<&str>, json: bool) -> u8 
     if json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "command": "cookie_check",
-                "state": check.state,
-                "ok": check.ok,
-                "detail": check.detail,
-                "pair_count": check.pair_count,
-                "dropped_count": check.dropped_count,
-                "has_session": check.has_session,
-            }))
-            .unwrap()
+            // 信封由 engine 单点定义，避免三端各写一份后漂移。
+            serde_json::to_string_pretty(&check.to_command_json()).unwrap()
         );
     } else {
         println!("{} {}", if check.ok { "✓" } else { "✗" }, check.detail);

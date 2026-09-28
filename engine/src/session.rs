@@ -28,6 +28,14 @@ const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
 /// 有效 cookie → 404；缺会话项 → 302 sign_in。
 const PROBE_URL: &str = "https://booth.pm/downloadables/1";
 
+/// 探针的总时限与连接时限。
+///
+/// reqwest 默认**无总超时**，网络被黑洞时（连接不 RST、只是不回）`send()`
+/// 永不返回，于是 `unreachable` 永远不触发——GUI 停在「检测中…」、MCP/CLI 挂住。
+/// 与 `update.rs` 的 `CHANNEL_TIMEOUT` 同款规矩：单个入口不得拖死整体。
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+const PROBE_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// 分析类 cookie 前缀：与 BOOTH 服务端登录 / 放行逻辑无关，只用于统计上报。
 /// 从浏览器复制的串里这类常占九成，剔除后请求头更小，也更不容易被 WAF 盯上。
 /// `cf_clearance` / `__cf_bm` 刻意**不在此列**（它们影响 Cloudflare 放行）。
@@ -70,20 +78,29 @@ const HTTP_HEADER_NAMES: &[&str] = &[
 ///
 /// `cookie`: 'k=v; k2=v2' 串 / Netscape cookies.txt 路径 / 存原始 Cookie 串的文本文件路径。
 pub fn make_session(config: &AppConfig, cookie: Option<&str>) -> Client {
-    build_client(config, cookie, true)
+    build_client(config, cookie, true, false)
 }
 
-/// 同 [`make_session`]，但**不跟随重定向**（供登录态探针判定 302 目标）。
+/// 同 [`make_session`]，但**不跟随重定向**（供登录态探针判定 302 目标），
+/// 且带总超时与连接超时。
+///
+/// 超时**只加在这里**：`.timeout()` 是整个请求的总时限，加进下载链路会把
+/// 正常的大文件下载掐断。详见 [`PROBE_TIMEOUT`]。
 pub fn make_session_no_redirect(config: &AppConfig, cookie: Option<&str>) -> Client {
-    build_client(config, cookie, false)
+    build_client(config, cookie, false, true)
 }
 
-fn build_client(config: &AppConfig, cookie: Option<&str>, follow: bool) -> Client {
+fn build_client(config: &AppConfig, cookie: Option<&str>, follow: bool, probe: bool) -> Client {
     let mut builder = Client::builder()
         .user_agent(UA)
         .default_headers(default_headers());
     if !follow {
         builder = builder.redirect(reqwest::redirect::Policy::none());
+    }
+    if probe {
+        builder = builder
+            .timeout(PROBE_TIMEOUT)
+            .connect_timeout(PROBE_CONNECT_TIMEOUT);
     }
     if proxy_disabled(config) {
         builder = builder.no_proxy();
@@ -222,14 +239,29 @@ fn parse_tabular_rows(text: &str) -> Option<Vec<(String, String)>> {
             continue;
         }
         let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() < 4 {
-            continue;
+        // 完整表格：Name · Value · Domain · …（domain 在第 2 列，0 基）
+        if parts.len() >= 4 {
+            let (name, value, domain) = (parts[0].trim(), parts[1].trim(), parts[2].trim());
+            if !name.is_empty() && domain.contains("booth") {
+                out.push((name.to_string(), value.to_string()));
+                continue;
+            }
         }
-        let (name, value, domain) = (parts[0].trim(), parts[1].trim(), parts[2].trim());
-        if name.is_empty() || !domain.contains("booth") {
-            continue;
+        // 退化：只框选了 Name + Value 两列也是常见操作（表格其余列对用户无用）。
+        // 此时没有 domain 可校验，但只要第 0 列形如 cookie 名就收下——
+        // 否则用户会**静默得到空 cookie**，界面却只说「未登录」，无从下手。
+        // 排除域名形态（`.booth.pm`）与路径，避免误收 Netscape cookies.txt 的行。
+        if parts.len() >= 2 {
+            let (name, value) = (parts[0].trim(), parts[1].trim());
+            let looks_like_name = !name.is_empty()
+                && !value.is_empty()
+                && !name.starts_with('.')
+                && !name.contains('/')
+                && !name.contains("booth.");
+            if looks_like_name {
+                out.push((name.to_string(), value.to_string()));
+            }
         }
-        out.push((name.to_string(), value.to_string()));
     }
     if out.is_empty() { None } else { Some(out) }
 }
@@ -287,12 +319,12 @@ fn grab_curl_cookie(cmd: &str) -> Option<String> {
                 let quote = after.chars().next()?;
                 if let Some(end) = after[1..].find(quote) {
                     let body = &after[1..1 + end];
-                    // `-H 'cookie: xxx'` 取冒号后；`-b 'xxx'` 值本身就是载荷
-                    if let Some(v) = body
-                        .strip_prefix("cookie:")
-                        .or_else(|| body.strip_prefix("Cookie:"))
-                    {
-                        return Some(v.to_string());
+                    // `-H 'cookie: xxx'` 取冒号后；`-b 'xxx'` 值本身就是载荷。
+                    // 大小写不敏感：只认 `cookie:` / `Cookie:` 会让全大写 `COOKIE:`
+                    // **静默丢掉会话项**（浏览器与各扩展输出的大小写并不统一），
+                    // 而单行 / 多行两条路径本来就是忽略大小写的。
+                    if body.len() >= 7 && body[..7].eq_ignore_ascii_case("cookie:") {
+                        return Some(body[7..].to_string());
                     }
                     if flag == "-b" || flag == "--cookie" {
                         return Some(body.to_string());
@@ -320,6 +352,29 @@ pub struct CookieCheck {
     pub dropped_count: usize,
     /// 是否含 BOOTH 会话 cookie。
     pub has_session: bool,
+}
+
+/// 三端共用的响应信封。
+///
+/// 此前 CLI / MCP / GUI **各手写一份**同样的 7 字段：新增字段要改三处，
+/// 且键序不一致（CLI/GUI 走 `json!` 的字母序，MCP 走结构体声明序），
+/// 字节级 diff 对不上——这正是三端漂移的典型形态。现由本结构体单点定义。
+#[derive(Debug, Clone, Serialize)]
+pub struct CookieCheckResponse {
+    command: &'static str,
+    #[serde(flatten)]
+    check: CookieCheck,
+}
+
+impl CookieCheck {
+    /// 组装为三端统一的 JSON 信封。
+    pub fn to_command_json(&self) -> serde_json::Value {
+        let env = CookieCheckResponse {
+            command: "cookie_check",
+            check: self.clone(),
+        };
+        serde_json::to_value(env).unwrap_or_else(|_| serde_json::json!({ "ok": false }))
+    }
 }
 
 /// 检测 Cookie 是否真的能登入 BOOTH。
@@ -362,34 +417,55 @@ pub fn check_cookie(config: &AppConfig, cookie: Option<&str>) -> CookieCheck {
         .get(reqwest::header::LOCATION)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if resp.status().is_redirection() && is_login_redirect(location) {
+    let (state, reason) = classify_probe(resp.status().as_u16(), location, has_session);
+    let detail = match state {
+        "valid" if dropped_count > 0 => {
+            format!("{reason}；已自动剔除 {dropped_count} 条无关统计项，保留 {pair_count} 条")
+        }
+        "valid" => format!("{reason}（{pair_count} 条 cookie）"),
+        _ => reason,
+    };
+    CookieCheck {
+        state: state.to_string(),
+        ok: state == "valid",
+        detail,
+        pair_count,
+        dropped_count,
+        has_session,
+    }
+}
+
+/// 探针响应归类 → `(state, reason)`。纯函数，不碰网络。
+///
+/// 抽成纯函数是为了能单测锁住分类：判据写错的症状是「检测说没问题、下载却失败」，
+/// 比没有检测更糟——用户会按它给出的结论去排查，方向反而被带偏。
+///
+/// 已登录的证据只有两个：资源不存在（`404`）或资源存在（`2xx`）。
+/// **其余状态码一律不是「凭证有效」的证据**：403 多为 Cloudflare 拦截/challenge，
+/// 429 是限流，5xx 是站点故障——把它们判成 valid，等于用一个未知结果冒充确认。
+fn classify_probe(status: u16, location: &str, has_session: bool) -> (&'static str, String) {
+    if (300..400).contains(&status) && is_login_redirect(location) {
         let hint = if has_session {
             "会话可能已过期，请重新从浏览器复制"
         } else {
             "未找到会话 cookie（_plaza_session_nktz7u），请确认复制时包含它"
         };
-        CookieCheck {
-            state: "invalid".into(),
-            ok: false,
-            detail: format!("BOOTH 判定为未登录：{hint}"),
-            pair_count,
-            dropped_count,
-            has_session,
-        }
-    } else {
-        CookieCheck {
-            state: "valid".into(),
-            ok: true,
-            detail: if dropped_count > 0 {
-                format!("登录态有效；已自动剔除 {dropped_count} 条无关统计项，保留 {pair_count} 条")
-            } else {
-                format!("登录态有效（{pair_count} 条 cookie）")
-            },
-            pair_count,
-            dropped_count,
-            has_session,
-        }
+        return ("invalid", format!("BOOTH 判定为未登录：{hint}"));
     }
+    if status == 404 || (200..300).contains(&status) {
+        return ("valid", "登录态有效".to_string());
+    }
+    let why = match status {
+        401 | 403 => "BOOTH 拒绝了请求（可能是 Cloudflare 风控拦截）",
+        429 => "请求过于频繁，被限流",
+        s if s >= 500 => "BOOTH 服务端故障",
+        s if (300..400).contains(&s) => "被重定向到了非登录页的地址",
+        s => return ("unreachable", format!("BOOTH 返回了意料外的状态码 {s}")),
+    };
+    (
+        "unreachable",
+        format!("{why}（HTTP {status}）：无法据此判定登录态"),
+    )
 }
 
 /// 响应是否为「被重定向到登录页」——未登录的唯一标志。
@@ -399,9 +475,9 @@ fn is_login_redirect(location: &str) -> bool {
 
 /// 解析 Netscape cookies.txt 行。
 ///
-/// 列序：`domain · flag · path · secure · expires · name · value`
-/// —— name 在**第 5 列**、value 在**第 6 列**、domain 在**第 0 列**。
-/// 与 DevTools 表格（name 第 0 列 / value 第 1 列 / domain 第 3 列）**完全不同**，
+/// 列序（**均 0 基**）：`domain · flag · path · secure · expires · name · value`
+/// —— domain 第 0 列、name 第 5 列、value 第 6 列。
+/// 与 DevTools 表格（name 第 0 列 / value 第 1 列 / domain 第 **2** 列）**完全不同**，
 /// 判据混用会导致整块解析错位、cookie 一条都进不去。
 fn parse_netscape_rows(text: &str) -> Option<Vec<(String, String)>> {
     let mut out = Vec::new();
@@ -732,6 +808,85 @@ mod tests {
                 .iter()
                 .any(|(k, v)| k == SESSION_COOKIE && v == "CV")
         );
+    }
+
+    /// 探针归类的全态锁定。判据写错的代价是「检测说没问题、下载却失败」，
+    /// 用户会照着错误结论排查，所以每个状态码都要有断言。
+    #[test]
+    fn classify_probe_covers_every_status_class() {
+        let (s, _) = classify_probe(404, "", true);
+        assert_eq!(s, "valid", "有效 cookie 命中不存在的资源");
+        let (s, _) = classify_probe(200, "", true);
+        assert_eq!(s, "valid", "命中真实资源");
+        let (s, _) = classify_probe(302, "https://booth.pm/users/sign_in", true);
+        assert_eq!(s, "invalid");
+        // 关键：以下都不是「凭证有效」的证据，判成 valid 会给出假阳性结论。
+        let (s, d) = classify_probe(403, "", true);
+        assert_eq!(s, "unreachable");
+        assert!(d.contains("403"), "{d}");
+        let (s, _) = classify_probe(429, "", true);
+        assert_eq!(s, "unreachable");
+        let (s, _) = classify_probe(500, "", true);
+        assert_eq!(s, "unreachable");
+        let (s, _) = classify_probe(503, "", true);
+        assert_eq!(s, "unreachable");
+        let (s, d) = classify_probe(302, "https://booth.pm/other", true);
+        assert_eq!(s, "unreachable");
+        assert!(d.contains("非登录页"), "{d}");
+        let (s, _) = classify_probe(418, "", true);
+        assert_eq!(s, "unreachable");
+    }
+
+    /// 未登录且未找到会话项时，提示要指向「缺哪一条」而非笼统的过期。
+    #[test]
+    fn invalid_hint_distinguishes_missing_session_from_expired() {
+        let (_, d) = classify_probe(302, "https://booth.pm/users/sign_in", true);
+        assert!(d.contains("过期"), "{d}");
+        let (_, d) = classify_probe(302, "https://booth.pm/users/sign_in", false);
+        assert!(d.contains(SESSION_COOKIE), "{d}");
+    }
+
+    /// cURL 里的 `COOKIE:` 全大写：只认小写会静默丢掉会话项。
+    #[test]
+    fn curl_header_case_insensitive() {
+        let lower = sanitize_cookie(
+            "curl 'https://booth.pm/x' -H 'cookie: _plaza_session_nktz7u=A; cf_clearance=B'",
+        );
+        let upper = sanitize_cookie(
+            "curl 'https://booth.pm/x' -H 'COOKIE: _plaza_session_nktz7u=A; cf_clearance=B'",
+        );
+        let mixed = sanitize_cookie(
+            "curl 'https://booth.pm/x' -H 'Cookie: _plaza_session_nktz7u=A; cf_clearance=B'",
+        );
+        for (label, s) in [("lower", &lower), ("upper", &upper), ("mixed", &mixed)] {
+            assert!(
+                s.has_session(),
+                "{label} 丢失会话项：{:?}",
+                s.pairs.iter().map(|p| &p.0).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// 只框选 Name + Value 两列：不得静默得到空 cookie。
+    #[test]
+    fn two_column_table_paste_is_accepted() {
+        let tsv = "_plaza_session_nktz7u\tSESSVAL\ncf_clearance\tCFVAL\n";
+        let s = sanitize_cookie(tsv);
+        assert!(
+            s.has_session(),
+            "两列粘贴应可用，实际：{:?}",
+            s.pairs.iter().map(|p| &p.0).collect::<Vec<_>>()
+        );
+        assert_eq!(s.pairs.len(), 2);
+    }
+
+    /// Netscape cookies.txt 的行不得被两列退化分支误收（首列是域名）。
+    #[test]
+    fn netscape_rows_not_mistaken_for_two_column_table() {
+        let netscape = "# Netscape HTTP Cookie File\n.booth.pm\tTRUE\t/\tFALSE\t0\tname\tvalue\n";
+        let rows = parse_netscape_rows(netscape).expect("Netscape 应被识别");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "name");
     }
 
     /// 未被重定向到登录页即视为已登录。

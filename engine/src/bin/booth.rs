@@ -144,7 +144,11 @@ enum Command {
     },
     /// 检测 BOOTH Cookie 是否可用。只发一个探针请求，不触发任何下载。
     CookieCheck {
-        /// 直接给 Cookie 串（缺省读配置）。支持整串 / `Cookie:` 前缀 / cURL 命令。
+        /// 直接给 Cookie 串（缺省读配置）。
+        /// 以下形态均自动识别，无需手动整理：`k=v; k=v` 整串、
+        /// DevTools 表格整块复制（Application → Cookies）、`Cookie:` 请求头整行
+        /// 或整块 Request Headers、cURL 命令（Copy as cURL）、每行一条的多行文本。
+        /// 分析类 cookie（_ga 等）自动剔除。
         #[arg(long)]
         cookie: Option<String>,
     },

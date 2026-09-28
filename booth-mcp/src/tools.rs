@@ -145,21 +145,12 @@ struct VersionAuditParams {
 
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 struct CookieCheckParams {
-    /// 直接给 Cookie 串（缺省读配置）。支持整串 / `Cookie:` 前缀 / cURL 命令。
+    /// 直接给 Cookie 串（缺省读配置）。以下形态均自动识别，无需手动整理：
+    /// `k=v; k=v` 整串、DevTools 表格整块复制（Application → Cookies）、
+    /// `Cookie:` 请求头整行或整块 Request Headers、cURL 命令（Copy as cURL）、
+    /// 每行一条的多行文本。分析类 cookie（_ga 等）自动剔除。
     #[serde(default)]
     cookie: Option<String>,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-struct CookieCheckResult {
-    command: String,
-    /// `valid` / `invalid` / `unreachable` / `not_configured`
-    state: String,
-    ok: bool,
-    detail: String,
-    pair_count: usize,
-    dropped_count: usize,
-    has_session: bool,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -710,18 +701,12 @@ impl BoothServer {
         Parameters(params): Parameters<CookieCheckParams>,
     ) -> CallToolResult {
         let config = load_config();
-        let cookie = params.cookie.or(config.cookie.clone());
+        // 空串不得屏蔽配置回落：`.or()` 会让 `cookie: ""` 报 not_configured，
+        // 而同样的输入在 CLI / GUI 会用配置里的 cookie（三端行为必须一致）。
+        let cookie = engine::config::resolve_cookie(params.cookie.as_deref(), &config);
         let check = engine::session::check_cookie(&config, cookie.as_deref());
-        let result = CookieCheckResult {
-            command: "cookie_check".to_string(),
-            state: check.state,
-            ok: check.ok,
-            detail: check.detail,
-            pair_count: check.pair_count,
-            dropped_count: check.dropped_count,
-            has_session: check.has_session,
-        };
-        let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+        // 信封由 engine 单点定义，避免三端各写一份后漂移。
+        let text = serde_json::to_string_pretty(&check.to_command_json()).unwrap_or_default();
         CallToolResult::success(vec![ContentBlock::text(text)])
     }
 }

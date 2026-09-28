@@ -193,7 +193,12 @@ export function SettingsPage() {
   async function doCheckCookie() {
     setCkBusy(true);
     try {
-      const r = await invoke<CookieCheck>('check_cookie', { cookie });
+      // 代理同样按界面当前值走：未保存也能测，避免首配用户拿到 unreachable 却不知原因。
+      const r = await invoke<CookieCheck>('check_cookie', {
+        cookie,
+        proxy,
+        proxyUrl,
+      });
       setCk(r);
     } catch (e) {
       setCk({
