@@ -90,20 +90,21 @@ fn parse_cookie(cookie_arg: &str) -> Jar {
 }
 
 /// 'k=v; k2=v2' 串注入 `.booth.pm`。
+///
+/// **必须逐个 `add_cookie_str`**：`Jar::add_cookie_str` 解析的是单个
+/// `Set-Cookie` 头，`; ` 之后的片段会被当作该 cookie 的属性处理，未知属性名
+/// 静默忽略。整串一次性传入时**只有第一个 cookie 能进 jar**——
+/// 而从浏览器复制的串首个往往是 `_ga` 这类与登录无关的统计 cookie，
+/// 真正的会话 `_plaza_session_nktz7u` 会连同 `cf_clearance` 一起被丢掉，
+/// 症状是「明明填了 Cookie，却提示请到设置页填写 Cookie」。
 fn add_cookie_string(jar: &Jar, s: &str) {
     let url = "https://booth.pm/".parse().expect("booth.pm url");
-    let mut pairs: Vec<String> = Vec::new();
     for pair in s.split(';') {
-        if let Some((k, v)) = pair.split_once('=') {
-            let k = k.trim();
-            let v = v.trim();
-            if !k.is_empty() {
-                pairs.push(format!("{k}={v}"));
-            }
+        let pair = pair.trim();
+        if pair.is_empty() || pair.split_once('=').is_none() {
+            continue;
         }
-    }
-    if !pairs.is_empty() {
-        jar.add_cookie_str(&pairs.join("; "), &url);
+        jar.add_cookie_str(pair, &url);
     }
 }
 
@@ -137,5 +138,59 @@ mod tests {
     fn session_builds_with_cookie_string() {
         let cfg = AppConfig::default();
         let _client = make_session(&cfg, Some("_plaza_session_nktz7u=abc123; cf_clearance=xyz"));
+    }
+
+    /// 回归：整串一次性 `add_cookie_str` 只会进第一个 cookie，其余被当作属性丢弃。
+    /// 必须逐个注入，否则从浏览器复制来的串（首个常是 `_ga`）会丢掉会话 cookie，
+    /// 表现为「填了 Cookie 却提示未登录」。
+    #[test]
+    fn cookie_string_injects_every_pair() {
+        use reqwest::cookie::CookieStore;
+        let raw = "_ga=GA1.1.111; _gcl_au=1.1.222; _plaza_session_nktz7u=SESSVAL; \
+                   cf_clearance=CFVAL; recent_items=1%2C2";
+        let jar = parse_cookie(raw);
+        let url = reqwest::Url::parse("https://booth.pm/downloadables/1").unwrap();
+        let sent = jar
+            .cookies(&url)
+            .map(|v| v.to_str().unwrap_or("").to_string())
+            .unwrap_or_default();
+        for expected in [
+            "_ga=GA1.1.111",
+            "_gcl_au=1.1.222",
+            "_plaza_session_nktz7u=SESSVAL",
+            "cf_clearance=CFVAL",
+        ] {
+            assert!(sent.contains(expected), "未发出 {expected}，实际：{sent}");
+        }
+    }
+
+    /// 会话 cookie 不在首位时也必须送达（这正是线上翻车的形态）。
+    #[test]
+    fn session_cookie_survives_leading_noise() {
+        use reqwest::cookie::CookieStore;
+        let raw = "_ga=GA1.1.999; ga_expire_X=1; _plaza_session_nktz7u=REAL";
+        let jar = parse_cookie(raw);
+        let url = reqwest::Url::parse("https://booth.pm/downloadables/2").unwrap();
+        let sent = jar
+            .cookies(&url)
+            .map(|v| v.to_str().unwrap_or("").to_string())
+            .unwrap_or_default();
+        assert!(
+            sent.contains("_plaza_session_nktz7u=REAL"),
+            "会话 cookie 被噪声挤掉，实际：{sent}"
+        );
+    }
+
+    /// 空段、无 `=` 的残片不得破坏其余 cookie。
+    #[test]
+    fn malformed_segments_do_not_break_others() {
+        use reqwest::cookie::CookieStore;
+        let jar = parse_cookie("; ; junk; _plaza_session_nktz7u=OK; ;");
+        let url = reqwest::Url::parse("https://booth.pm/").unwrap();
+        let sent = jar
+            .cookies(&url)
+            .map(|v| v.to_str().unwrap_or("").to_string())
+            .unwrap_or_default();
+        assert!(sent.contains("_plaza_session_nktz7u=OK"), "实际：{sent}");
     }
 }
