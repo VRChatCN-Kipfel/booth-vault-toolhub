@@ -66,18 +66,135 @@ pub enum PackageHealth {
 
 /// 归档内条目名的字节 → 字符串。
 ///
-/// BOOTH 上大量日文商品由日文 Windows 打包，zip 条目名多为 **Shift-JIS 且未设
-/// UTF-8 标志位**（tar 侧同理）；直接按 UTF-8 lossy 解会得到 `ÄOô_é╛éó…` 这类
-/// 乱码，预览直接失去意义。故按 UTF-8 → Shift-JIS → Windows-1252 逐级降级。
+/// zip / tar 条目名的候选码页。
+///
+/// zip 不存码页：规范名义上是 CP437，实践中是**打包机的 ANSI 码页**
+/// （日文 932 / 中文 936 / 西欧 1252），读取端无从直接判断。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameEncoding {
+    Utf8,
+    /// 中文 Windows（GBK / CP936）。
+    Gbk,
+    /// 日文 Windows（Shift-JIS / CP932）。
+    ShiftJis,
+    /// 西欧 Windows-1252；zip 规范名义默认的 CP437 与之在 ASCII 区一致。
+    Latin1,
+}
+
+/// 参与打分的候选（UTF-8 由标志位或字节合法性单独判定，不参与竞争）。
+///
+/// **顺序即平局时的优先级**。GBK 覆盖 0xC0–0xF7，Shift-JIS 字节落进去同样「解得出」
+/// （变成汉字）且无解码错误，于是**全汉字的日文名**（如 `利用規約（日本語版）`，
+/// 一个假名都没有）会与 GBK 打平——假名奖励在这类名字上失效。此时取 Shift-JIS：
+/// - BOOTH 商品以日文占绝大多数；
+/// - 中文包不会因此被带偏：常用汉字在 GBK 一级字库、首字节 0xB0–0xD7，落到
+///   Shift-JIS 会进半角片假名区 `U+FF61–FF9F` 而被重罚，故中文包仍判 GBK
+///   （`same_archive_entries_use_one_decoder` 即为该反向验证）。
+const CODEPAGE_CANDIDATES: [NameEncoding; 3] = [
+    NameEncoding::ShiftJis,
+    NameEncoding::Gbk,
+    NameEncoding::Latin1,
+];
+
+/// 解码报错的重罚：该码页打不出这些字节，几乎不可能是它。
+const DECODE_ERROR_PENALTY: i64 = 1000;
+
+impl NameEncoding {
+    /// 按本码页解码；返回 `(文本, 是否出现解码错误)`。
+    fn decode<'a>(&self, raw: &'a [u8]) -> (std::borrow::Cow<'a, str>, bool) {
+        match self {
+            NameEncoding::Utf8 => match std::str::from_utf8(raw) {
+                Ok(s) => (std::borrow::Cow::Borrowed(s), false),
+                Err(_) => (std::borrow::Cow::Borrowed(""), true),
+            },
+            NameEncoding::Gbk => {
+                let (c, _, e) = encoding_rs::GBK.decode(raw);
+                (c, e)
+            }
+            NameEncoding::ShiftJis => {
+                let (c, _, e) = encoding_rs::SHIFT_JIS.decode(raw);
+                (c, e)
+            }
+            NameEncoding::Latin1 => {
+                let (c, _, e) = encoding_rs::WINDOWS_1252.decode(raw);
+                (c, e)
+            }
+        }
+    }
+}
+
+/// 解码结果的「可疑度」——**越高越不可能是对的码页**。
+///
+/// 判据都取自「正常文件名里不该大量出现」的字符：
+/// - `U+FFFD` 替换字符：解码器打不出该字节序列的直证
+/// - **半角片假名 `U+FF61–FF9F`**：Shift-JIS 被误用到非日文字节上的招牌产物，
+///   `ﾄ｣ﾐﾍ` 这种串看着像日文，其实只是字节错位
+/// - 控制字符：任何正确解码都几乎不会出现
+/// - Latin-1 补充区 `U+00A0–FF`：`Ä£ÐÍ` 这类产物。西欧语言文件名确实会用到该区，
+///   故权重低于前三者，只在成片出现时才主导
+///
+/// 反向**奖励**只有一项：全角假名 `U+3040–30FF`。日文名几乎必然含假名，而 GBK
+/// 误读日文时会把假名字节解成汉字——这项奖励让日文包不会被判成中文码页。
+fn suspicion(s: &str) -> i64 {
+    let mut score = 0i64;
+    for c in s.chars() {
+        let u = c as u32;
+        if u == 0xFFFD {
+            score += 10;
+        } else if (0xFF61..=0xFF9F).contains(&u) {
+            score += 4;
+        } else if u < 0x20 || u == 0x7F {
+            score += 5;
+        } else if (0xA0..=0xFF).contains(&u) {
+            score += 2;
+        } else if (0x3040..=0x30FF).contains(&u) {
+            score -= 1;
+        }
+    }
+    score
+}
+
+/// **按包**选定条目名解码器：对整批条目名的候选解码结果统一打分，取最优。
+///
+/// 为什么必须按包定一次：一个压缩包只有一个打包者、一种编码。逐条目「挑第一个
+/// 不报错的解码器」会让同一个包内混用两套解码器——实测一个纯 GBK 包里同时出现了
+/// Latin-1 产物（`Ä£ÐÍ/ÌùÍ¼/ÉíÌå.png`）与半角片假名产物（`ﾄ｣ﾐﾍ/ﾋｵﾃﾄｵｵ.txt`）。
+/// 那已不是「少支持一种编码」，而是策略本身不成立。
+fn pick_decoder(raws: &[&[u8]]) -> NameEncoding {
+    if raws.is_empty() {
+        return NameEncoding::Utf8;
+    }
+    let mut best = NameEncoding::Latin1;
+    let mut best_score = i64::MAX;
+    for cand in CODEPAGE_CANDIDATES {
+        let mut score = 0i64;
+        for raw in raws {
+            let (cow, err) = cand.decode(raw);
+            if err {
+                score += DECODE_ERROR_PENALTY;
+            }
+            score += suspicion(&cow);
+        }
+        if score < best_score {
+            best_score = score;
+            best = cand;
+        }
+    }
+    best
+}
+
+/// 单条目名解码（打分择优）。
+///
+/// 供无法按包统一收集的场景。**同批数据请优先用 [`pick_decoder`] 统一**——
+/// 单条打分在个别条目上会因特征不足而摇摆。
+///
+/// 当前 lib 侧（zip / tar）都已改为按包统一，故此函数仅作测试入口与单条解码参考。
+#[cfg(test)]
 fn decode_name(raw: &[u8]) -> String {
     if let Ok(s) = std::str::from_utf8(raw) {
         return s.to_string();
     }
-    let (cow, _, had_errors) = encoding_rs::SHIFT_JIS.decode(raw);
-    if !had_errors {
-        return cow.into_owned();
-    }
-    let (cow, _, _) = encoding_rs::WINDOWS_1252.decode(raw);
+    let (cow, _) = pick_decoder(&[raw]).decode(raw);
     cow.into_owned()
 }
 
@@ -141,18 +258,47 @@ pub fn is_corrupt_package(path: &Path) -> bool {
 /// 已知取舍：中段位翻转需全量读条目 CRC 才能抓到，但那是介质损坏而非下载中断
 /// （流式写入是单调拼接），不作为本判据目标。
 pub fn zip_entries(path: &Path) -> Option<Vec<EntryInfo>> {
+    // 标志位只能经公开 trait 取：`mod types` 是私有的、`ZipFileData` 字段是 `pub(crate)`。
+    use zip::read::HasZipMetadata;
+
     let fh = std::fs::File::open(path).ok()?;
     let mut zip = zip::ZipArchive::new(fh).ok()?;
-    let mut out = Vec::with_capacity(zip.len());
-    for i in 0..zip.len() {
+    let n = zip.len();
+
+    // 第一遍：只取原始字节与 UTF-8 标志位，**不解码**——解码要等码页定下来。
+    let mut raws: Vec<(Vec<u8>, bool, u64, u64, String)> = Vec::with_capacity(n);
+    for i in 0..n {
         let f = zip.by_index_raw(i).ok()?;
-        out.push(EntryInfo {
-            name: decode_name(f.name_raw()),
-            size: f.size(),
-            compressed_size: Some(f.compressed_size()),
-            method: format!("{:?}", f.compression()).to_ascii_lowercase(),
-        });
+        raws.push((
+            f.name_raw().to_vec(),
+            f.get_metadata().is_utf8,
+            f.size(),
+            f.compressed_size(),
+            format!("{:?}", f.compression()).to_ascii_lowercase(),
+        ));
     }
+
+    // 第二遍：标志位为假的条目**整包共用一个码页**（见 `pick_decoder` 的理由）。
+    let ambiguous: Vec<&[u8]> = raws
+        .iter()
+        .filter(|(_, utf8, ..)| !*utf8)
+        .map(|(nm, ..)| nm.as_slice())
+        .collect();
+    let enc = pick_decoder(&ambiguous);
+
+    let out = raws
+        .into_iter()
+        .map(|(nm, utf8, size, csize, method)| EntryInfo {
+            name: if utf8 {
+                String::from_utf8_lossy(&nm).into_owned()
+            } else {
+                enc.decode(&nm).0.into_owned()
+            },
+            size,
+            compressed_size: Some(csize),
+            method,
+        })
+        .collect();
     Some(out)
 }
 
@@ -203,7 +349,8 @@ fn unitypackage_walk(path: &Path) -> Option<Vec<EntryInfo>> {
     let entries = archive.entries().ok()?;
 
     let mut asset_sizes: HashMap<String, u64> = HashMap::new();
-    let mut named: Vec<(String, String)> = Vec::new();
+    // 存原始字节，延后到码页定下来再解码——tar 同样是一个包一种编码。
+    let mut named: Vec<(String, Vec<u8>)> = Vec::new();
     let mut sink = std::io::sink();
 
     for entry in entries {
@@ -216,17 +363,23 @@ fn unitypackage_walk(path: &Path) -> Option<Vec<EntryInfo>> {
         } else if base.eq_ignore_ascii_case("pathname") {
             let mut buf = Vec::new();
             e.read_to_end(&mut buf).ok()?;
-            named.push((guid, decode_name(trim_bytes(&buf))));
+            named.push((guid, trim_bytes(&buf).to_vec()));
         } else {
             std::io::copy(&mut e, &mut sink).ok()?;
         }
     }
     std::io::copy(&mut archive.into_inner(), &mut sink).ok()?;
 
+    // 整包统一解码（与 zip 侧同构：一个包只有一个打包者、一种编码）。
+    let enc = {
+        let raws: Vec<&[u8]> = named.iter().map(|(_, b)| b.as_slice()).collect();
+        pick_decoder(&raws)
+    };
+
     let mut out: Vec<EntryInfo> = named
         .into_iter()
-        .map(|(guid, name)| EntryInfo {
-            name,
+        .map(|(guid, raw)| EntryInfo {
+            name: enc.decode(&raw).0.into_owned(),
             size: asset_sizes.get(&guid).copied().unwrap_or(0),
             compressed_size: None,
             method: "unitypackage".to_string(),
@@ -435,6 +588,69 @@ mod tests {
 
         let (sjis2, _, _) = encoding_rs::SHIFT_JIS.encode("利用規約（日本語版）.pdf");
         assert_eq!(decode_name(&sjis2), "利用規約（日本語版）.pdf");
+    }
+
+    /// GBK 不得只靠「Shift-JIS 解不出错」就放过。
+    ///
+    /// 中文 Windows 打包的 zip 用 GBK，而 GBK 字节落在 SJIS 的半角片假名区
+    /// （0xA1–0xDF）上是「合法」的——旧实现于是停在 SJIS 分支，输出 `ﾄ｣ﾐﾍ` 这种
+    /// 看着像日文、实则字节错位的串。
+    #[test]
+    fn decode_name_should_cover_gbk() {
+        let (gbk, _, _) = encoding_rs::GBK.encode("模型/贴图/身体.png");
+        assert_eq!(decode_name(&gbk), "模型/贴图/身体.png");
+    }
+
+    /// 同一压缩包内所有条目必须由**同一解码器**还原。
+    ///
+    /// 一个包只有一个打包者、一种编码。逐条目「挑第一个不报错的解码器」会让
+    /// 同一个包内混用两套解码器——这正是 B2 的命门，一致性本身就是可断言的判据。
+    #[test]
+    fn same_archive_entries_use_one_decoder() {
+        let names = [
+            "模型/贴图/身体.png",
+            "模型/说明文档.txt",
+            "衣服/连衣裙.fbx",
+            "道具/剑.fbx",
+        ];
+        let raws: Vec<Vec<u8>> = names
+            .iter()
+            .map(|n| encoding_rs::GBK.encode(n).0.into_owned())
+            .collect();
+        let refs: Vec<&[u8]> = raws.iter().map(|v| v.as_slice()).collect();
+        let enc = pick_decoder(&refs);
+        assert_eq!(enc, NameEncoding::Gbk, "整包未选中 GBK");
+        for (raw, want) in raws.iter().zip(names.iter()) {
+            assert_eq!(
+                enc.decode(raw).0.as_ref(),
+                *want,
+                "同包条目被不同解码器处理"
+            );
+        }
+    }
+
+    /// 日文包不得被判成中文码页。
+    ///
+    /// GBK 覆盖 0xC0–0xF7 区，Shift-JIS 字节落进去同样「解得出」（变成汉字），
+    /// 且无解码错误——只靠报错与否分不开。靠的是假名奖励：正确解出的日文含假名，
+    /// 而 GBK 误读会把假名字节解成汉字。
+    #[test]
+    fn shift_jis_not_mistaken_for_gbk() {
+        let (sjis, _, _) = encoding_rs::SHIFT_JIS.encode("三点だいしゅきツール");
+        assert_eq!(pick_decoder(&[&sjis]), NameEncoding::ShiftJis);
+        assert_eq!(decode_name(&sjis), "三点だいしゅきツール");
+    }
+
+    /// 纯 ASCII 条目名三种候选得分相同——选哪个都行，关键是结果不变。
+    #[test]
+    fn ascii_names_stay_ascii() {
+        let raws: Vec<&[u8]> = vec![b"a.txt", b"Assets/Material.mat"];
+        let enc = pick_decoder(&raws);
+        assert_eq!(enc.decode(b"a.txt").0.as_ref(), "a.txt");
+        assert_eq!(
+            enc.decode(b"Assets/Material.mat").0.as_ref(),
+            "Assets/Material.mat"
+        );
     }
 
     #[test]

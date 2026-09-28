@@ -1107,33 +1107,42 @@ fn preview_payload(paths: &[std::path::PathBuf], limit: usize) -> serde_json::Va
 
 /// 预览指定压缩包的条目（只读，不联网）。
 #[tauri::command]
-pub fn preview_archives(
+pub async fn preview_archives(
     paths: Vec<String>,
     limit: Option<usize>,
 ) -> Result<serde_json::Value, String> {
     let limit = limit.unwrap_or(engine::integrity::PREVIEW_LIMIT);
     let paths: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
-    Ok(preview_payload(&paths, limit))
+    // 预览要全量解压（unitypackage 还会读干 gzip 流），耗时不可预测——
+    // 必须移出主线程，否则大包时整个界面冻结。
+    tauri::async_runtime::spawn_blocking(move || Ok(preview_payload(&paths, limit)))
+        .await
+        .map_err(|e| format!("预览任务失败: {e}"))?
 }
 
 /// 预览某个商品目录内所有压缩包的条目（只读，不联网）。
 ///
 /// 目录里的包按名字排序，只取 `is_checkable` 认得的格式；其余文件不出现在结果里。
 #[tauri::command]
-pub fn preview_dir(dir: String, limit: Option<usize>) -> Result<serde_json::Value, String> {
-    let dir = std::path::PathBuf::from(dir);
-    if !dir.is_dir() {
-        return Err(format!("目录不存在：{}", dir.display()));
-    }
+pub async fn preview_dir(dir: String, limit: Option<usize>) -> Result<serde_json::Value, String> {
     let limit = limit.unwrap_or(engine::integrity::PREVIEW_LIMIT);
-    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
-        .map_err(|e| format!("读取目录失败：{e}"))?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.is_file() && engine::integrity::is_checkable(p))
-        .collect();
-    paths.sort();
-    Ok(preview_payload(&paths, limit))
+    // 同 `preview_archives`：目录内可能有多个大包，解压必须移出主线程。
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = std::path::PathBuf::from(dir);
+        if !dir.is_dir() {
+            return Err(format!("目录不存在：{}", dir.display()));
+        }
+        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .map_err(|e| format!("读取目录失败：{e}"))?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && engine::integrity::is_checkable(p))
+            .collect();
+        paths.sort();
+        Ok(preview_payload(&paths, limit))
+    })
+    .await
+    .map_err(|e| format!("预览任务失败: {e}"))?
 }
 
 /// backfill_free：对指定商品目录补免费文件。
