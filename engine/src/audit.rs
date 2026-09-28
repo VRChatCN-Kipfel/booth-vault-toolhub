@@ -701,6 +701,25 @@ pub fn refresh_library_cache(root: &Path, cache_file: Option<&Path>) {
     let _ = list_library_cached(root, cache_file, false);
 }
 
+/// 缓存归属键：只用于判定「这份索引属于哪个库」，不参与磁盘路径拼装。
+///
+/// 同一个库可能以 `G:\BOOTH`、`G:\BOOTH\`、`\\?\G:\BOOTH`、`g:\booth` 等写法进来
+/// （配置项与 CLI 参数的来源不同）。直接用原始串比较的话，换一种写法就会被判成换了库
+/// ——每次全扫，而且两种写法互相覆盖同一份缓存、永远不命中。这里只做身份归一化。
+fn root_key_of(root: &Path) -> String {
+    let s = root.to_string_lossy();
+    let s = s
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&s)
+        .trim_end_matches(['\\', '/']);
+    let mut key = s.to_string();
+    if cfg!(windows) {
+        // Windows 路径大小写不敏感；其他平台保持原样，免得把两个真实不同的库并成一个。
+        key.make_ascii_lowercase();
+    }
+    key
+}
+
 /// 列出归档库存，带持久化索引。
 ///
 /// `cache_file`：索引落盘路径（`None` 表示不读写缓存）；`force`：忽略缓存强制重扫
@@ -720,7 +739,7 @@ pub fn list_library_cached(
     cache_file: Option<&Path>,
     force: bool,
 ) -> Vec<LibraryItem> {
-    let root_key = root.to_string_lossy().to_string();
+    let root_key = root_key_of(root);
     let mut index = if force {
         LibraryIndex::default()
     } else {
@@ -773,7 +792,8 @@ pub fn list_library_cached(
 
 /// 原子写索引：`std::fs::write` 先截断再写，并发读者（GUI 的启动预热线程、
 /// 另一个 CLI 进程）可能读到半截 JSON。解析失败会被 `.ok()` 吞掉、退化成全扫，
-/// 自愈但没必要冒这个险——同卷 rename 是原子的。
+/// 自愈但没必要冒这个险——同卷 rename 是原子的。临时名按进程与序号取唯一值，
+/// 避免两个写者交错截断同一个 tmp。
 fn write_index_atomic(path: Option<&Path>, index: &LibraryIndex) {
     let Some(p) = path else {
         return;
@@ -784,8 +804,14 @@ fn write_index_atomic(path: Option<&Path>, index: &LibraryIndex) {
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let tmp = p.with_extension("json.tmp");
+    // 固定名（`library-index.json.tmp`）会被并发写者共用：GUI 的启动预热线程与另一个
+    // CLI 进程同时写同一个库时，两者交错截断同一个 tmp，rename 上去的仍可能是坏 JSON。
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = p.with_extension(format!("{}.{}.tmp", std::process::id(), seq));
     if std::fs::write(&tmp, &s).is_err() {
+        // 名字唯一后失败件不会互相覆盖，不清理就会在配置目录里越积越多。
+        let _ = std::fs::remove_file(&tmp);
         return;
     }
     if std::fs::rename(&tmp, p).is_err() {
@@ -1240,6 +1266,45 @@ mod tests {
         let out = list_library_cached(&base, Some(&cache), false);
         assert_eq!(out.len(), 1);
         assert!(!out[0].path.join(COVER_FILENAME).exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 同一个库的不同写法必须归一到同一个归属键：否则换一种写法就被判成换了库，
+    /// 每次全扫，而且两种写法互相覆盖同一份缓存、永远不命中。
+    #[test]
+    fn root_key_normalizes_equivalent_forms() {
+        let plain = root_key_of(Path::new(r"G:\Lin_File\BOOTH"));
+        assert_eq!(plain, root_key_of(Path::new(r"G:\Lin_File\BOOTH\")));
+        assert_eq!(plain, root_key_of(Path::new(r"\\?\G:\Lin_File\BOOTH")));
+        if cfg!(windows) {
+            assert_eq!(plain, root_key_of(Path::new(r"g:\lin_file\booth")));
+        }
+    }
+
+    /// 落盘不得留下 tmp：临时名带上进程号与序号后，残留件不再互相覆盖，
+    /// 不清理就会在配置目录里越积越多。
+    #[test]
+    fn write_index_atomic_leaves_no_tmp() {
+        let base = tmpdir("lib-atomic");
+        let cache = base.join("library-index.json");
+        let index = LibraryIndex {
+            root: "r".to_string(),
+            categories: BTreeMap::new(),
+        };
+        write_index_atomic(Some(cache.as_path()), &index);
+        write_index_atomic(Some(cache.as_path()), &index);
+        assert!(cache.is_file(), "索引应落盘");
+        assert_eq!(
+            std::fs::read_to_string(&cache).unwrap(),
+            serde_json::to_string(&index).unwrap()
+        );
+        let leftovers: Vec<String> = std::fs::read_dir(&base)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "残留 tmp: {leftovers:?}");
         let _ = std::fs::remove_dir_all(&base);
     }
 
