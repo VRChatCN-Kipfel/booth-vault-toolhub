@@ -1057,14 +1057,24 @@ pub struct LibraryRow {
 
 /// list_library：本地扫描库存，不联网。
 #[tauri::command]
-pub async fn list_library(base: Option<String>) -> Result<Vec<LibraryRow>, String> {
+pub async fn list_library(
+    base: Option<String>,
+    force: Option<bool>,
+) -> Result<Vec<LibraryRow>, String> {
     let config = load_config();
     let base_path = resolve_root(&config, base.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || {
         if !base_path.is_dir() {
             return Err(format!("FATAL: {} 不存在", base_path.display()));
         }
-        Ok(engine::audit::list_library(&base_path)
+        // 走持久化索引：稳态下只 stat 各分类目录，不再逐商品扫一遍。
+        let cache = engine::config::library_cache_path();
+        Ok(
+            engine::audit::list_library_cached(
+                &base_path,
+                cache.as_deref(),
+                force.unwrap_or(false),
+            )
             .into_iter()
             .map(|i| LibraryRow {
                 id: i.id,
@@ -1072,7 +1082,8 @@ pub async fn list_library(base: Option<String>) -> Result<Vec<LibraryRow>, Strin
                 category: i.category,
                 path: i.path.display().to_string(),
             })
-            .collect())
+            .collect(),
+        )
     })
     .await
     .map_err(|e| format!("扫描库存失败: {e}"))?

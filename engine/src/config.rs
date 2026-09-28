@@ -143,6 +143,13 @@ pub fn load_config() -> AppConfig {
     cfg
 }
 
+/// 库存索引缓存路径。
+///
+/// 落在用户配置目录而非 BOOTH 库内——库是主上的真实资产，只读（AGENTS 红线）。
+pub fn library_cache_path() -> Option<PathBuf> {
+    user_config_dir().map(|d| d.join("library-index.json"))
+}
+
 /// 用户级配置目录（`dirs::config_dir()/booth-vault-toolhub`）。
 fn user_config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("booth-vault-toolhub"))

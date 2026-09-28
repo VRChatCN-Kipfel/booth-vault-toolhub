@@ -158,6 +158,9 @@ struct LibraryParams {
     /// 归档根目录（默认读配置 download_root）。
     #[serde(default)]
     base: Option<String>,
+    /// 忽略索引强制重扫（索引漏掉的变化用这条兜底）。
+    #[serde(default)]
+    refresh: bool,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -585,7 +588,7 @@ impl BoothServer {
 
     /// 列出归档库存（只读）。
     #[tool(
-        description = "列出归档库存：ID / 标题 / 类目 / 路径。类目取 ID 目录的父文件夹名，不联网。"
+        description = "列出归档库存：ID / 标题 / 类目 / 路径。类目取 ID 目录的父文件夹名，不联网。走持久化索引（按分类目录 mtime 增量），稳态秒开；refresh=true 强制重扫。"
     )]
     async fn library(&self, Parameters(params): Parameters<LibraryParams>) -> CallToolResult {
         let config = load_config();
@@ -598,7 +601,9 @@ impl BoothServer {
         if !base.is_dir() {
             return tool_error(&format!("FATAL: {} 不存在", base.display()));
         }
-        let items = engine::audit::list_library(&base);
+        // 走持久化索引：稳态下只 stat 各分类目录，不再逐商品扫一遍。
+        let cache = engine::config::library_cache_path();
+        let items = engine::audit::list_library_cached(&base, cache.as_deref(), params.refresh);
         let result = LibraryResult {
             command: "library".to_string(),
             total: items.len(),

@@ -81,7 +81,9 @@ pub fn run(cli: Cli) -> u8 {
             keep_failed,
             cli.json,
         ),
-        Command::Library { base } => cmd_library(&config, base.as_deref(), cli.json),
+        Command::Library { base, refresh } => {
+            cmd_library(&config, base.as_deref(), refresh, cli.json)
+        }
         Command::Preview { archive, limit } => cmd_preview(&archive, limit, cli.json),
         Command::Shell { command } => cmd_shell(command),
         Command::UpdateCheck { proxy } => cmd_update_check(proxy, cli.json),
@@ -770,7 +772,7 @@ fn cmd_version_audit(
 }
 
 /// library：列出库存。
-fn cmd_library(config: &AppConfig, base: Option<&Path>, json: bool) -> u8 {
+fn cmd_library(config: &AppConfig, base: Option<&Path>, refresh: bool, json: bool) -> u8 {
     let base = match download_root(config, base) {
         Some(p) => p.to_path_buf(),
         None => {
@@ -780,7 +782,9 @@ fn cmd_library(config: &AppConfig, base: Option<&Path>, json: bool) -> u8 {
     if !base.is_dir() {
         return fail(json, &format!("FATAL: {} 不存在", base.display()));
     }
-    let items = engine::audit::list_library(&base);
+    // 走持久化索引：稳态下只 stat 各分类目录，不再逐商品扫一遍。
+    let cache = engine::config::library_cache_path();
+    let items = engine::audit::list_library_cached(&base, cache.as_deref(), refresh);
     if json {
         let rows: Vec<serde_json::Value> = items
             .iter()

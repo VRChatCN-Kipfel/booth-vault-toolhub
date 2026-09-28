@@ -12,13 +12,7 @@ import {
 import { QueueActions } from '../components/QueueActions';
 import { PageTitle } from '../components/PageTitle';
 import { useAppConfigStore } from '../store/appConfigStore';
-
-type LibraryRow = {
-  id: string;
-  name: string;
-  category: string;
-  path: string;
-};
+import { useLibraryStore } from '../store/libraryStore';
 
 type EntryRow = {
   name: string;
@@ -113,37 +107,19 @@ function fmtBytes(n: number): string {
 
 export function LibraryPage() {
   const boothRoot = useAppConfigStore((s) => s.boothRoot);
-  const [items, setItems] = useState<LibraryRow[]>([]);
+  const { items, loading, error: err, load } = useLibraryStore();
   const [q, setQ] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState('');
   const [openPath, setOpenPath] = useState('');
   const [preview, setPreview] = useState<PreviewPayload | null>(null);
   const [previewErr, setPreviewErr] = useState('');
   const [previewLoading, setPreviewLoading] = useState(false);
 
-  const reload = useCallback(async () => {
-    if (!boothRoot) {
-      setErr('先在设置里填归档根目录');
-      setItems([]);
-      return;
-    }
-    setLoading(true);
-    setErr('');
-    try {
-      const rows = await invoke<LibraryRow[]>('list_library', { base: boothRoot });
-      setItems(rows);
-    } catch (e) {
-      setErr(String(e));
-      setItems([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [boothRoot]);
-
+  // 有缓存时 `load` 不会把界面打回加载态：先渲染缓存，后台静默刷新。
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    void load(boothRoot);
+  }, [boothRoot, load]);
+
+  const reload = useCallback(() => load(boothRoot, true), [boothRoot, load]);
 
   const togglePreview = useCallback(async (path: string) => {
     if (openPath === path) {
@@ -196,7 +172,8 @@ export function LibraryPage() {
           <AccentButton onClick={() => void reload()} disabled={loading || !boothRoot}>
             {loading ? '扫描中…' : '刷新'}
           </AccentButton>
-          {err && <Muted>{err}</Muted>}
+          {!boothRoot && <Muted>先在设置里填归档根目录</Muted>}
+          {boothRoot && err && <Muted>{err}</Muted>}
         </Row>
       </Section>
 

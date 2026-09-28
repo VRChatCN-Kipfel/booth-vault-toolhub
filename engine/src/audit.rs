@@ -6,7 +6,8 @@
 //! 兼容历史遗留编码契约（当前写入为 UTF-8 无 BOM，旧版曾写 UTF-16）。
 
 use fancy_regex::Regex;
-use std::collections::HashSet;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::clean::extract_version_tag;
@@ -542,7 +543,7 @@ pub struct LibraryItem {
     pub category: String,
 }
 
-/// 列出归档库存。类目取 ID 目录的父目录名。
+/// 列出归档库存（每次全扫，不缓存）。类目取 ID 目录的父目录名。
 pub fn list_library(root: &Path) -> Vec<LibraryItem> {
     scan_library(root)
         .into_iter()
@@ -562,6 +563,153 @@ pub fn list_library(root: &Path) -> Vec<LibraryItem> {
             }
         })
         .collect()
+}
+
+// ── 库存索引：持久化缓存 + 分类级增量 ──────────────────────────────
+
+/// 索引里的单个商品。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedItem {
+    id: String,
+    name: String,
+}
+
+/// 单个分类目录的缓存。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedCategory {
+    /// 分类目录的 `mtime_ns`：其下增删目录会改变它，是天然的变更指纹
+    /// （与 Score Studio 以 `size_mtime_ns` 作文件指纹同构，此处粒度是目录）。
+    mtime_ns: u64,
+    items: Vec<CachedItem>,
+}
+
+/// 库存索引文件。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct LibraryIndex {
+    /// 归属根目录：换了库就不复用旧缓存（按 id 串起来的条目会张冠李戴）。
+    root: String,
+    categories: BTreeMap<String, CachedCategory>,
+}
+
+fn dir_mtime_ns(p: &Path) -> Option<u64> {
+    std::fs::metadata(p)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_nanos() as u64)
+}
+
+/// 扫一层分类目录取出其中的 ID 目录。
+///
+/// 只读目录名：id 与名称都从名字解析、分类来自父目录名，**不做任何文件级 stat**。
+/// 原路径经 `scan_library` 时每个商品目录要查封面/图标/ini 三次 `exists`——
+/// 列库存根本用不到，916 目录下即约 2700 次无谓系统调用。
+///
+/// 用 `DirEntry::file_type()` 而非 `path.is_dir()`：Windows 的 readdir 已带回类型，
+/// 后者会额外触发一次 stat。
+fn scan_category(cat_path: &Path) -> Vec<CachedItem> {
+    let Ok(rd) = std::fs::read_dir(cat_path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in rd.filter_map(Result::ok) {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if let Ok(Some(caps)) = ID_RE
+            .get_or_init(|| Regex::new(ID_DIR_RE).expect("valid regex"))
+            .captures(&name)
+            && let (Some(id), Some(nm)) = (caps.get(1), caps.get(2))
+        {
+            out.push(CachedItem {
+                id: id.as_str().to_string(),
+                name: nm.as_str().to_string(),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// 列出归档库存，带持久化索引。
+///
+/// `cache_file`：索引落盘路径（`None` 表示不读写缓存）；`force`：忽略缓存强制重扫
+/// （GUI 的「刷新」按钮走这条，用于兜住缓存指纹察觉不到的变化）。
+///
+/// **增量粒度是分类目录**（`root` 的直接子目录）：其下新增/删除商品会改变该目录的
+/// `mtime_ns`，据此判断是否重扫该分类；未变的分类直接复用缓存条目。于是 916 个商品
+/// 目录的库，稳态下只需 ~25 次 `stat` 即可出全量列表，而不是逐目录扫一遍。
+///
+/// 已知边界：分类目录**内部**的深层变化（如商品目录内再套子目录）不改变分类目录的
+/// mtime，不会被自动察觉；这类结构在 BOOTH 库中不存在（商品目录即末端），需要时用
+/// `force` 重扫。
+pub fn list_library_cached(
+    root: &Path,
+    cache_file: Option<&Path>,
+    force: bool,
+) -> Vec<LibraryItem> {
+    let root_key = root.to_string_lossy().to_string();
+    let mut index = if force {
+        LibraryIndex::default()
+    } else {
+        cache_file
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| serde_json::from_str::<LibraryIndex>(&s).ok())
+            .filter(|idx| idx.root == root_key)
+            .unwrap_or_default()
+    };
+    index.root = root_key;
+
+    let mut out = Vec::new();
+    let mut next = BTreeMap::new();
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for entry in rd.filter_map(Result::ok) {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let cat_path = entry.path();
+        let Some(cat_name) = cat_path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if is_hidden(&cat_path) {
+            continue;
+        }
+        let Some(mtime_ns) = dir_mtime_ns(&cat_path) else {
+            continue;
+        };
+        let items = match index.categories.get(cat_name) {
+            Some(c) if c.mtime_ns == mtime_ns => c.items.clone(),
+            _ => scan_category(&cat_path),
+        };
+        for it in &items {
+            out.push(LibraryItem {
+                id: it.id.clone(),
+                name: it.name.clone(),
+                path: cat_path.join(format!("{}_{}", it.id, it.name)),
+                category: cat_name.to_string(),
+            });
+        }
+        next.insert(cat_name.to_string(), CachedCategory { mtime_ns, items });
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+
+    index.categories = next;
+    if let Some(p) = cache_file {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(s) = serde_json::to_string(&index) {
+            let _ = std::fs::write(p, s);
+        }
+    }
+    out
 }
 
 /// 错位检测结果：目录所在分类与官方分类不一致的商品。
@@ -843,6 +991,119 @@ mod tests {
         let d = base.join(name);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    fn make_lib(root: &Path, cat: &str, id: &str, name: &str) -> PathBuf {
+        let d = root.join(cat).join(format!("{id}_{name}"));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn cached_library_lists_and_persists_index() {
+        let base = tmpdir("lib-cache");
+        make_lib(&base, "3D服饰", "1234567", "Dress");
+        make_lib(&base, "3D发型", "2345678", "Hair");
+        let cache = base.join("idx.json");
+
+        let first = list_library_cached(&base, Some(&cache), false);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].id, "1234567");
+        assert_eq!(first[0].category, "3D服饰");
+        assert_eq!(first[1].category, "3D发型");
+        assert!(cache.is_file(), "索引应落盘");
+
+        let second = list_library_cached(&base, Some(&cache), false);
+        assert_eq!(second, first);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 往缓存里塞一条磁盘上不存在的条目：分类目录 mtime 未变时指纹命中，
+    /// 结果应包含它——以此证明走的是缓存而非重扫。
+    #[test]
+    fn cached_library_trusts_index_when_fingerprint_matches() {
+        let base = tmpdir("lib-trust");
+        make_lib(&base, "3D服饰", "1234567", "Dress");
+        let cache = base.join("idx.json");
+        let _ = list_library_cached(&base, Some(&cache), false);
+
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cache).unwrap()).unwrap();
+        v["categories"]["3D服饰"]["items"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({ "id": "9999999", "name": "Ghost" }));
+        std::fs::write(&cache, serde_json::to_string(&v).unwrap()).unwrap();
+
+        let out = list_library_cached(&base, Some(&cache), false);
+        assert!(out.iter().any(|i| i.id == "9999999"), "应采信缓存");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 分类目录增删商品会改其 mtime，据此触发该分类重扫。
+    #[test]
+    fn cached_library_detects_new_item_via_dir_mtime() {
+        let base = tmpdir("lib-new");
+        make_lib(&base, "3D服饰", "1234567", "Dress");
+        let cache = base.join("idx.json");
+        assert_eq!(list_library_cached(&base, Some(&cache), false).len(), 1);
+
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        make_lib(&base, "3D服饰", "2345678", "Skirt");
+        let out = list_library_cached(&base, Some(&cache), false);
+        assert_eq!(out.len(), 2, "新增商品应被察觉");
+        assert!(out.iter().any(|i| i.id == "2345678"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cached_library_force_ignores_index() {
+        let base = tmpdir("lib-force");
+        make_lib(&base, "3D服饰", "1234567", "Dress");
+        let cache = base.join("idx.json");
+        let _ = list_library_cached(&base, Some(&cache), false);
+
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cache).unwrap()).unwrap();
+        v["categories"]["3D服饰"]["items"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({ "id": "9999999", "name": "Ghost" }));
+        std::fs::write(&cache, serde_json::to_string(&v).unwrap()).unwrap();
+
+        let out = list_library_cached(&base, Some(&cache), true);
+        assert!(!out.iter().any(|i| i.id == "9999999"), "force 应丢弃缓存");
+        assert_eq!(out.len(), 1);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 换了库根目录时不得复用旧缓存，否则条目会张冠李戴。
+    #[test]
+    fn cached_library_ignores_foreign_root() {
+        let base = tmpdir("lib-root");
+        make_lib(&base, "3D服饰", "1234567", "Dress");
+        let cache = base.join("idx.json");
+        let _ = list_library_cached(&base, Some(&cache), false);
+
+        let base2 = tmpdir("lib-root2");
+        make_lib(&base2, "3D工具", "3456789", "Tool");
+        let out = list_library_cached(&base2, Some(&cache), false);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "3456789");
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&base2);
+    }
+
+    /// 列库存不该做三件套 stat：缺封面/图标/ini 的商品照常列出。
+    #[test]
+    fn cached_library_lists_without_sidecar_checks() {
+        let base = tmpdir("lib-nosidecar");
+        make_lib(&base, "3D服饰", "1234567", "NoCoverNoIcon");
+        let cache = base.join("idx.json");
+        let out = list_library_cached(&base, Some(&cache), false);
+        assert_eq!(out.len(), 1);
+        assert!(!out[0].path.join(COVER_FILENAME).exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

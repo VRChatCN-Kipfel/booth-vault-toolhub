@@ -124,11 +124,14 @@ enum Command {
         #[arg(long)]
         cookie: Option<String>,
     },
-    /// 列出归档库存（ID / 标题 / 类目 / 路径）。
+    /// 列出归档库存（ID / 标题 / 类目 / 路径）。走持久化索引，稳态秒开。
     Library {
         /// 归档根目录。
         #[arg(long)]
         base: Option<PathBuf>,
+        /// 忽略索引强制重扫（索引漏掉的变化用这条兜底）。
+        #[arg(long)]
+        refresh: bool,
     },
     /// 预览压缩包内条目（zip / unitypackage），不联网。
     Preview {

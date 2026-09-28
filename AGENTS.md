@@ -99,6 +99,10 @@ cd gui && npm run tauri dev # GUI 开发
 - 自更新检查（`update_check`）多通道契约：**Atom feed（`releases.atom`）为主**（无 API 配额限流，成熟库 feed-rs 解析），HTML 重定向 + API 作兜底。所有通道显式超时（20s），防单入口挂起；代理/直连 client 去重（`use_proxy=false` 时只发一次）。失败区分「网络不可达」与「仓库无 Release」两种 error 文案。内置 gh-proxy 类镜像（`MIRRORS`）**仅用于下载阶段**，查版本阶段不发起镜像请求（实测镜像对 feed 全 403）。
 - **下载失败留痕**：任何失败（传输 / 假 HTML / 结构损坏 / rename）统一走 `download::fail` —— 默认清理 `{dest}.part` 并上报；仅当 `keep_failed_downloads` 开启（配置项 / CLI `--keep-failed` / MCP `keep_failed` / 设置页）才保留，错误串附绝对路径。**保留件不产生续传能力**（两条下载路径都是 `File::create` 从头写，重试即截断重来），价值仅在于取证；全仓无自动回收，长期开启会持续占用空间。
 - **落盘前须过结构校验**：`rename` 前对 `.part` 跑 `integrity::package_health_of`（按目标扩展名分派，因为扩展名在目标名上、内容还在临时文件里），损坏即走 `fail()` 不落盘。否则坏包会静默落地，直到下一轮 `is_locally_valid` 才发现要重下——届时 `.part` 已不在，留痕开关够不着。
+- **库存列表走持久化索引**：`audit::list_library_cached` 以**分类目录的 `mtime_ns`** 为变更指纹（与 Score Studio 以 `size_mtime_ns` 作文件指纹同构，粒度到目录），未变的分类直接复用缓存条目，于是稳态下只需 ~25 次 `stat` 而非逐商品扫一遍。
+    - 列库存**不得做三件套 stat**：id/名称都从目录名解析、分类取自父目录名，封面/图标/ini 的存在性与结果无关（实测 916 目录下那 2700 次无谓调用占总耗时的 97%）。遍历用 `DirEntry::file_type()` 而非 `path.is_dir()`，后者在 Windows 上会多一次 stat。
+    - 索引落在**用户配置目录**（`config::library_cache_path()`），**不得写进 BOOTH 库**——库是只读资产。
+    - 已知边界：分类目录**内部**的深层变化不改变该目录 mtime，不会被自动察觉；`force` / `--refresh` 为兜底。换库根时按缓存里的 `root` 字段判定不复用。
 
 ### 版本注入契约（CI/发布线）
 
