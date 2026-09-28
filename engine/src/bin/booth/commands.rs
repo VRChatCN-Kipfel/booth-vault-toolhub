@@ -85,6 +85,7 @@ pub fn run(cli: Cli) -> u8 {
             cmd_library(&config, base.as_deref(), refresh, cli.json)
         }
         Command::Preview { archive, limit } => cmd_preview(&archive, limit, cli.json),
+        Command::CookieCheck { cookie } => cmd_cookie_check(&config, cookie.as_deref(), cli.json),
         Command::Shell { command } => cmd_shell(command),
         Command::UpdateCheck { proxy } => cmd_update_check(proxy, cli.json),
     }
@@ -819,6 +820,31 @@ fn cmd_library(config: &AppConfig, base: Option<&Path>, refresh: bool, json: boo
         }
     }
     0
+}
+
+/// cookie-check：检测 Cookie 是否真的能登入 BOOTH（单次探针，不触发下载）。
+fn cmd_cookie_check(config: &AppConfig, cookie: Option<&str>, json: bool) -> u8 {
+    let resolved = resolve_cookie(cookie, config);
+    let check = engine::session::check_cookie(config, resolved.as_deref());
+    if json {
+        println!(
+            "{}",
+            // 信封由 engine 单点定义，避免三端各写一份后漂移。
+            serde_json::to_string_pretty(&check.to_command_json()).unwrap()
+        );
+    } else {
+        println!("{} {}", if check.ok { "✓" } else { "✗" }, check.detail);
+        println!(
+            "  生效 cookie: {} 条（自动剔除 {} 条统计项）",
+            check.pair_count, check.dropped_count
+        );
+        println!(
+            "  含会话项 {}: {}",
+            engine::session::SESSION_COOKIE,
+            if check.has_session { "是" } else { "否" }
+        );
+    }
+    if check.ok { 0 } else { 1 }
 }
 
 /// update_check 命令（检查工具自更新）。
