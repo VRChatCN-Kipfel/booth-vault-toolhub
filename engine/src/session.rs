@@ -230,8 +230,13 @@ fn finalize(rows: Vec<(String, String)>) -> SanitizedCookie {
 /// 与 Netscape cookies.txt **不同**（后者是 `domain · flag · path · secure · expires · name · value`），
 /// 两者的 name/value 列号完全不同，不能共用索引。
 ///
-/// 判据：制表符分隔 ≥4 列，且**第 3 列**（domain）含 `booth`。
-/// 不满足即返回 `None`，交回字符串形态处理。
+/// 判据：**带 domain 列的行走（≥3 列）**一律按表格校验收下——domain 在**第 2 列**
+/// （0 基）且必须含 `booth`，命中即收、不命中即丢；只有**恰好 2 列**（用户只框选了
+/// Name + Value）才免校验走退化分支。一条都没收下则返回 `None`，交回字符串形态处理。
+///
+/// **≥3 列的行不得在域校验失败后再落到退化分支**：否则 domain 非 `booth` 的第三方行
+/// （以及首列是域名的 Netscape 行）会被当 cookie 收下，并随请求发给 BOOTH——
+/// 域门必须对"带 domain 列的行"整体生效，而不是只决定「是否走快速路径」。
 fn parse_tabular_rows(text: &str) -> Option<Vec<(String, String)>> {
     let mut out = Vec::new();
     for line in text.lines() {
@@ -240,18 +245,18 @@ fn parse_tabular_rows(text: &str) -> Option<Vec<(String, String)>> {
         }
         let parts: Vec<&str> = line.split('\t').collect();
         // 完整表格：Name · Value · Domain · …（domain 在第 2 列，0 基）
-        if parts.len() >= 4 {
+        if parts.len() >= 3 {
             let (name, value, domain) = (parts[0].trim(), parts[1].trim(), parts[2].trim());
             if !name.is_empty() && domain.contains("booth") {
                 out.push((name.to_string(), value.to_string()));
-                continue;
             }
+            continue;
         }
         // 退化：只框选了 Name + Value 两列也是常见操作（表格其余列对用户无用）。
         // 此时没有 domain 可校验，但只要第 0 列形如 cookie 名就收下——
         // 否则用户会**静默得到空 cookie**，界面却只说「未登录」，无从下手。
-        // 排除域名形态（`.booth.pm`）与路径，避免误收 Netscape cookies.txt 的行。
-        if parts.len() >= 2 {
+        // 仍排除域名/路径形态的两列输入，避免把别处的键值对误当 cookie。
+        if parts.len() == 2 {
             let (name, value) = (parts[0].trim(), parts[1].trim());
             let looks_like_name = !name.is_empty()
                 && !value.is_empty()
@@ -887,6 +892,41 @@ mod tests {
         let rows = parse_netscape_rows(netscape).expect("Netscape 应被识别");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0, "name");
+    }
+
+    /// 带 domain 列的第三方行不得被收下——域门必须整体生效，不能"校验失败就退化"。
+    ///
+    /// 回归：先前 ≥4 列的行在 domain 不含 `booth` 时会继续落到两列退化分支，
+    /// 于是第三方 cookie（含 Netscape host-only 形态）被当 cookie 收下并注入 BOOTH。
+    #[test]
+    fn third_party_rows_are_rejected() {
+        // DevTools 表格：4+ 列，domain 非 booth
+        let s = sanitize_cookie("trk\tTRACK\t.example.com\t/\t2027-01-01T00:00:00.000Z\t30");
+        assert!(s.pairs.is_empty(), "第三方域被收下：{:?}", s.pairs);
+
+        // 混合表格：只留 booth 行
+        let mixed = sanitize_cookie(
+            "_plaza_session_nktz7u\tS\t.booth.pm\t/\t2027-01-01T00:00:00.000Z\t9\n\
+             trk\tTRACK\t.example.com\t/\t2027-01-01T00:00:00.000Z\t30",
+        );
+        let kept: Vec<&str> = mixed.pairs.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(kept, vec![SESSION_COOKIE], "第三方行泄漏：{kept:?}");
+
+        // Netscape host-only 第三方域（首列无点、7 列）同样不得被收
+        let ns = sanitize_cookie("example.com\tFALSE\t/\tFALSE\t0\tfoo\tbar");
+        assert!(
+            ns.pairs.is_empty(),
+            "Netscape host-only 第三方域被收下：{:?}",
+            ns.pairs
+        );
+
+        // 只框选 Name + Value 两列仍须可用（退化分支的本意）
+        let two = sanitize_cookie("_plaza_session_nktz7u\tSESSVAL\ncf_clearance\tCFVAL");
+        assert!(
+            two.has_session() && two.pairs.len() == 2,
+            "两列粘贴退化：{:?}",
+            two.pairs
+        );
     }
 
     /// 未被重定向到登录页即视为已登录。
