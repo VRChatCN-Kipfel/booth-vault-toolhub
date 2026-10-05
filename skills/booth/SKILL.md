@@ -25,8 +25,8 @@ BOOTH（日本数字创作集市，VRChat 素材主产地）素材的**下载 / 
 
 | 入口 | 说明 | 适用 |
 |------|------|------|
-| **`booth` CLI** | 编译后的二进制，五子命令 | 终端/agent 首选 |
-| **booth-mcp** | MCP stdio server，暴露同五工具 | opencode / Claude Code 等 MCP 客户端 |
+| **`booth` CLI** | 编译后的二进制，十子命令 | 终端/agent 首选 |
+| **booth-mcp** | MCP stdio server，暴露九工具（无 shell） | opencode / Claude Code 等 MCP 客户端 |
 | 原 `python scripts/booth.py` | 旧版 Python（仅参考，已废弃） | 不推荐 |
 
 ## 找到 CLI / MCP 二进制（先定位，再调用）
@@ -89,7 +89,9 @@ booth organize <本地包...> [--id ID] [--out DIR]           # 按 ID 整理归
 booth search   <本地文件...> [--id ID] [--base-dir DIR]    # 按名搜索整理
 booth audit    [--base DIR] [--dry-run]                    # 图标三件套巡检
 booth version-audit [--base DIR] [--fix]                   # 版本巡检；--fix 补免费文件
-booth library  [--base DIR]                                # 列出库存
+booth library  [--base DIR] [--refresh]                    # 列出库存（走持久化索引）
+booth preview  <本地包...> [--limit N]                      # 列出包内条目（名称/大小）
+booth cookie-check [--cookie ...] [--json]                 # 检测 Cookie 是否可用（探针，不触发下载）
 booth update-check [--proxy]                               # 工具自更新检查
 ```
 
@@ -97,7 +99,7 @@ booth update-check [--proxy]                               # 工具自更新检�
 
 ## MCP 接入（可选）
 
-以 stdio server 运行 `booth-mcp`，同七工具（download/organize/search/audit/version_audit/library/update_check），
+以 stdio server 运行 `booth-mcp`，同九工具（download/organize/search/audit/version_audit/library/preview/update_check/cookie_check），
 JSON 输入输出与 CLI 完全一致。客户端配置示例（`.mcp.json` 片段）：
 
 ```json

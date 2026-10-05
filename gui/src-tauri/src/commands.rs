@@ -1283,6 +1283,42 @@ pub async fn update_check(use_proxy: bool) -> Result<serde_json::Value, String> 
     }))
 }
 
+/// check_cookie：检测 BOOTH Cookie 是否可用（单次探针，不触发下载）。
+///
+/// `cookie` 传空则用配置里的值，便于「先检测再保存」。
+/// 代理同理：传了 `proxy` 就用界面上的当前值覆盖磁盘配置——否则首配用户
+/// 「填完代理没保存就点检测」会拿到 `unreachable`，而界面不会提示是代理没生效，
+/// 与 cookie 的待遇不一致（cookie 早就支持未保存先测）。
+#[tauri::command]
+pub async fn check_cookie(
+    cookie: Option<String>,
+    proxy: Option<bool>,
+    proxy_url: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut config = load_config();
+    if let Some(enabled) = proxy {
+        config.proxy_enabled = Some(enabled);
+        config.proxy = proxy_url.and_then(|u| {
+            let t = u.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        });
+    }
+    let effective = cookie
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| config.cookie.clone());
+    let check = tauri::async_runtime::spawn_blocking(move || {
+        engine::session::check_cookie(&config, effective.as_deref())
+    })
+    .await
+    .map_err(|e| format!("检测任务失败: {e}"))?;
+    // 信封由 engine 单点定义，避免三端各写一份后漂移。
+    Ok(check.to_command_json())
+}
+
 fn app_icon_png(id: &str) -> &'static [u8] {
     match id {
         "zhuyin" => include_bytes!("../app-icons/zhuyin-256.png"),
