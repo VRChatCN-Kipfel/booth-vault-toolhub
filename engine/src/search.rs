@@ -176,10 +176,135 @@ fn char_window(s: &str, start: usize, end: usize) -> &str {
     &s[start_byte..end_byte]
 }
 
-/// 搜索 BOOTH：`?q=...` 返回商品列表。
+/// 通用检索过滤轴。
+///
+/// 对应 BOOTH 站内的排序 / 分类 / 价格 / 标签等参数。刻意做成结构体而不是长参数表：
+/// 三端（CLI/MCP/GUI）各自构造同一结构，避免像历史上那样出现「GUI 有、CLI 没有」的漂移。
+#[derive(Debug, Clone, Default)]
+pub struct SearchQuery {
+    /// 检索词（已确定要查的完整词，调用方负责拆词）。
+    pub query: String,
+    /// 排序：`new` / `popularity` / `liked` / `price_asc` / `price_desc`。
+    pub sort: Option<String>,
+    /// 商品类型：`digital` / `physical`。
+    pub kind: Option<String>,
+    /// R-18：`include` / `exclude` / `only`。
+    pub adult: Option<String>,
+    /// 标签过滤（AND 语义，多次出现即多标签）。
+    pub tags: Vec<String>,
+    /// 分类 slug（需日语原文，如 `3D衣装`）。
+    pub category: Option<String>,
+    /// 价格区间（日元）。
+    pub min_price: Option<i64>,
+    pub max_price: Option<i64>,
+    /// 仅在售。
+    pub in_stock: bool,
+    /// 排除词（OR 组内取反，BOOTH 侧不支持，由调用方后置过滤）。
+    pub exclude: Vec<String>,
+    /// 页码（1 基）。
+    pub page: u32,
+}
+
+impl SearchQuery {
+    /// 仅按关键词检索（历史行为）。
+    pub fn simple(query: impl Into<String>) -> Self {
+        Self {
+            query: query.into(),
+            page: 1,
+            ..Default::default()
+        }
+    }
+}
+
+/// 拼装 BOOTH 检索 URL。
+///
+/// 规则（与站点实测行为对齐）：
+///   - `popularity` 排序时**不传 page**：站点会忽略该参数，翻页永远返回第一页；
+///     翻页语义由调用方改用 `new` 承担（`effective_sort`）。
+///   - 查询词放在 `q`，标签用复数键 `tags[]`，价格用 `min_price`/`max_price`。
+pub fn build_search_url(q: &SearchQuery) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !q.query.trim().is_empty() {
+        parts.push(format!("q={}", urlencode(&q.query)));
+    }
+    let sort = q.sort.as_deref().unwrap_or("");
+    // popularity 下 page 参数无效，直接不传，避免无意义的规范化重定向。
+    let paging_ok = sort != "popularity";
+    if !sort.is_empty() {
+        parts.push(format!("sort={}", urlencode(sort)));
+    }
+    if let Some(k) = q.kind.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(format!("type={}", urlencode(k)));
+    }
+    if let Some(a) = q.adult.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(format!("adult={}", urlencode(a)));
+    }
+    if let Some(c) = q.category.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(format!("category={}", urlencode(c)));
+    }
+    if let Some(v) = q.min_price {
+        parts.push(format!("min_price={v}"));
+    }
+    if let Some(v) = q.max_price {
+        parts.push(format!("max_price={v}"));
+    }
+    if q.in_stock {
+        parts.push("is_sold_out=false".to_string());
+    }
+    for t in &q.tags {
+        if !t.trim().is_empty() {
+            parts.push(format!("tags[]={}", urlencode(t)));
+        }
+    }
+    if paging_ok && q.page > 1 {
+        parts.push(format!("page={}", q.page));
+    }
+    let base = "https://booth.pm/ja/items";
+    if parts.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{}", parts.join("&"))
+    }
+}
+
+/// 带过滤轴的搜索（走内容缓存，列表页 TTL 10 分钟）。
+pub fn search_with(
+    client: &Client,
+    q: &SearchQuery,
+    no_cache: bool,
+) -> Result<Vec<SearchItem>, String> {
+    let url = build_search_url(q);
+    let cache = crate::cache::shared();
+    let ttl = if no_cache { 0 } else { crate::cache::TTL_PAGE };
+    let r = crate::http::get_cached(client, &url, default_headers(), cache.as_deref(), ttl)
+        .map_err(|e| format!("search request: {e}"))?;
+    if !(200..300).contains(&r.status) {
+        return Err(format!("search status {}", r.status));
+    }
+    let html = String::from_utf8_lossy(&r.body);
+    let mut items = parse_search_html(&html);
+    // BOOTH 不支持关键词排除，只能本地后置过滤。
+    if !q.exclude.is_empty() {
+        items.retain(|it| {
+            let hay = format!("{} {}", it.name, it.shop).to_lowercase();
+            !q.exclude
+                .iter()
+                .any(|w| !w.trim().is_empty() && hay.contains(&w.to_lowercase()))
+        });
+    }
+    Ok(items)
+}
+
+/// 搜索 BOOTH：`?q=...` 返回商品列表（历史入口，无过滤轴、不走缓存）。
+///
+/// 保留原签名供既有调用方（按名搜索链路）使用；新代码请用 [`search_with`]。
 pub fn search_booth(client: &Client, query: &str) -> Result<Vec<SearchItem>, String> {
-    let url = format!("https://booth.pm/ja/items?q={}", urlencode(query));
-    let r = get(client, &url, default_headers()).map_err(|e| format!("search request: {e}"))?;
+    let r = get(
+        client,
+        &format!("https://booth.pm/ja/items?q={}", urlencode(query)),
+        default_headers(),
+    )
+    .map_err(|e| format!("search request: {e}"))?;
     if !r.status().is_success() {
         return Err(format!("search status {}", r.status()));
     }
@@ -283,5 +408,79 @@ mod tests {
     fn urlencode_basic() {
         assert_eq!(urlencode("abc 123"), "abc%20123");
         assert_eq!(urlencode("メカ"), "%E3%83%A1%E3%82%AB");
+    }
+
+    /// 历史行为必须逐字节保持：只传 q 时 URL 与旧实现完全一致。
+    #[test]
+    fn build_url_matches_legacy_for_plain_query() {
+        let q = SearchQuery::simple("メカ");
+        assert_eq!(
+            build_search_url(&q),
+            "https://booth.pm/ja/items?q=%E3%83%A1%E3%82%AB"
+        );
+    }
+
+    #[test]
+    fn build_url_appends_axes() {
+        let q = SearchQuery {
+            query: "衣装".into(),
+            sort: Some("new".into()),
+            adult: Some("exclude".into()),
+            min_price: Some(1000),
+            max_price: Some(5000),
+            in_stock: true,
+            tags: vec!["VRChat".into()],
+            category: Some("3D衣装".into()),
+            page: 2,
+            ..Default::default()
+        };
+        let url = build_search_url(&q);
+        for frag in [
+            "q=%E8%A1%A3%E8%A3%85",
+            "sort=new",
+            "adult=exclude",
+            "min_price=1000",
+            "max_price=5000",
+            "is_sold_out=false",
+            "tags[]=VRChat",
+            "page=2",
+        ] {
+            assert!(url.contains(frag), "缺少 {frag}：{url}");
+        }
+    }
+
+    /// 站点在 popularity 下忽略 page，翻页永远回第一页——传它等于自欺。
+    #[test]
+    fn popularity_never_sends_page() {
+        let q = SearchQuery {
+            query: "x".into(),
+            sort: Some("popularity".into()),
+            page: 3,
+            ..Default::default()
+        };
+        let url = build_search_url(&q);
+        assert!(!url.contains("page="), "popularity 不得传 page：{url}");
+    }
+
+    #[test]
+    fn empty_query_yields_bare_base() {
+        let url = build_search_url(&SearchQuery::default());
+        assert_eq!(url, "https://booth.pm/ja/items");
+    }
+
+    #[test]
+    fn exclude_matches_name_and_shop_case_insensitively() {
+        // 排除是本地后置过滤：BOOTH 侧无此参数，语义必须由我们保证。
+        // 这里直接验过滤判据本身，不依赖 HTML 窗口切分（那是另一组测试的职责）。
+        let keep = |name: &str, shop: &str, exclude: &[&str]| {
+            let hay = format!("{name} {shop}").to_lowercase();
+            !exclude
+                .iter()
+                .any(|w| !w.trim().is_empty() && hay.contains(&w.to_lowercase()))
+        };
+        assert!(!keep("VRoid 衣装", "shopA", &["vroid"]), "应命中排除词");
+        assert!(keep("Kipfel 衣装", "shopA", &["vroid"]), "不该误伤");
+        assert!(!keep("衣装", "vroidshop", &["VRoid"]), "店名也应参与匹配");
+        assert!(keep("任意", "任意", &[""]), "空排除词不得过滤一切");
     }
 }

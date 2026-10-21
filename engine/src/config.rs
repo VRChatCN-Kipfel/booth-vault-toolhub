@@ -150,6 +150,13 @@ pub fn library_cache_path() -> Option<PathBuf> {
     user_config_dir().map(|d| d.join("library-index.json"))
 }
 
+/// HTTP 内容缓存路径（redb 单文件）。
+///
+/// 同样落在用户配置目录：库是只读资产，任何派生数据都不得写进去。
+pub fn http_cache_path() -> Option<PathBuf> {
+    user_config_dir().map(|d| d.join("http-cache.redb"))
+}
+
 /// 用户级配置目录（`dirs::config_dir()/booth-vault-toolhub`）。
 fn user_config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("booth-vault-toolhub"))

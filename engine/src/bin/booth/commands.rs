@@ -52,22 +52,41 @@ pub fn run(cli: Cli) -> u8 {
             keep_failed,
             cli.json,
         ),
-        Command::Search {
-            files,
-            base_dir,
-            dry_run,
-            id,
-            cookie,
-        } => cmd_search(
-            &config,
-            &files,
-            base_dir.as_deref(),
-            dry_run,
-            id.as_deref(),
-            cookie.as_deref(),
-            keep_failed,
-            cli.json,
-        ),
+        Command::Search(args) => {
+            // 两种模式互斥（argparse 已拦混用）：有 query 走纯检索，否则走按名归档。
+            if let Some(q) = args.query {
+                return cmd_search_query(
+                    &config,
+                    &engine::search::SearchQuery {
+                        query: q,
+                        sort: args.sort,
+                        kind: args.kind,
+                        adult: args.adult,
+                        tags: args.tag,
+                        category: args.category,
+                        min_price: args.min_price,
+                        max_price: args.max_price,
+                        in_stock: args.in_stock,
+                        exclude: args.exclude,
+                        page: args.page,
+                    },
+                    args.limit,
+                    args.no_cache,
+                    args.cookie.as_deref(),
+                    cli.json,
+                );
+            }
+            cmd_search(
+                &config,
+                &args.files,
+                args.base_dir.as_deref(),
+                args.dry_run,
+                args.id.as_deref(),
+                args.cookie.as_deref(),
+                keep_failed,
+                cli.json,
+            )
+        }
         Command::Audit {
             base,
             dry_run,
@@ -350,7 +369,69 @@ fn icon_fn(cover: &Path, folder: &Path) -> Result<(), String> {
     engine::organize::default_icon_fn(cover, folder)
 }
 
-/// search 命令（按名搜索）。
+/// 通用检索（`booth search --query`）：只检索、不归档。
+///
+/// 与 `cmd_search`（按名归档）是两条互斥路径：这里不碰磁盘库存，也不改任何文件。
+fn cmd_search_query(
+    config: &AppConfig,
+    q: &engine::search::SearchQuery,
+    limit: usize,
+    no_cache: bool,
+    cookie: Option<&str>,
+    json: bool,
+) -> u8 {
+    let client = make_session(config, cookie);
+    let items = match engine::search::search_with(&client, q, no_cache) {
+        Ok(v) => v,
+        Err(e) => {
+            if json {
+                let out = serde_json::json!({
+                    "command": "search",
+                    "mode": "query",
+                    "query": q.query,
+                    "error": e,
+                });
+                println!("{}", serde_json::to_string_pretty(&out).unwrap());
+            } else {
+                eprintln!("搜索失败: {e}");
+            }
+            return 2;
+        }
+    };
+    let total = items.len();
+    let shown: Vec<&engine::search::SearchItem> = items.iter().take(limit).collect();
+    if json {
+        let result = serde_json::json!({
+            "command": "search",
+            "mode": "query",
+            "query": q.query,
+            "url": engine::search::build_search_url(q),
+            "total": total,
+            "shown": shown.len(),
+            "items": shown.iter().map(|it| serde_json::json!({
+                "id": it.id,
+                "name": it.name,
+                "price": it.price,
+                "price_text": it.price_text,
+                "shop": it.shop,
+                "brand": it.brand,
+                "category": it.category,
+                "category_name": it.category_name,
+                "thumbnail": it.thumbnail,
+            })).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+    } else {
+        println!("找到 {total} 条，显示前 {} 条", shown.len());
+        for it in &shown {
+            println!("  [{}] {}  {}  {}", it.id, it.name, it.price_text, it.shop);
+        }
+    }
+    // 空结果不算错误：站点确实可能没有匹配项（与「请求失败」必须区分）。
+    0
+}
+
+/// 搜索命令（按名搜索）。
 #[allow(clippy::too_many_arguments)]
 fn cmd_search(
     config: &AppConfig,

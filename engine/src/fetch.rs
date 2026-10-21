@@ -3,7 +3,8 @@
 use reqwest::blocking::Client;
 use serde::Deserialize;
 
-use crate::http::get;
+use crate::cache;
+use crate::http::CachedBody;
 
 /// BOOTH 商品 JSON 端点。
 pub const ITEM_JSON_URL: &str = "https://booth.pm/ja/items/{id}.json";
@@ -120,13 +121,34 @@ pub fn thumb_from_json(item: &ItemJson) -> String {
     String::new()
 }
 
-/// 获取商品 JSON（transport 错误重试，HTTP 状态码留给调用方）。
-pub fn fetch_item(client: &Client, item_id: &str) -> Result<ItemJson, reqwest::Error> {
+/// 获取商品 JSON。
+///
+/// 走内容缓存：商品元数据变化慢（TTL 6h），而按名搜索会对同一商品反复取值。
+///
+/// 错误类型为 `String` 而非 `reqwest::Error`：缓存命中时根本没有 `reqwest::Response`
+/// 可供 `r.json()` 消费，而 `reqwest::Error` 没有公开构造入口（无 `From<io::Error>`），
+/// 若硬要保留该类型，解析失败就只能谎报成空数据——那是静默错误，绝不能做。
+/// 改用 `String` 后，网络错误与解析错误都能如实上报，调用方原本也大多
+/// `.map_err(|e| e.to_string())`，口径反而更统一。
+pub fn fetch_item(client: &Client, item_id: &str) -> Result<ItemJson, String> {
     let url = ITEM_JSON_URL.replace("{id}", item_id);
     let mut headers = crate::session::default_headers();
     headers.insert(reqwest::header::ACCEPT, "application/json".parse().unwrap());
-    let r = get(client, &url, headers)?;
-    r.json()
+    let cache = cache::shared();
+    let r = crate::http::get_cached(client, &url, headers, cache.as_deref(), cache::TTL_ITEM)
+        .map_err(|e| format!("fetch_item {item_id}: {e}"))?;
+    serde_json::from_slice(&r.body)
+        .map_err(|e| format!("fetch_item {item_id}: body 不是合法 JSON: {e}"))
+}
+
+/// 同上，但保留原始响应载荷（供需要状态码/最终 URL 的调用方使用）。
+pub fn fetch_item_raw(client: &Client, item_id: &str) -> Result<CachedBody, String> {
+    let url = ITEM_JSON_URL.replace("{id}", item_id);
+    let mut headers = crate::session::default_headers();
+    headers.insert(reqwest::header::ACCEPT, "application/json".parse().unwrap());
+    let cache = cache::shared();
+    crate::http::get_cached(client, &url, headers, cache.as_deref(), cache::TTL_ITEM)
+        .map_err(|e| format!("fetch_item {item_id}: {e}"))
 }
 
 /// 免费可下载文件列表：[(url, filename)]。

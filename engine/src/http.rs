@@ -56,7 +56,10 @@ where
     Err(last_err.expect("retry loop always sets err on exit"))
 }
 
-/// 便捷封装：GET + 指定 headers。
+/// 便捷封装：GET + 指定 headers（**不走缓存**）。
+///
+/// 无缓存版本，供文件下载、封面图等「必须逐字节到站」的场景使用。
+/// 需要内容缓存的 HTML/JSON 请求请用 [`get_cached`]。
 ///
 /// 对「传输层错误」与「403/429 限流」双重指数退避：
 ///   - 传输层错误（连接/超时/响应体截断）走 `is_connect || is_timeout || is_body`。
@@ -99,6 +102,57 @@ fn retry_after_secs(resp: &Response) -> Option<u64> {
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.trim().parse::<u64>().ok())
+}
+
+/// 缓存命中后的响应载荷。
+///
+/// 只覆盖调用方真正需要的三样：状态码、最终 URL、响应体字节。
+/// 不伪造 header——调用方目前没有任何一处依赖缓存命中的响应头。
+pub struct CachedBody {
+    pub status: u16,
+    pub final_url: String,
+    pub body: Vec<u8>,
+}
+
+/// 带内容缓存的 GET（只缓存 **2xx**，只用于 HTML/JSON 这类小响应）。
+///
+/// 语义契约：
+///   - 命中缓存**不发起任何网络请求**，因此也不消耗限速与反风控预算；
+///   - 未命中时行为与 [`get`] 完全一致（同样的重试与退避）；
+///   - 只有 2xx 才写缓存：登录页伪装 / 429 / 5xx 一旦入库，错误会被长期"冻住"；
+///   - 缓存本身故障一律退化为无缓存，绝不因此拒绝出站。
+///
+/// `cache = None` 或 `ttl = 0` 即等价于调用 [`get`]。
+pub fn get_cached(
+    client: &Client,
+    url: &str,
+    headers: reqwest::header::HeaderMap,
+    cache: Option<&crate::cache::Cache>,
+    ttl: u64,
+) -> Result<CachedBody, reqwest::Error> {
+    if let Some(c) = cache
+        && let Some(body) = c.get(url, ttl)
+    {
+        return Ok(CachedBody {
+            status: 200,
+            final_url: url.to_string(),
+            body,
+        });
+    }
+    let resp = get(client, url, headers)?;
+    let status = resp.status().as_u16();
+    let final_url = resp.url().to_string();
+    let body = resp.bytes()?.to_vec();
+    if let Some(c) = cache
+        && (200..300).contains(&status)
+    {
+        c.put(url, &body);
+    }
+    Ok(CachedBody {
+        status,
+        final_url,
+        body,
+    })
 }
 
 #[cfg(test)]

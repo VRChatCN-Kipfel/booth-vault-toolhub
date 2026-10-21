@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod cache;
 pub mod classify;
 pub mod clean;
 pub mod config;
