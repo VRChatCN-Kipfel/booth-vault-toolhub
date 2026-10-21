@@ -125,11 +125,14 @@ mod tests {
         }
     }
 
+    /// 测试用例元组：(查询词, 商品列表, 规范名表)。抽出别名以满足 clippy。
+    type Case<'a> = (&'a str, Vec<(String, String, i64)>, Vec<(&'a str, &'a str)>);
+
     /// 最重要的一条：明细总分必须与 `score_and_pick` 的判据一致。
     /// 通过「按总分排序取首位」与它返回的最优项对比来验证。
     #[test]
     fn breakdown_matches_score_and_pick_choice() {
-        let cases: &[(&str, Vec<(String, String, i64)>, Vec<(&str, &str)>)] = &[
+        let cases: &[Case<'_>] = &[
             (
                 "LunariaPaperFan",
                 vec![item("7437723", "Lunaria Paper Fan", 0)],
