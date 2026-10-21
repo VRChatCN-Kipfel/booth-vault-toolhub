@@ -190,6 +190,13 @@ pub fn http_cache_path() -> Option<PathBuf> {
     user_config_dir().map(|d| d.join("http-cache.redb"))
 }
 
+/// 关注/已购清单路径。
+///
+/// 与库存索引同一处置放：**个人数据与派生数据都不许写进 BOOTH 库**（库是只读资产）。
+pub fn collections_path() -> Option<PathBuf> {
+    user_config_dir().map(|d| d.join("collections.json"))
+}
+
 /// 用户级配置目录（`dirs::config_dir()/booth-vault-toolhub`）。
 fn user_config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("booth-vault-toolhub"))

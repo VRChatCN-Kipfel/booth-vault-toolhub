@@ -129,6 +129,10 @@ pub fn run(cli: Cli) -> u8 {
             cli.json,
         ),
         Command::Shell { command } => cmd_shell(command),
+        Command::Watch(a) => {
+            cmd_collections(&config, engine::collections::Kind::Watch, &a, cli.json)
+        }
+        Command::Own(a) => cmd_collections(&config, engine::collections::Kind::Own, &a, cli.json),
         Command::UpdateCheck { proxy } => cmd_update_check(proxy, cli.json),
     }
 }
@@ -269,6 +273,224 @@ fn cmd_cache(command: crate::CacheCmd, json: bool) -> u8 {
             0
         }
     }
+}
+
+/// 关注/已购清单命令（`watch` 与 `own` 共用实现，仅展示文案不同）。
+///
+/// `check` 会逐项拉详情比对快照：
+///   - 出站计入共享限速（`rate_limit_secs`），与下载链路同一把尺子；
+///   - 单轮受 `limit` 约束（默认 30），避免一次跑几十分钟；
+///   - 只读不写盘，除非确有变动才回写快照（减少无谓 IO 与并发写窗口）。
+fn cmd_collections(
+    config: &AppConfig,
+    kind: engine::collections::Kind,
+    args: &crate::CollectionsArgs,
+    json: bool,
+) -> u8 {
+    use engine::collections::Kind;
+    let Some(path) = engine::collections::lists_path() else {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "command": kind.as_str(), "ok": false,
+                    "error": "无法确定清单路径（用户配置目录不可用）",
+                }))
+                .unwrap()
+            );
+        } else {
+            eprintln!("无法确定清单路径（用户配置目录不可用）");
+        }
+        return 2;
+    };
+    let mut lists = engine::collections::load(&path);
+    let op = args.op.as_str();
+
+    // add / remove 不需要联网，先处理掉。
+    if op == "add" {
+        if args.ids.is_empty() {
+            return fail(json, "add 需要至少一个商品 ID 或链接");
+        }
+        let client = make_session(config, None);
+        let mut added: Vec<String> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+        for raw in &args.ids {
+            let Some(id) = normalize_item_id(raw) else {
+                failed.push(format!("{raw}: 无法解析出商品 ID"));
+                continue;
+            };
+            match engine::fetch::fetch_item(&client, &id) {
+                Ok(item) => {
+                    let snap = engine::collections::snapshot_from(&item, &id);
+                    lists.put(kind, snap);
+                    added.push(id);
+                }
+                Err(e) => failed.push(format!("{id}: {e}")),
+            }
+        }
+        engine::collections::save(&path, &lists);
+        return report(
+            json,
+            kind.as_str(),
+            "add",
+            serde_json::json!({ "added": added, "failed": failed, "count": lists.len(kind) }),
+        );
+    }
+
+    if op == "remove" {
+        if args.ids.is_empty() {
+            return fail(json, "remove 需要至少一个商品 ID 或链接");
+        }
+        let mut removed: Vec<String> = Vec::new();
+        for raw in &args.ids {
+            if let Some(id) = normalize_item_id(raw)
+                && lists.remove(kind, &id)
+            {
+                removed.push(id);
+            }
+        }
+        engine::collections::save(&path, &lists);
+        return report(
+            json,
+            kind.as_str(),
+            "remove",
+            serde_json::json!({ "removed": removed, "count": lists.len(kind) }),
+        );
+    }
+
+    if op == "list" {
+        let entries: Vec<_> = lists
+            .of(kind)
+            .values()
+            .map(|s| {
+                serde_json::json!({
+                    "id": s.id, "name": s.name, "price": s.price,
+                    "is_sold_out": s.is_sold_out, "checked_at": s.checked_at,
+                })
+            })
+            .collect();
+        let summary = serde_json::json!({ "count": entries.len(), "items": entries });
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "command": kind.as_str(), "op": "list", "ok": true, "data": summary,
+                }))
+                .unwrap()
+            );
+        } else if entries.is_empty() {
+            println!("清单为空");
+        } else {
+            for s in lists.of(kind).values() {
+                let mark = if s.is_sold_out { " [售罄]" } else { "" };
+                println!("  [{}] {}  ¥{}{mark}", s.id, s.name, s.price);
+            }
+        }
+        return 0;
+    }
+
+    if op == "check" {
+        let ids: Vec<String> = lists.of(kind).keys().take(args.limit).cloned().collect();
+        if ids.is_empty() {
+            return report(
+                json,
+                kind.as_str(),
+                "check",
+                serde_json::json!({ "checked": 0, "changed": [] }),
+            );
+        }
+        let client = make_session(config, None);
+        let rate = config
+            .rate_limit_secs
+            .unwrap_or_else(engine::config::default_rate_limit_secs);
+        let mut changed: Vec<serde_json::Value> = Vec::new();
+        let mut checked = 0usize;
+        let mut failures: Vec<String> = Vec::new();
+        for (i, id) in ids.iter().enumerate() {
+            if i > 0 {
+                // 与下载链路同一把限速尺子：BOOTH 风控按请求数计。
+                engine::download::sleep_rate_limit(rate);
+            }
+            let Some(old) = lists.get(kind, id).cloned() else {
+                continue;
+            };
+            match engine::fetch::fetch_item(&client, id) {
+                Ok(item) => {
+                    checked += 1;
+                    let mut fresh = engine::collections::snapshot_from(&item, id);
+                    fresh.added_at = old.added_at;
+                    fresh.checked_at = engine::collections::now_secs();
+                    let changes = engine::collections::diff(&old, &fresh);
+                    if !changes.is_empty() {
+                        changed.push(serde_json::json!({
+                            "id": id,
+                            "name": fresh.name,
+                            "changes": changes.iter().map(|c| c.describe()).collect::<Vec<_>>(),
+                        }));
+                        // 只有真有变动才更新快照：否则每次 check 都写盘，
+                        // 徒增与 GUI 并发的写窗口。
+                        lists.put(kind, fresh);
+                    }
+                }
+                Err(e) => failures.push(format!("{id}: {e}")),
+            }
+        }
+        if !changed.is_empty() {
+            engine::collections::save(&path, &lists);
+        }
+        return report(
+            json,
+            kind.as_str(),
+            "check",
+            serde_json::json!({
+                "checked": checked, "changed": changed, "failures": failures,
+            }),
+        );
+    }
+
+    let _ = Kind::Watch;
+    fail(
+        json,
+        &format!("未知操作 {op}（支持 add / remove / list / check）"),
+    )
+}
+
+/// 统一输出与退出码：有失败项返回 1，否则 0。
+fn report(json: bool, command: &str, op: &str, data: serde_json::Value) -> u8 {
+    let has_failure = data
+        .get("failures")
+        .and_then(|v| v.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false)
+        || data
+            .get("failed")
+            .and_then(|v| v.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "command": command, "op": op, "ok": !has_failure, "data": data,
+            }))
+            .unwrap()
+        );
+    } else {
+        println!("{op} 完成: {data}");
+    }
+    if has_failure { 1 } else { 0 }
+}
+
+/// 从裸 ID / 商品链接里取出 7 位商品 ID。
+fn normalize_item_id(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) && s.len() >= 5 {
+        return Some(s.to_string());
+    }
+    // 链接形态：.../items/1234567 或 .../items/1234567?x=y
+    let after = s.split("/items/").nth(1)?;
+    let id: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    (!id.is_empty()).then_some(id)
 }
 
 /// download 命令（下载免费商品）。

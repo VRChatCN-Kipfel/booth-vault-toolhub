@@ -236,6 +236,10 @@ enum Command {
         #[arg(long)]
         cookie: Option<String>,
     },
+    /// 关注/已购清单：`watch` 等降价补货，`own` 等作者更新。
+    Watch(CollectionsArgs),
+    /// 已购素材清单（与 watch 共用存储，语义偏重「作者发布新版本」）。
+    Own(CollectionsArgs),
 }
 
 #[derive(Subcommand)]
@@ -244,6 +248,19 @@ enum CacheCmd {
     Stats,
     /// 清空全部缓存条目。
     Clear,
+}
+
+/// 关注/已购清单的全部参数（两个子命令共用）。
+#[derive(clap::Args)]
+struct CollectionsArgs {
+    /// 操作：add / remove / list / check。
+    pub op: String,
+    /// 商品 ID 或链接（add/remove 必填，可多个）。
+    #[arg(value_delimiter = ',')]
+    pub ids: Vec<String>,
+    /// 单次 check 最多检查多少项（默认 30，防一次跑太久）。
+    #[arg(long, default_value_t = 30)]
+    pub limit: usize,
 }
 
 #[derive(Subcommand)]

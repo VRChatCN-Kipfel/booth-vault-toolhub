@@ -207,6 +207,22 @@ struct VersionAuditResult {
     failures: Vec<String>,
 }
 
+// ── collections（watch / own）─────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+struct CollectionsParams {
+    /// 清单类型：watch（关注，等降价/补货）或 own（已购，等作者更新）。
+    kind: String,
+    /// 操作：add / remove / list / check。
+    op: String,
+    /// 商品 ID 或链接（add / remove 必填）。
+    #[serde(default)]
+    ids: Vec<String>,
+    /// 单次 check 最多检查多少项（默认 30）。
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
 // ── library ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
@@ -755,14 +771,166 @@ impl BoothServer {
         CallToolResult::success(vec![ContentBlock::text(text)])
     }
 
+    /// 关注/已购清单：add / remove / list / check。
+    #[tool(
+        description = "关注（watch，等降价/补货）与已购（own，等作者更新）清单：op=add/remove/list/check。check 逐项拉详情比对快照，出站遵守共享限速，单轮受 limit（默认 30）约束。个人数据只存本机。"
+    )]
+    async fn collections(
+        &self,
+        Parameters(params): Parameters<CollectionsParams>,
+    ) -> CallToolResult {
+        let config = load_config();
+        let kind = match engine::collections::Kind::parse(&params.kind) {
+            Some(k) => k,
+            None => {
+                return tool_error(&format!("未知 kind：{}（支持 watch / own）", params.kind));
+            }
+        };
+        let Some(path) = engine::collections::lists_path() else {
+            return tool_error("无法确定清单路径（用户配置目录不可用）");
+        };
+        let mut lists = engine::collections::load(&path);
+        let op = params.op.as_str();
+
+        match op {
+            "add" => {
+                if params.ids.is_empty() {
+                    return tool_error("add 需要至少一个商品 ID 或链接");
+                }
+                let client = make_session(&config, None);
+                let mut added: Vec<String> = Vec::new();
+                let mut failed: Vec<String> = Vec::new();
+                for raw in &params.ids {
+                    let Some(id) = normalize_item_id(raw) else {
+                        failed.push(format!("{raw}: 无法解析出商品 ID"));
+                        continue;
+                    };
+                    match engine::fetch::fetch_item(&client, &id) {
+                        Ok(item) => {
+                            lists.put(kind, engine::collections::snapshot_from(&item, &id));
+                            added.push(id);
+                        }
+                        Err(e) => failed.push(format!("{id}: {e}")),
+                    }
+                }
+                engine::collections::save(&path, &lists);
+                let out = serde_json::json!({
+                    "command": kind.as_str(), "op": "add",
+                    "added": added, "failed": failed, "count": lists.len(kind),
+                });
+                CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::to_string_pretty(&out).unwrap_or_default(),
+                )])
+            }
+            "remove" => {
+                if params.ids.is_empty() {
+                    return tool_error("remove 需要至少一个商品 ID 或链接");
+                }
+                let mut removed: Vec<String> = Vec::new();
+                for raw in &params.ids {
+                    if let Some(id) = normalize_item_id(raw)
+                        && lists.remove(kind, &id)
+                    {
+                        removed.push(id);
+                    }
+                }
+                engine::collections::save(&path, &lists);
+                let out = serde_json::json!({
+                    "command": kind.as_str(), "op": "remove",
+                    "removed": removed, "count": lists.len(kind),
+                });
+                CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::to_string_pretty(&out).unwrap_or_default(),
+                )])
+            }
+            "list" => {
+                let items: Vec<_> = lists
+                    .of(kind)
+                    .values()
+                    .map(|s| {
+                        serde_json::json!({
+                            "id": s.id, "name": s.name, "price": s.price,
+                            "is_sold_out": s.is_sold_out, "checked_at": s.checked_at,
+                        })
+                    })
+                    .collect();
+                let out = serde_json::json!({
+                    "command": kind.as_str(), "op": "list",
+                    "count": items.len(), "items": items,
+                });
+                CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::to_string_pretty(&out).unwrap_or_default(),
+                )])
+            }
+            "check" => {
+                let limit = params.limit.unwrap_or(30);
+                let ids: Vec<String> = lists.of(kind).keys().take(limit).cloned().collect();
+                if ids.is_empty() {
+                    let out = serde_json::json!({
+                        "command": kind.as_str(), "op": "check",
+                        "checked": 0, "changed": [],
+                    });
+                    return CallToolResult::success(vec![ContentBlock::text(
+                        serde_json::to_string_pretty(&out).unwrap_or_default(),
+                    )]);
+                }
+                let client = make_session(&config, None);
+                let rate = config
+                    .rate_limit_secs
+                    .unwrap_or_else(engine::config::default_rate_limit_secs);
+                let mut changed: Vec<serde_json::Value> = Vec::new();
+                let mut checked = 0usize;
+                let mut failures: Vec<String> = Vec::new();
+                for (i, id) in ids.iter().enumerate() {
+                    if i > 0 {
+                        engine::download::sleep_rate_limit(rate);
+                    }
+                    let Some(old) = lists.get(kind, id).cloned() else {
+                        continue;
+                    };
+                    match engine::fetch::fetch_item(&client, id) {
+                        Ok(item) => {
+                            checked += 1;
+                            let mut fresh = engine::collections::snapshot_from(&item, id);
+                            fresh.added_at = old.added_at;
+                            fresh.checked_at = engine::collections::now_secs();
+                            let changes = engine::collections::diff(&old, &fresh);
+                            if !changes.is_empty() {
+                                changed.push(serde_json::json!({
+                                    "id": id, "name": fresh.name,
+                                    "changes": changes.iter().map(|c| c.describe()).collect::<Vec<_>>(),
+                                }));
+                                lists.put(kind, fresh);
+                            }
+                        }
+                        Err(e) => failures.push(format!("{id}: {e}")),
+                    }
+                }
+                if !changed.is_empty() {
+                    engine::collections::save(&path, &lists);
+                }
+                let out = serde_json::json!({
+                    "command": kind.as_str(), "op": "check",
+                    "checked": checked, "changed": changed, "failures": failures,
+                });
+                CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::to_string_pretty(&out).unwrap_or_default(),
+                )])
+            }
+            other => tool_error(&format!(
+                "未知操作 {other}（支持 add / remove / list / check）"
+            )),
+        }
+    }
+
     /// 预览压缩包内条目（只读，不联网）。
     #[tool(
         description = "预览本地 zip / unitypackage 的条目清单（名称 / 大小 / 压缩后大小 / 压缩方法），只读不联网。用于确认包内容与商品是否对应，或核对归档文件是否完整。"
     )]
     async fn preview(&self, Parameters(params): Parameters<PreviewParams>) -> CallToolResult {
-        let limit = params.limit.unwrap_or(200);
         let mut archives = Vec::new();
         let mut failures = Vec::new();
+        let limit = params.limit.unwrap_or(200);
         for p in &params.archive {
             match engine::integrity::preview_archive(std::path::Path::new(p), limit) {
                 Ok(pv) => archives.push(ArchivePreviewRow {
@@ -866,6 +1034,17 @@ impl BoothServer {
 /// 工具级错误（调用方可见）。
 fn tool_error(msg: &str) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(msg.to_string())])
+}
+
+/// 从裸 ID / 商品链接里取出商品 ID（与 CLI 端同构，避免两端判据漂移）。
+fn normalize_item_id(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) && s.len() >= 5 {
+        return Some(s.to_string());
+    }
+    let after = s.split("/items/").nth(1)?;
+    let id: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    (!id.is_empty()).then_some(id)
 }
 
 /// 单个商品下载处理（复用 CLI 逻辑）。

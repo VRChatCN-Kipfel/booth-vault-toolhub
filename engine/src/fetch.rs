@@ -28,6 +28,12 @@ pub struct ItemJson {
     pub tags: Vec<TagJson>,
     #[serde(rename = "variations")]
     pub variations: Vec<VariationJson>,
+    /// 是否售罄（关注清单的补货检测依赖它）。
+    pub is_sold_out: bool,
+    /// 是否已停止销售。
+    pub is_end_of_sale: bool,
+    /// 收藏数（热度参考；不参与变动判定，仅作展示依据）。
+    pub wish_lists_count: i64,
 }
 
 /// 标签对象。只用 `name` 参与指纹，`url` 是纯展示派生字段。

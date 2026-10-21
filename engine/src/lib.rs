@@ -2,6 +2,7 @@ pub mod audit;
 pub mod cache;
 pub mod classify;
 pub mod clean;
+pub mod collections;
 pub mod config;
 pub mod cover;
 pub mod download;
