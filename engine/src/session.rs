@@ -147,6 +147,19 @@ fn build_client(config: &AppConfig, cookie: Option<&str>, follow: bool, probe: b
     builder.build().expect("reqwest client build")
 }
 
+/// 年龄门 cookie：BOOTH 对 R-18 商品会先弹年龄确认页。
+///
+/// 站点用 `adult=t` 表示「已确认成年」。不带它时，R-18 商品页会返回年龄确认页
+/// 而非商品内容，表现为「搜得到但详情抓不到」。
+///
+/// 注意：
+///   - 这**只**解除年龄门，不改变内容筛选——要不要看 R-18 由 `adult=` 查询参数
+///     决定（`include` / `exclude` / `only`），两者是不同层面的开关。
+///   - **不得放进 client 的默认头**：显式 `Cookie` 头会与 cookie jar 同时存在，
+///     reqwest 以显式头为准，用户注入的会话 cookie（`_plaza_session_nktz7u`）
+///     会被这条覆盖掉，症状是「登录态莫名失效」。故它只作为单次请求头使用。
+pub const ADULT_COOKIE: &str = "adult=t";
+
 /// 默认请求头（含 BOOTH 认可的浏览器指纹 UA）。
 pub fn default_headers() -> reqwest::header::HeaderMap {
     use reqwest::header::{ACCEPT_LANGUAGE, HeaderMap, HeaderValue, USER_AGENT};
@@ -157,6 +170,21 @@ pub fn default_headers() -> reqwest::header::HeaderMap {
         HeaderValue::from_static("ja,en;q=0.9,zh-CN;q=0.8"),
     );
     h
+}
+
+/// 在请求头上补年龄门 cookie。
+///
+/// 仅当调用方**没有**配置登录 cookie 时才加：已登录时 jar 里通常已有站点下发的
+/// `adult` 状态，且显式 `Cookie` 头会覆盖 jar，反而丢掉会话。
+pub fn with_adult_cookie(
+    mut headers: reqwest::header::HeaderMap,
+    has_login_cookie: bool,
+) -> reqwest::header::HeaderMap {
+    use reqwest::header::{COOKIE, HeaderValue};
+    if !has_login_cookie {
+        headers.insert(COOKIE, HeaderValue::from_static(ADULT_COOKIE));
+    }
+    headers
 }
 
 /// cookie 粘贴形态的净化结果。
@@ -597,6 +625,30 @@ mod tests {
                 .url()
                 .as_str(),
             "https://booth.pm/"
+        );
+    }
+
+    #[test]
+    fn default_headers_carry_no_cookie() {
+        // 默认头绝不能带 Cookie：它会被塞进 client 默认头，与 cookie jar 冲突，
+        // 覆盖用户会话。年龄门 cookie 只允许作为单次请求头出现。
+        assert!(default_headers().get(reqwest::header::COOKIE).is_none());
+    }
+
+    #[test]
+    fn adult_cookie_added_only_without_login() {
+        let h = with_adult_cookie(default_headers(), false);
+        assert_eq!(
+            h.get(reqwest::header::COOKIE)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            Some(ADULT_COOKIE.to_string())
+        );
+        // 有登录态时必须不加：显式 Cookie 头会覆盖 jar 里的会话 cookie。
+        let h2 = with_adult_cookie(default_headers(), true);
+        assert!(
+            h2.get(reqwest::header::COOKIE).is_none(),
+            "配置了登录 cookie 时不得注入年龄门 cookie"
         );
     }
 
