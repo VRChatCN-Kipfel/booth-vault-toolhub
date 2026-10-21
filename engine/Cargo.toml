@@ -7,6 +7,11 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+default = ["kana"]
+# 读音变体开关。关掉时 engine::kana 退化为空实现，不引入 lindera，二进制不涨 46MB。
+kana = ["dep:lindera"]
+
 [lib]
 
 [[bin]]
@@ -20,6 +25,9 @@ encoding_rs = "0.8"
 fancy-regex = "0.16"
 feed-rs = "2.4"
 flate2 = "1"
+# 日文读音变体（engine/src/kana.rs）。embed-ipadic 在构建期下载 ipadic 并把词典
+# 编进二进制，实测 +46MB；体积敏感的分发可用 --no-default-features 关掉。
+lindera = { version = "6.2", optional = true, features = ["embed-ipadic"] }
 tar = "0.4"
 phf = { version = "0.13", features = ["macros"] }
 reqwest = { version = "0.13", features = ["blocking", "json", "cookies", "http2", "system-proxy", "gzip", "brotli", "deflate"] }

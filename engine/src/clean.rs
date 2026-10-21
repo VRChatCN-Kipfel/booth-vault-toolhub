@@ -268,6 +268,33 @@ pub fn sanitize_query(filename: &str) -> Vec<String> {
     }
 }
 
+/// 在既有候选之后**追加**日文读音变体（`信濃` → `シナノ` / `しなの`）。
+///
+/// 刻意独立于 [`sanitize_query`]：后者的 7 层候选是线上验证过的行为契约
+/// （AGENTS.md），任何改动都会影响整理命中率。本函数只做「尾部追加」，
+/// 不改变原候选的顺序与内容，因此可以在不触发 golden 回归的前提下使用。
+///
+/// `max_variants` 逐候选计算（不是总数），调用方据此控制额外请求数：
+/// 每个变体都是一次独立检索，BOOTH 风控按请求数计。
+pub fn with_kana_variants(candidates: Vec<String>, max_variants: usize) -> Vec<String> {
+    if max_variants == 0 {
+        return candidates;
+    }
+    let mut seen: std::collections::HashSet<String> =
+        candidates.iter().map(|c| c.to_lowercase()).collect();
+    let mut extra: Vec<String> = Vec::new();
+    for c in &candidates {
+        for v in crate::kana::reading_variants(c, max_variants) {
+            if seen.insert(v.to_lowercase()) {
+                extra.push(v);
+            }
+        }
+    }
+    let mut out = candidates;
+    out.extend(extra);
+    out
+}
+
 /// 正则字面量转义（转义 `\` 与正则元字符，使普通文本可作为字面量匹配）。
 fn escape_re(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

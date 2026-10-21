@@ -449,12 +449,18 @@ fn process_search_file(
         engine::fetch::fetch_item(client, id).map_err(|e| format!("指定 ID {id} 获取失败: {e}"))?
     } else {
         // 搜索候选 → 评分选优。
+        // 读音变体只在原候选**全部落空**后追加尝试（见下方两轮循环）：BOOTH 风控按请求
+        // 数计，正常情况下不该为每个文件名多烧请求；原词命中即止，变体只做兜底。
         let candidates = engine::clean::sanitize_query(&fname);
         let names = engine::unitypackage::names_for_score(path);
         let mut best: Option<engine::score::Item> = None;
-        for q in candidates {
+        let kana_variants = engine::clean::with_kana_variants(candidates.clone(), 2)
+            .into_iter()
+            .filter(|c| !candidates.contains(c))
+            .collect::<Vec<_>>();
+        for q in candidates.iter().chain(kana_variants.iter()) {
             let results =
-                engine::search::search_booth(client, &q).map_err(|e| format!("搜索失败: {e}"))?;
+                engine::search::search_booth(client, q).map_err(|e| format!("搜索失败: {e}"))?;
             let items: Vec<engine::score::Item> = results
                 .iter()
                 .map(|r| engine::score::Item {
@@ -464,7 +470,7 @@ fn process_search_file(
                 })
                 .collect();
             let (picked, _) = engine::score::score_and_pick(
-                &q,
+                q,
                 &items,
                 false,
                 |id| canonical_name(client, id),
