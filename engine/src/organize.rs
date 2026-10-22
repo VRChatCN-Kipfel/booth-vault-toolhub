@@ -296,10 +296,41 @@ pub fn backfill_free_files(
     (added, errors)
 }
 
+/// 校验 organize 输入是**可读的普通文件**。
+///
+/// 三分支（顺序即优先级）：
+///   - `Ok(m) if m.is_file()` → 通过
+///   - `Ok(_)`（目录/设备等）→「不是文件（目录需先展开为文件）」
+///   - `Err(e)`（不存在/无权限/断连网络盘）→「无法读取输入」+ 错误种类
+///
+/// 导出的理由：CLI / MCP / GUI 三端的预检都要同一套文案与判据，各自拼一份必然
+/// 漂移（历史上 CLI 报「找不到文件」、engine 报「不是文件」，同一输入两种说法）。
+pub fn check_input_file(archive: &Path) -> Result<(), String> {
+    match std::fs::metadata(archive) {
+        Ok(m) if m.is_file() => Ok(()),
+        Ok(_) => Err(format!(
+            "不是文件（目录需先展开为文件）: {}",
+            archive.display()
+        )),
+        Err(e) => Err(format!(
+            "无法读取输入（{:?}）: {}",
+            e.kind(),
+            archive.display()
+        )),
+    }
+}
+
 /// 整理单个 archive 文件。
 ///
 /// 流程：元数据 → 目录计算 → 移入（同盘 rename，跨盘失败回退 copy 且保留原文件）
 /// → 封面下载 → 图标（注入）→ 免费版本补全。dry_run 只计算并报告，不落盘。
+/// 输入必须是文件：目录会被 `archive_name()` 取目录名后整包 rename（静默错归档）。
+/// CLI/MCP 的 organize 入口在调用前已按同一规则预检；search 链路与 GUI organize
+/// 由本守卫兜底。目录的递归展开见 #54（未实现），未实现前目录输入一律失败，
+/// **dry-run 同样失败**（守卫早于 dry-run 分支）。
+///
+/// 判据用 `fs::metadata` 三分支而非 `is_file()`：后者在 metadata 失败时同样返回
+/// false，会把「不存在 / 无权限 / 断连网络盘」一并报成「是目录」，误导排查方向。
 pub fn organize_archive(
     client: &Client,
     archive: &Path,
@@ -307,6 +338,9 @@ pub fn organize_archive(
     opts: &OrganizeOptions,
     icon_fn: impl Fn(&Path, &Path) -> Result<(), String>,
 ) -> OrganizeOutcome {
+    if let Err(msg) = check_input_file(archive) {
+        return OrganizeOutcome::fail(msg);
+    }
     let item = match crate::fetch::fetch_item(client, item_id) {
         Ok(item) => item,
         Err(e) => {
@@ -1125,5 +1159,116 @@ mod tests {
         assert!(errors.is_empty());
         assert!(!dir.join("a.zip").is_file());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 目录输入必须在**任何写操作之前**被拒绝。
+    ///
+    /// 这是守卫的唯一红证测试：去掉守卫后本测试会失败（守卫删除 → 走到 fetch_item
+    /// 真联网 → 失败/panic，而不是这里的断言）。断言 `message` 含「不是文件」而不是
+    /// 只断言 `!out_root.exists()`——后者在守卫被删时仍可能为真，属无鉴别力的空测。
+    #[test]
+    fn organize_archive_rejects_directory_before_writing() {
+        let tmp = tmpdir("rej_dir");
+        let input = tmp.join("1234567_メカ");
+        std::fs::create_dir_all(input.join("inner")).unwrap();
+        std::fs::write(input.join("inner/a.bin"), b"x").unwrap();
+        let out_root = tmp.join("out");
+
+        let opts = OrganizeOptions {
+            out_root: &out_root,
+            dry_run: false,
+            cookie: None,
+            keep_failed_downloads: false,
+        };
+        let client = crate::session::make_session(&crate::config::AppConfig::default(), None);
+        let outcome = organize_archive(&client, &input, "1234567", &opts, |_, _| Ok(()));
+
+        assert!(!outcome.ok, "目录输入必须失败");
+        assert_eq!(outcome.status, OrganizeStatus::Error);
+        assert!(
+            outcome.message.contains("不是文件"),
+            "文案须点明「不是文件」，实际：{}",
+            outcome.message
+        );
+        assert!(!out_root.exists(), "不得创建任何输出目录");
+        assert!(input.is_dir(), "源目录必须原样保留");
+        assert!(input.join("inner/a.bin").is_file(), "源内文件必须原样保留");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// dry-run 下目录输入同样失败，且必须给出同样的「不是文件」文案。
+    ///
+    /// 断言 `contains("不是文件")` 而非仅 `!out_root.exists()`：dry-run 分支本来
+    /// 就不落盘，只断言「没落盘」在没有守卫时也成立，属无鉴别力的空测。
+    #[test]
+    fn organize_archive_rejects_directory_in_dry_run() {
+        let tmp = tmpdir("rej_dir_dry");
+        let input = tmp.join("1234567_メカ");
+        std::fs::create_dir_all(&input).unwrap();
+        let out_root = tmp.join("out");
+
+        let opts = OrganizeOptions {
+            out_root: &out_root,
+            dry_run: true,
+            cookie: None,
+            keep_failed_downloads: false,
+        };
+        let client = crate::session::make_session(&crate::config::AppConfig::default(), None);
+        let outcome = organize_archive(&client, &input, "1234567", &opts, |_, _| Ok(()));
+
+        assert_eq!(outcome.status, OrganizeStatus::Error);
+        assert!(
+            outcome.message.contains("不是文件"),
+            "dry-run 也必须给出「不是文件」，实际：{}",
+            outcome.message
+        );
+        assert!(!out_root.exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 不存在的路径必须报「无法读取」而不是「是目录」——两者补救方向完全不同。
+    #[test]
+    fn organize_archive_reports_missing_input_as_unreadable() {
+        let tmp = tmpdir("rej_missing");
+        let missing = tmp.join("nope.zip");
+        let out_root = tmp.join("out");
+        let opts = OrganizeOptions {
+            out_root: &out_root,
+            dry_run: false,
+            cookie: None,
+            keep_failed_downloads: false,
+        };
+        let client = crate::session::make_session(&crate::config::AppConfig::default(), None);
+        let outcome = organize_archive(&client, &missing, "1234567", &opts, |_, _| Ok(()));
+
+        assert_eq!(outcome.status, OrganizeStatus::Error);
+        assert!(
+            outcome.message.contains("无法读取输入"),
+            "缺失路径应报「无法读取输入」，实际：{}",
+            outcome.message
+        );
+        assert!(
+            !outcome.message.contains("不是文件"),
+            "缺失路径不得被误报成目录：{}",
+            outcome.message
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// `check_input_file` 三分支各自的行为（供三端预检复用的单一判据）。
+    #[test]
+    fn check_input_file_three_branches() {
+        let tmp = tmpdir("check_input");
+        let file = tmp.join("a.zip");
+        std::fs::write(&file, b"x").unwrap();
+        let dir = tmp.join("d");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert!(check_input_file(&file).is_ok(), "普通文件应通过");
+        let e = check_input_file(&dir).expect_err("目录必须失败");
+        assert!(e.contains("不是文件"), "{e}");
+        let e = check_input_file(&tmp.join("missing.zip")).expect_err("缺失必须失败");
+        assert!(e.contains("无法读取输入"), "{e}");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
