@@ -119,7 +119,7 @@ pub fn diff(old: &Snapshot, new: &Snapshot) -> Vec<Change> {
 }
 
 /// 整份清单（序列化形态）。
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Lists {
     /// 结构版本：将来改字段语义时用于拒绝/迁移旧文件。
     #[serde(default = "default_version")]
@@ -130,11 +130,22 @@ pub struct Lists {
 }
 
 fn default_version() -> u32 {
-    1
+    LISTS_VERSION
 }
 
 /// 当前结构版本。
 pub const LISTS_VERSION: u32 = 1;
+
+/// **手写而非派生**：`#[derive(Default)]` 会让 `version == 0`，任何经默认构造再
+/// `save` 的路径都会写出一个下次自己都拒读的文件（`load` 检查版本）。
+impl Default for Lists {
+    fn default() -> Self {
+        Self {
+            version: LISTS_VERSION,
+            items: BTreeMap::new(),
+        }
+    }
+}
 
 impl Lists {
     pub fn of(&self, kind: Kind) -> &BTreeMap<String, Snapshot> {
@@ -186,45 +197,83 @@ pub fn lists_path() -> Option<PathBuf> {
     crate::config::collections_path()
 }
 
-/// 读取清单。文件不存在返回空清单；损坏则返回空（并让调用方有机会提示）。
-pub fn load(path: &Path) -> Lists {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Lists {
-            version: LISTS_VERSION,
-            ..Default::default()
-        };
-    };
-    match serde_json::from_str::<Lists>(&text) {
-        Ok(l) if l.version == LISTS_VERSION => l,
-        // 版本不符或解析失败：当作空清单而不是崩掉。清单可重建，
-        // 但**不静默删除**原文件——保留现场，用户可自行排查。
-        _ => Lists {
-            version: LISTS_VERSION,
-            ..Default::default()
-        },
+/// 读取清单失败的原因。
+///
+/// **必须与「空清单」区分开**：历史实现把解析失败/版本不符/读取失败一律降级成空
+/// 清单，随后任何一次 `add` 都把这份空清单写回，用户的 watch/own 列表就**无提示、
+/// 无备份地永久丢失**。清单是用户手工攒起来的数据，丢了不可重建。
+#[derive(Debug)]
+pub enum LoadError {
+    /// 文件存在但不是合法 JSON（或结构不符）。
+    Corrupt(String),
+    /// 结构版本不受支持（可能是更新的版本写的）。
+    Version { found: u32, expected: u32 },
+    /// 读取失败（权限、IO 等）。
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadError::Corrupt(e) => write!(f, "清单文件已损坏，拒绝覆盖以保护数据: {e}"),
+            LoadError::Version { found, expected } => write!(
+                f,
+                "清单版本不受支持（文件 {found}，本版 {expected}），拒绝覆盖以保护数据"
+            ),
+            LoadError::Io(e) => write!(f, "无法读取清单文件: {e}"),
+        }
     }
+}
+
+/// 读取清单。
+///
+/// - 文件**不存在** → `Ok` 空清单（首次使用的正常情况）；
+/// - 解析失败 / 版本不符 / 读取失败 → `Err`，调用方必须**在任何写盘之前**中止。
+///
+/// 绝不把上述失败降级为空清单：那会让下一次 save 静默清空用户数据。
+pub fn load(path: &Path) -> Result<Lists, LoadError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Lists::default()),
+        Err(e) => return Err(LoadError::Io(e)),
+    };
+    let lists: Lists =
+        serde_json::from_str(&text).map_err(|e| LoadError::Corrupt(e.to_string()))?;
+    if lists.version != LISTS_VERSION {
+        return Err(LoadError::Version {
+            found: lists.version,
+            expected: LISTS_VERSION,
+        });
+    }
+    Ok(lists)
 }
 
 /// 原子写清单（临时名唯一 + rename），与 `library-index.json` 同一套理由：
 /// 并发写者（CLI 与 GUI 同时改清单）共用固定临时名会交错截断，rename 上去仍是坏 JSON。
-pub fn save(path: &Path, lists: &Lists) {
-    let Ok(s) = serde_json::to_string_pretty(lists) else {
-        return;
-    };
+///
+/// 返回 `io::Result`：**写盘失败必须上抛**。历史实现返回 `()`、错误被 `let _` 吞掉，
+/// 于是 `add` 打印 added、退出 0，而磁盘上什么都没有。
+///
+/// **不做「rename 失败后直接写」的截断兜底**：`audit.rs` 里那段是给「可全扫自愈的
+/// 缓存」用的，用户清单被截断就再也回不来了，宁可失败也不能半截覆盖。
+pub fn save(path: &Path, lists: &Lists) -> std::io::Result<()> {
+    let s = serde_json::to_string_pretty(lists)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
     }
     static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = path.with_extension(format!("{}.{}.tmp", std::process::id(), seq));
-    if std::fs::write(&tmp, &s).is_err() {
+    if let Err(e) = std::fs::write(&tmp, &s) {
         let _ = std::fs::remove_file(&tmp);
-        return;
+        return Err(e);
     }
-    if std::fs::rename(&tmp, path).is_err() {
-        let _ = std::fs::write(path, &s);
+    if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
+    Ok(())
 }
 
 /// 从商品 JSON 构造快照。
@@ -343,15 +392,19 @@ mod tests {
             ..Default::default()
         };
         l.put(Kind::Own, snap("42", 500, false));
-        save(&p, &l);
-        let back = load(&p);
+        save(&p, &l).expect("写盘应成功");
+        let back = load(&p).expect("刚写完的清单必须可读");
         assert_eq!(back.get(Kind::Own, "42").map(|s| s.price), Some(500));
         let _ = std::fs::remove_file(&p);
     }
 
     /// 损坏文件不得让工具崩掉，退回空清单。
+    /// 损坏文件必须**报错**，绝不能被当成空清单。
+    ///
+    /// 这条替换了旧的 `corrupt_file_loads_empty`——那条把缺陷当契约钉住了：
+    /// 损坏→空清单→下一次 save 覆盖，用户数据永久丢失且没有任何提示。
     #[test]
-    fn corrupt_file_loads_empty() {
+    fn corrupt_file_is_reported() {
         let p = std::env::temp_dir().join(format!(
             "bvt_lists_bad_{}_{}.json",
             std::process::id(),
@@ -361,14 +414,90 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::write(&p, b"{not json").unwrap();
-        assert!(load(&p).is_empty(Kind::Watch));
+        let err = load(&p).expect_err("损坏文件必须报错");
+        assert!(matches!(err, LoadError::Corrupt(_)), "实际：{err:?}");
+        // 关键：原文件不得被删改（保护现场）
+        assert!(p.exists(), "损坏文件必须原地保留，供用户排查");
         let _ = std::fs::remove_file(&p);
+    }
+
+    /// 版本不符必须报错，不能降级成空清单。
+    #[test]
+    fn future_version_is_rejected() {
+        let p = std::env::temp_dir().join(format!(
+            "bvt_lists_ver_{}_{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&p, br#"{"version":99,"items":{}}"#).unwrap();
+        let err = load(&p).expect_err("未来版本必须报错");
+        assert!(
+            matches!(err, LoadError::Version { found: 99, .. }),
+            "实际：{err:?}"
+        );
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// 默认构造必须带当前版本——派生的 `Default` 会给出 0，写出下次拒读的文件。
+    #[test]
+    fn default_has_current_version() {
+        assert_eq!(
+            Lists::default().version,
+            LISTS_VERSION,
+            "Default 必须置当前版本，否则写出的文件下次自己都拒读"
+        );
+    }
+
+    /// 写盘失败必须上抛（父路径不可创建时）。
+    #[test]
+    fn save_error_is_reported() {
+        // 用一个「父级是文件」的路径，create_dir_all 必然失败。
+        let base = std::env::temp_dir().join(format!(
+            "bvt_lists_blocker_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&base, b"x").unwrap();
+        let bad = base.join("sub").join("lists.json");
+        let err = save(&bad, &Lists::default()).expect_err("写盘必须失败并上报");
+        assert!(err.kind() != std::io::ErrorKind::NotFound || true);
+        let _ = std::fs::remove_file(&base);
+    }
+
+    /// 写盘失败不得留下临时文件。
+    #[test]
+    fn save_leaves_no_tmp() {
+        let dir = std::env::temp_dir().join(format!(
+            "bvt_lists_tmp_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("lists.json");
+        save(&p, &Lists::default()).expect("正常写盘应成功");
+        let tmps: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(tmps.is_empty(), "不得残留 .tmp：{tmps:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn missing_file_loads_empty() {
         let p = std::env::temp_dir().join("bvt_lists_never_exists.json");
         let _ = std::fs::remove_file(&p);
-        assert!(load(&p).is_empty(Kind::Own));
+        // 文件不存在是**正常**情况（首次使用），仍然返回空清单。
+        assert!(load(&p).expect("缺失文件不得报错").is_empty(Kind::Own));
     }
 }

@@ -789,7 +789,11 @@ impl BoothServer {
         let Some(path) = engine::collections::lists_path() else {
             return tool_error("无法确定清单路径（用户配置目录不可用）");
         };
-        let mut lists = engine::collections::load(&path);
+        // 读取失败必须在任何写盘前中止：否则损坏清单会被空清单覆盖，用户数据永久丢失。
+        let mut lists = match engine::collections::load(&path) {
+            Ok(l) => l,
+            Err(e) => return tool_error(&e.to_string()),
+        };
         let op = params.op.as_str();
 
         match op {
@@ -813,7 +817,9 @@ impl BoothServer {
                         Err(e) => failed.push(format!("{id}: {e}")),
                     }
                 }
-                engine::collections::save(&path, &lists);
+                if let Err(e) = engine::collections::save(&path, &lists) {
+                    return tool_error(&format!("清单写入失败: {e}"));
+                }
                 let out = serde_json::json!({
                     "command": kind.as_str(), "op": "add",
                     "added": added, "failed": failed, "count": lists.len(kind),
@@ -834,7 +840,9 @@ impl BoothServer {
                         removed.push(id);
                     }
                 }
-                engine::collections::save(&path, &lists);
+                if let Err(e) = engine::collections::save(&path, &lists) {
+                    return tool_error(&format!("清单写入失败: {e}"));
+                }
                 let out = serde_json::json!({
                     "command": kind.as_str(), "op": "remove",
                     "removed": removed, "count": lists.len(kind),
@@ -906,8 +914,10 @@ impl BoothServer {
                         Err(e) => failures.push(format!("{id}: {e}")),
                     }
                 }
-                if !changed.is_empty() {
-                    engine::collections::save(&path, &lists);
+                if !changed.is_empty()
+                    && let Err(e) = engine::collections::save(&path, &lists)
+                {
+                    return tool_error(&format!("清单写入失败: {e}"));
                 }
                 let out = serde_json::json!({
                     "command": kind.as_str(), "op": "check",

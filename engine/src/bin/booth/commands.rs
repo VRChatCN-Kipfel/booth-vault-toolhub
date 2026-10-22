@@ -303,7 +303,25 @@ fn cmd_collections(
         }
         return 2;
     };
-    let mut lists = engine::collections::load(&path);
+    // 清单读取失败必须在**任何网络请求与写盘之前**中止：历史实现把损坏文件
+    // 降级成空清单，随后 add 无条件覆盖，用户列表就此永久丢失。
+    let mut lists = match engine::collections::load(&path) {
+        Ok(l) => l,
+        Err(e) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "command": kind.as_str(), "ok": false, "error": e.to_string(),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                eprintln!("{e}");
+            }
+            return 2;
+        }
+    };
     let op = args.op.as_str();
 
     // add / remove 不需要联网，先处理掉。
@@ -328,7 +346,23 @@ fn cmd_collections(
                 Err(e) => failed.push(format!("{id}: {e}")),
             }
         }
-        engine::collections::save(&path, &lists);
+        // 写盘失败必须上抛：历史实现返回 ()、错误被吞，add 打印 added、退出 0，
+        // 而磁盘上什么都没有。
+        if let Err(e) = engine::collections::save(&path, &lists) {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "command": kind.as_str(), "op": "add", "ok": false,
+                        "error": format!("清单写入失败: {e}"),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                eprintln!("清单写入失败: {e}");
+            }
+            return 2;
+        }
         return report(
             json,
             kind.as_str(),
@@ -349,7 +383,21 @@ fn cmd_collections(
                 removed.push(id);
             }
         }
-        engine::collections::save(&path, &lists);
+        if let Err(e) = engine::collections::save(&path, &lists) {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "command": kind.as_str(), "op": "remove", "ok": false,
+                        "error": format!("清单写入失败: {e}"),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                eprintln!("清单写入失败: {e}");
+            }
+            return 2;
+        }
         return report(
             json,
             kind.as_str(),
@@ -435,8 +483,22 @@ fn cmd_collections(
                 Err(e) => failures.push(format!("{id}: {e}")),
             }
         }
-        if !changed.is_empty() {
-            engine::collections::save(&path, &lists);
+        if !changed.is_empty()
+            && let Err(e) = engine::collections::save(&path, &lists)
+        {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "command": kind.as_str(), "op": "check", "ok": false,
+                        "error": format!("清单写入失败: {e}"),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                eprintln!("清单写入失败: {e}");
+            }
+            return 2;
         }
         return report(
             json,
