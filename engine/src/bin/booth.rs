@@ -205,6 +205,21 @@ enum Command {
         #[arg(long)]
         cookie: Option<String>,
     },
+    /// HTTP 内容缓存：查看条目数或清空。
+    ///
+    /// 缓存键含登录态作用域，不同账号/匿名各存一份；`clear` 是清掉污染条目的唯一入口。
+    Cache {
+        #[command(subcommand)]
+        command: CacheCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum CacheCmd {
+    /// 显示缓存条目数。
+    Stats,
+    /// 清空全部缓存条目。
+    Clear,
 }
 
 #[derive(Subcommand)]

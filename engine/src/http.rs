@@ -114,39 +114,53 @@ pub struct CachedBody {
     pub body: Vec<u8>,
 }
 
-/// 带内容缓存的 GET（只缓存 **2xx**，只用于 HTML/JSON 这类小响应）。
+/// 带内容缓存的 GET（只缓存**可校验的 200**，只用于 HTML/JSON 这类小响应）。
 ///
 /// 语义契约：
 ///   - 命中缓存**不发起任何网络请求**，因此也不消耗限速与反风控预算；
+///   - 命中时**原样回放**存储的 status 与 final_url，不伪造；
 ///   - 未命中时行为与 [`get`] 完全一致（同样的重试与退避）；
-///   - 只有 2xx 才写缓存：登录页伪装 / 429 / 5xx 一旦入库，错误会被长期"冻住"；
+///   - **只有 `status == 200` 且 body 非空**才写缓存。历史实现收 2xx 全段，
+///     于是 204/206/空体也入库；登录页伪装与 429/5xx 一旦入库，错误会被长期"冻住"；
+///   - `ttl == 0`（`--no-cache`）**既不读也不写**：只挡读会让逃生口当场把坏响应写回；
 ///   - 缓存本身故障一律退化为无缓存，绝不因此拒绝出站。
-///
-/// `cache = None` 或 `ttl = 0` 即等价于调用 [`get`]。
 pub fn get_cached(
     client: &Client,
     url: &str,
     headers: reqwest::header::HeaderMap,
     cache: Option<&crate::cache::Cache>,
+    scope: crate::cache::Scope,
     ttl: u64,
 ) -> Result<CachedBody, reqwest::Error> {
     if let Some(c) = cache
-        && let Some(body) = c.get(url, ttl)
+        && let Some(e) = c.get(scope, url, ttl)
     {
         return Ok(CachedBody {
-            status: 200,
-            final_url: url.to_string(),
-            body,
+            status: e.status,
+            final_url: e.final_url,
+            body: e.body,
         });
     }
     let resp = get(client, url, headers)?;
     let status = resp.status().as_u16();
     let final_url = resp.url().to_string();
     let body = resp.bytes()?.to_vec();
+    // 只缓存「200 且非空」：其余（204/206/3xx/4xx/5xx/空体）都可能是一次失败或
+    // 不完整的响应，入库后会在 TTL 内持续污染后续请求。
     if let Some(c) = cache
-        && (200..300).contains(&status)
+        && ttl > 0
+        && status == 200
+        && !body.is_empty()
     {
-        c.put(url, &body);
+        c.put(
+            scope,
+            url,
+            &crate::cache::StoredEntry {
+                status,
+                final_url: final_url.clone(),
+                body: body.clone(),
+            },
+        );
     }
     Ok(CachedBody {
         status,

@@ -216,23 +216,124 @@ impl SearchQuery {
     }
 }
 
+/// 决定实际发送给站点的排序，并在必要时给出说明。
+///
+/// **核心规则**：`popularity` 下站点忽略 `page`——实测 page=1/2/3 返回的首条商品
+/// ID 完全相同（2280136），而 `new` 下 p1/p2 首条不同。因此翻页时（`page > 1`）
+/// 必须切到 `new`，否则翻页永远返回第一页（这是「以为在翻页、其实没翻」的经典
+/// 静默错误）。第一页保留 `popularity`，尊重用户的人气排序意图。
+///
+/// 返回 `(实际 sort, 说明)`；说明为 `Some` 时调用方应告知用户「已改用新着排序」。
+pub fn effective_sort(sort: &str, page: u32) -> (String, Option<String>) {
+    if sort == "popularity" && page > 1 {
+        (
+            "new".to_string(),
+            Some("人气排序下站点忽略翻页，已改用新着排序取第 2 页起".to_string()),
+        )
+    } else {
+        (sort.to_string(), None)
+    }
+}
+
+/// 检索结果的**统一输出契约**（CLI / MCP / GUI 三端共用）。
+///
+/// 存在的理由：三端曾各自拼 JSON，字段数不一致（CLI 9 个、MCP 6 个），而
+/// `skills/booth/SKILL.md` 却声称「三端完全一致」——agent 按文档取字段会拿到 null。
+/// 现在字段在本结构里单点定义，两端只做 `serde_json::to_string_pretty`。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct SearchRow {
+    pub id: String,
+    pub name: String,
+    /// 价格（日元整数；解析失败为 -1）。
+    pub price: i64,
+    /// 价格展示串（含货币符号与千分位，来自站点原文）。
+    pub price_text: String,
+    pub shop: String,
+    pub brand: String,
+    /// 分类原始值（站点内部 id 或 slug）。
+    pub category: String,
+    /// 分类展示名（日语原文）。
+    pub category_name: String,
+    pub thumbnail: String,
+}
+
+impl SearchRow {
+    /// 从解析结果构造（单一实现，避免两端各写一份映射）。
+    pub fn from_item(it: &SearchItem) -> Self {
+        Self {
+            id: it.id.clone(),
+            name: it.name.clone(),
+            price: it.price,
+            price_text: it.price_text.clone(),
+            shop: it.shop.clone(),
+            brand: it.brand.clone(),
+            category: it.category.clone(),
+            category_name: it.category_name.clone(),
+            thumbnail: it.thumbnail.clone(),
+        }
+    }
+}
+
+/// 检索响应信封（统一契约）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SearchOutput {
+    pub command: String,
+    pub mode: String,
+    pub query: String,
+    /// 实际请求的 URL（便于排查参数是否生效）。
+    pub url: String,
+    /// 本页解析到的条数（已应用本地 exclude 过滤）。
+    pub total: usize,
+    /// 实际返回给调用方的条数。
+    pub shown: usize,
+    /// 用户请求的页码。
+    pub page: u32,
+    /// 是否还有下一页（站点是否给出更靠后页的迹象）。
+    pub has_next: bool,
+    /// 人气排序翻页被迫改新着时的说明。
+    pub sort_note: Option<String>,
+    pub items: Vec<SearchRow>,
+}
+
+/// 组装统一输出。
+pub fn into_output(q: &SearchQuery, items: &[SearchItem], limit: usize) -> SearchOutput {
+    let u = build_search_url(q);
+    let (_sort, note) = effective_sort(q.sort.as_deref().unwrap_or(""), q.page);
+    SearchOutput {
+        command: "search".to_string(),
+        mode: "query".to_string(),
+        query: q.query.clone(),
+        url: u,
+        total: items.len(),
+        shown: items.len().min(limit),
+        page: q.page,
+        // 单页解析无法确定总页数：只有「本页条数达到站点单页上限」才提示还有下一页。
+        has_next: items.len() >= 60,
+        sort_note: note,
+        items: items.iter().take(limit).map(SearchRow::from_item).collect(),
+    }
+}
+
 /// 拼装 BOOTH 检索 URL。
 ///
-/// 规则（与站点实测行为对齐）：
-///   - `popularity` 排序时**不传 page**：站点会忽略该参数，翻页永远返回第一页；
-///     翻页语义由调用方改用 `new` 承担（`effective_sort`）。
+/// 规则均来自 2026-10 的实网对照实验（不是推断）：
+///   - **仅在售**用 `in_stock=true`。`is_sold_out=false` **完全无效**：实测它与
+///     无意义参数 `fake_param=zzz` 的结果总数完全相同（4058），而 `in_stock=true`
+///     会真实收窄（4038）。
+///   - **翻页排序要切换**：`popularity` 下站点忽略 `page`（实测 page=1/2/3 首条 ID
+///     恒为 2280136），必须改按 `new` 取页并发 `page`，否则翻页永远返回第一页。
+///     由 [`effective_sort`] 决定实际发送的 sort，本函数只负责拼。
 ///   - 查询词放在 `q`，标签用复数键 `tags[]`，价格用 `min_price`/`max_price`。
 pub fn build_search_url(q: &SearchQuery) -> String {
     let mut parts: Vec<String> = Vec::new();
     if !q.query.trim().is_empty() {
         parts.push(format!("q={}", urlencode(&q.query)));
     }
-    let sort = q.sort.as_deref().unwrap_or("");
-    // popularity 下 page 参数无效，直接不传，避免无意义的规范化重定向。
-    let paging_ok = sort != "popularity";
+    let (sort, sort_note) = effective_sort(q.sort.as_deref().unwrap_or(""), q.page);
     if !sort.is_empty() {
-        parts.push(format!("sort={}", urlencode(sort)));
+        parts.push(format!("sort={}", urlencode(&sort)));
     }
+    let _ = sort_note;
     if let Some(k) = q.kind.as_deref().filter(|s| !s.is_empty()) {
         parts.push(format!("type={}", urlencode(k)));
     }
@@ -249,14 +350,15 @@ pub fn build_search_url(q: &SearchQuery) -> String {
         parts.push(format!("max_price={v}"));
     }
     if q.in_stock {
-        parts.push("is_sold_out=false".to_string());
+        // 实测：in_stock=true 生效；is_sold_out=false 与假参数同效（被忽略）。
+        parts.push("in_stock=true".to_string());
     }
     for t in &q.tags {
         if !t.trim().is_empty() {
             parts.push(format!("tags[]={}", urlencode(t)));
         }
     }
-    if paging_ok && q.page > 1 {
+    if q.page > 1 {
         parts.push(format!("page={}", q.page));
     }
     let base = "https://booth.pm/ja/items";
@@ -276,8 +378,15 @@ pub fn search_with(
     let url = build_search_url(q);
     let cache = crate::cache::shared();
     let ttl = if no_cache { 0 } else { crate::cache::TTL_PAGE };
-    let r = crate::http::get_cached(client, &url, default_headers(), cache.as_deref(), ttl)
-        .map_err(|e| format!("search request: {e}"))?;
+    let r = crate::http::get_cached(
+        client,
+        &url,
+        default_headers(),
+        cache.as_deref(),
+        crate::cache::scope_of(crate::session::session_cookie().as_deref()),
+        ttl,
+    )
+    .map_err(|e| format!("search request: {e}"))?;
     if !(200..300).contains(&r.status) {
         return Err(format!("search status {}", r.status));
     }
@@ -441,17 +550,23 @@ mod tests {
             "adult=exclude",
             "min_price=1000",
             "max_price=5000",
-            "is_sold_out=false",
+            "in_stock=true",
             "tags[]=VRChat",
             "page=2",
         ] {
             assert!(url.contains(frag), "缺少 {frag}：{url}");
         }
+        // 对照：这个参数名**无效**（实测与假参数同效），不得出现在 URL 里。
+        assert!(
+            !url.contains("is_sold_out"),
+            "in_stock 必须用 in_stock=true，is_sold_out=false 被站点忽略：{url}"
+        );
     }
 
-    /// 站点在 popularity 下忽略 page，翻页永远回第一页——传它等于自欺。
+    /// 实网实测（2026-10）：`popularity` 下 page=1/2/3 首条商品 ID 恒为同一个，
+    /// 说明站点忽略 page；而 `new` 下 p1/p2 首条不同。故翻页时必须切到 `new`。
     #[test]
-    fn popularity_never_sends_page() {
+    fn popularity_paging_switches_to_new() {
         let q = SearchQuery {
             query: "x".into(),
             sort: Some("popularity".into()),
@@ -459,7 +574,36 @@ mod tests {
             ..Default::default()
         };
         let url = build_search_url(&q);
-        assert!(!url.contains("page="), "popularity 不得传 page：{url}");
+        assert!(
+            url.contains("sort=new"),
+            "popularity 翻页必须切到 new，否则永远返回第一页：{url}"
+        );
+        assert!(url.contains("page=3"), "切换排序后必须真的发 page：{url}");
+        // 第一页保留用户的人气排序意图。
+        let q1 = SearchQuery {
+            query: "x".into(),
+            sort: Some("popularity".into()),
+            page: 1,
+            ..Default::default()
+        };
+        let url1 = build_search_url(&q1);
+        assert!(
+            url1.contains("sort=popularity"),
+            "第一页应保留 popularity：{url1}"
+        );
+    }
+
+    #[test]
+    fn effective_sort_notes_the_switch() {
+        let (s, note) = effective_sort("popularity", 2);
+        assert_eq!(s, "new");
+        assert!(note.is_some(), "切换排序必须给出说明");
+        let (s1, n1) = effective_sort("popularity", 1);
+        assert_eq!(s1, "popularity");
+        assert!(n1.is_none(), "第一页无需说明");
+        let (s2, n2) = effective_sort("new", 5);
+        assert_eq!(s2, "new");
+        assert!(n2.is_none());
     }
 
     #[test]

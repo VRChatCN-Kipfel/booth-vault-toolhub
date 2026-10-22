@@ -310,7 +310,10 @@ impl BoothServer {
                 return tool_error("未指定输出目录：用 out 或配置文件 download_root");
             }
         };
-        let client = make_session(&config, params.cookie.as_deref());
+        let client = make_session(
+            &config,
+            engine::config::resolve_cookie(params.cookie.as_deref(), &config).as_deref(),
+        );
         let rate_limit = config
             .rate_limit_secs
             .unwrap_or_else(default_rate_limit_secs);
@@ -400,7 +403,10 @@ impl BoothServer {
                 return tool_error("未指定输出目录：用 out 或配置文件 download_root");
             }
         };
-        let client = make_session(&config, params.cookie.as_deref());
+        let client = make_session(
+            &config,
+            engine::config::resolve_cookie(params.cookie.as_deref(), &config).as_deref(),
+        );
         let keep_failed = params
             .keep_failed
             .unwrap_or_else(|| engine::config::keep_failed_downloads(&config));
@@ -463,7 +469,10 @@ impl BoothServer {
             if !params.files.is_empty() {
                 return tool_error("files 与 query 互斥：要么按名归档，要么纯检索");
             }
-            let client = make_session(&config, params.cookie.as_deref());
+            let client = make_session(
+                &config,
+                engine::config::resolve_cookie(params.cookie.as_deref(), &config).as_deref(),
+            );
             let sq = engine::search::SearchQuery {
                 query: q,
                 sort: params.sort.clone(),
@@ -482,19 +491,10 @@ impl BoothServer {
                 Err(e) => return tool_error(&format!("搜索失败: {e}")),
             };
             let limit = params.limit.unwrap_or(20);
-            let result = serde_json::json!({
-                "command": "search",
-                "mode": "query",
-                "query": sq.query,
-                "url": engine::search::build_search_url(&sq),
-                "total": items.len(),
-                "shown": items.len().min(limit),
-                "items": items.iter().take(limit).map(|it| serde_json::json!({
-                    "id": it.id, "name": it.name, "price": it.price,
-                    "shop": it.shop, "category_name": it.category_name,
-                    "thumbnail": it.thumbnail,
-                })).collect::<Vec<_>>(),
-            });
+            // 统一契约：与 CLI 共用 `engine::search::SearchOutput`，字段逐项一致。
+            // 历史实现只输出 6 个字段（缺 price_text/brand/category），而 SKILL.md
+            // 声称三端一致，agent 按文档取字段会拿到 null。
+            let result = engine::search::into_output(&sq, &items, limit);
             let text = serde_json::to_string_pretty(&result).unwrap_or_default();
             return CallToolResult::success(vec![ContentBlock::text(text)]);
         }
@@ -507,7 +507,10 @@ impl BoothServer {
                 return tool_error("未指定归档目录：用 base_dir 或配置文件 download_root");
             }
         };
-        let client = make_session(&config, params.cookie.as_deref());
+        let client = make_session(
+            &config,
+            engine::config::resolve_cookie(params.cookie.as_deref(), &config).as_deref(),
+        );
         let mut matched: Vec<String> = Vec::new();
         let mut failures: Vec<String> = Vec::new();
 
@@ -627,7 +630,10 @@ impl BoothServer {
         if !base.is_dir() {
             return tool_error(&format!("FATAL: {} 不存在", base.display()));
         }
-        let client = make_session(&config, params.cookie.as_deref());
+        let client = make_session(
+            &config,
+            engine::config::resolve_cookie(params.cookie.as_deref(), &config).as_deref(),
+        );
         let rate_limit = config
             .rate_limit_secs
             .unwrap_or_else(default_rate_limit_secs);
