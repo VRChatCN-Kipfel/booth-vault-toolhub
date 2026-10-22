@@ -88,55 +88,55 @@ where
         return score_and_pick(query, items, prefer_free, canonical_name, resource_names);
     }
     let (picked, amb) = score_and_pick(query, items, prefer_free, &canonical_name, resource_names);
-    if items.len() <= 1 {
-        // 单结果与否决逻辑由原实现决定；加分只影响多候选排序，单候选不存在排序。
+    // 单候选或名称层已否决时不介入：
+    //   - 单候选不存在排序，加分只影响多候选先后；
+    //   - `picked == None` 表示名称零证据，说明文**不得**把它救回来（它可能只是
+    //     列表、免责声明，或「不适用于 XX」）。
+    //
+    // **歧义时仍要介入排序**：desc 允许改变「谁排第一」，但返回的歧义标记必须保持
+    // 为真——否则 GUI 会自动采用 picked，把本该人工确认的两件定成一件。
+    if picked.is_none() || items.len() <= 1 {
         return (picked, amb);
     }
-    // 多候选：用带说明文加分的分数重新排序，其余判据（≤0 否决、歧义阈值、
-    // 同名不同价）完全复用原实现的语义。这里刻意重算而不是改原函数内部，
-    // 是为了让「旧判据」保持可独立验证。
-    let qn = norm(query);
-    let mut scored: Vec<(i32, usize)> = Vec::new();
-    for (idx, it) in items.iter().enumerate() {
-        let name_l = it.name.to_lowercase();
-        let cn = canonical_name(&it.id);
-        let mut s = 0i32;
-        if !qn.is_empty() && norm(&name_l).contains(&qn) {
-            s += 100;
-        }
-        if !qn.is_empty() && norm(&cn).contains(&qn) {
-            s += 100;
-        }
-        for w in split_query_words(query) {
-            if w.chars().count() >= 3 && name_l.contains(&w) {
-                s += 20;
-            }
-        }
-        s += (10 - (idx as i32) * 2).max(0);
-        if prefer_free && it.price == 0 {
-            s += 5;
-        }
-        if name_l.chars().count() as i64 > query.chars().count() as i64 * 5
-            && cn.chars().count() as i64 > query.chars().count() as i64 * 5
-        {
-            s -= 10;
-        }
-        // ── 唯一的改动：说明文命中加分（受上限约束）──
-        if let Some(d) = descriptions.get(idx) {
-            let hits = desc_word_hits(query, &d.0, weight.max_words);
-            s += weight.word_bonus * hits as i32;
-        }
-        scored.push((s, idx));
+    // 到这里：原实现的歧义与否决已定调。下面只可能在「都已有名称证据的候选」之间
+    // 重排，且最终返回的 `ambiguous` 是 `原歧义 || 新歧义`——desc 只能增加歧义，
+    // 永远不能消除它。
+    // 基分走与 `score_and_pick` 完全相同的唯一实现，杜绝两处字面量漂移。
+    let base_scores = weighted_scores(query, items, prefer_free, &canonical_name);
+    let mut scored: Vec<(i32, usize)> = Vec::with_capacity(items.len());
+    let mut base: Vec<i32> = Vec::with_capacity(items.len());
+    for (idx, bs) in base_scores.iter().enumerate() {
+        base.push(bs.total);
+        // 说明文加分只给**已有名称证据**的候选：名称零证据者即便说明文里堆满
+        // 关键词也不加分，否则说明文会越过名称层的否决（说明可能只是列表、
+        // 免责声明，或「不适用于 XX」）。权重再大也不能突破这条。
+        //
+        // 判据必须用 `name_hit || canon_hit`，**不能**用 `s > 0` 代替：次序分
+        // `(10 - idx*2)` 让任何非首位候选都可能有正分，于是「零证据」会被误判成
+        // 「有证据」，说明文就能把无关商品顶上去（实测权重 500 时确实会反超）。
+        let has_name_evidence = bs.name_hit || bs.canon_hit;
+        let bonus = if has_name_evidence {
+            descriptions
+                .get(idx)
+                .map(|d| weight.word_bonus * desc_word_hits(query, &d.0, weight.max_words) as i32)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        scored.push((bs.total + bonus, idx));
     }
+    // 歧义判定用**不含 desc 的基线分**：说明文不得把两个本已分不开的候选拉开距离，
+    // 也不得反过来制造新的歧义。阈值语义与原实现完全一致。
+    let mut base_sorted: Vec<(i32, usize)> = base.iter().copied().zip(0..).collect();
+    base_sorted.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
+    let base_ambiguous = base_sorted.len() > 1 && (base_sorted[0].0 - base_sorted[1].0) < 30;
+
     scored.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
-    if scored.is_empty() || scored[0].0 <= 0 {
-        return (picked, amb);
-    }
-    let best_s = scored[0].0;
-    let mut ambiguous = scored.len() > 1 && (best_s - scored[1].0) < 30;
     let best_idx = scored[0].1;
     let best_cn = norm(&canonical_name(&items[best_idx].id));
     let best_price = items[best_idx].price;
+    // 歧义 = 原实现已判歧义 **或** 新增的两条判据。desc 永远只能让歧义增加。
+    let mut ambiguous = amb || base_ambiguous;
     for (_, idx2) in &scored[1..] {
         let it2 = &items[*idx2];
         if norm(&canonical_name(&it2.id)) == best_cn && it2.price != best_price {
@@ -167,6 +167,73 @@ fn desc_word_hits(query: &str, desc: &str, max_words: usize) -> usize {
     hits
 }
 
+/// 单条候选的评分明细（**不含** description 加成）。
+///
+/// 公开的目的：评分权重是 AGENTS.md 列明的线上行为契约，但 `score_and_pick` 只返回
+/// 「选了谁」，无法断言分值——实测把 `+100` 改成 `+80`、`+20` 改成 `+5` 全量测试仍全绿。
+/// 暴露明细后，golden 测试可以直接钉住每个权重常量。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemScore {
+    /// 总分（名称/规范名/词级/次序/免费/过长 之和）。
+    pub total: i32,
+    /// 商品名命中查询词（+100 那一档）。
+    pub name_hit: bool,
+    /// 规范名命中查询词（+100 那一档）。
+    pub canon_hit: bool,
+}
+
+/// 逐项评分（唯一实现，`score_and_pick` 与 `score_and_pick_with_desc` 共用）。
+///
+/// 抽成单一函数的理由：此前 `score_and_pick` 与 `score_and_pick_with_desc` 各写一遍
+/// 同一套字面量（`100/20/10-2·idx/5/-10`），改一处漏一处不会有任何测试报警。
+pub fn weighted_scores<F>(
+    query: &str,
+    items: &[Item],
+    prefer_free: bool,
+    canonical_name: F,
+) -> Vec<ItemScore>
+where
+    F: Fn(&str) -> String,
+{
+    let qn = norm(query);
+    items
+        .iter()
+        .enumerate()
+        .map(|(idx, it)| {
+            let name_l = it.name.to_lowercase();
+            let cn = canonical_name(&it.id);
+            let name_hit = !qn.is_empty() && norm(&name_l).contains(&qn);
+            let canon_hit = !qn.is_empty() && norm(&cn).contains(&qn);
+            let mut s = 0i32;
+            if name_hit {
+                s += 100;
+            }
+            if canon_hit {
+                s += 100;
+            }
+            for w in split_query_words(query) {
+                if w.chars().count() >= 3 && name_l.contains(&w) {
+                    s += 20;
+                }
+            }
+            s += (10 - (idx as i32) * 2).max(0);
+            if prefer_free && it.price == 0 {
+                s += 5;
+            }
+            if name_l.chars().count() as i64 > query.chars().count() as i64 * 5
+                && cn.chars().count() as i64 > query.chars().count() as i64 * 5
+            {
+                s -= 10;
+            }
+            ItemScore {
+                total: s,
+                name_hit,
+                canon_hit,
+            }
+        })
+        .collect()
+}
+
 /// 评分选最佳。
 ///
 /// `prefer_free`：同分候选时优先免费项（付费/免费同款场景；付费项不因此被排除）。
@@ -189,34 +256,13 @@ where
     }
     let qn = norm(query);
 
-    // 评分权重契约（+100 名称命中 / +100 规范名命中 / +20 词级 / +10-次序 / -10 过长）。
-    let mut scored: Vec<(i32, usize)> = Vec::new();
-    for (idx, it) in items.iter().enumerate() {
-        let name_l = it.name.to_lowercase();
-        let cn = canonical_name(&it.id);
-        let mut s = 0i32;
-        if !qn.is_empty() && norm(&name_l).contains(&qn) {
-            s += 100;
-        }
-        if !qn.is_empty() && norm(&cn).contains(&qn) {
-            s += 100;
-        }
-        for w in split_query_words(query) {
-            if w.chars().count() >= 3 && name_l.contains(&w) {
-                s += 20;
-            }
-        }
-        s += (10 - (idx as i32) * 2).max(0);
-        if prefer_free && it.price == 0 {
-            s += 5;
-        }
-        if name_l.chars().count() as i64 > query.chars().count() as i64 * 5
-            && cn.chars().count() as i64 > query.chars().count() as i64 * 5
-        {
-            s -= 10;
-        }
-        scored.push((s, idx));
-    }
+    // 评分权重契约（+100 名称命中 / +100 规范名命中 / +20 词级 / +10-次序 / +5 免费 / -10 过长）。
+    // 唯一实现在 `weighted_scores`，本函数只负责排序与判定。
+    let mut scored: Vec<(i32, usize)> = weighted_scores(query, items, prefer_free, &canonical_name)
+        .into_iter()
+        .enumerate()
+        .map(|(idx, sc)| (sc.total, idx))
+        .collect();
     // 按分数降序；同分保持输入顺序（稳定排序，`sort_by_key` 稳定）。
     scored.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
 
@@ -441,28 +487,22 @@ mod tests {
     /// 开启后，说明文命中更多的候选应被提到前面。
     #[test]
     fn desc_on_promotes_description_match() {
+        // 说明文加成**只在已有名称证据的候选之间**重新排序。
+        // 两候选名称都含查询词（都有 +100 证据），仅第 2 项说明文也命中。
+        // 注意：这两件名称高度相似，原实现会判歧义——desc 可以改「谁排第一」，
+        // 但返回的歧义标记必须保持为真（由 desc_cannot_clear_ambiguity 钉住）。
         let items = [
-            item("1111111", "Generic Item", 0),
-            item("2222222", "Another Item", 0),
+            item("1111111", "StarTiara Base", 0),
+            item("2222222", "StarTiara Variant", 0),
         ];
-        let names = [("1111111", "Generic Item"), ("2222222", "Another Item")];
-        // 只有第 2 项的说明文含目标词。
+        let names = [
+            ("1111111", "StarTiara Base"),
+            ("2222222", "StarTiara Variant"),
+        ];
         let descs = [
             desc("全く関係ない説明"),
             desc("この商品は StarTiara に対応しています"),
         ];
-        // 关闭：次序权重让 idx0 胜出。
-        let (off, _) = score_and_pick_with_desc(
-            "StarTiara",
-            &items,
-            &descs,
-            DescWeight::OFF,
-            false,
-            cn(&names),
-            None,
-        );
-        assert_eq!(off.map(|i| i.id.as_str()), Some("1111111"));
-        // 开启且权重足够大：说明文命中的 idx1 反超。
         let w = DescWeight {
             word_bonus: 50,
             max_words: 3,
@@ -472,7 +512,116 @@ mod tests {
         assert_eq!(
             on.map(|i| i.id.as_str()),
             Some("2222222"),
-            "说明文命中应提升排序"
+            "两个候选都有名称证据时，说明文命中应提升排序"
+        );
+    }
+
+    /// 说明文**不得**让名称零证据的候选反超名称有证据的候选。
+    ///
+    /// 这是原实现最危险的漏洞：`desc_on_promotes_description_match` 曾经把
+    /// 「名称都不命中、靠说明文入选」当成正向验收锁进测试。现改为反向断言。
+    #[test]
+    fn desc_cannot_promote_candidate_without_name_evidence() {
+        let items = [
+            item("1111111", "StarTiara Base", 0),
+            item("2222222", "Another Item", 0),
+        ];
+        let names = [("1111111", "StarTiara Base"), ("2222222", "Another Item")];
+        let descs = [
+            desc("全く関係ない説明"),
+            desc("StarTiara StarTiara StarTiara 対応"),
+        ];
+        let w = DescWeight {
+            word_bonus: 50,
+            max_words: 3,
+        };
+        let (on, _) =
+            score_and_pick_with_desc("StarTiara", &items, &descs, w, false, cn(&names), None);
+        assert_eq!(
+            on.map(|i| i.id.as_str()),
+            Some("1111111"),
+            "名称有证据者必须胜出，说明文不得让无证据者反超"
+        );
+    }
+
+    /// 歧义只能用「名称层基线分」判定：说明文不得把本已分不开的候选拉开。
+    #[test]
+    fn desc_cannot_clear_ambiguity() {
+        // 两候选名称同分（Star Tiara / Star Tiara Gold 的规范名不同但都含查询词），
+        // 基线分差 <30 → 原实现判歧义；desc 拉大分差后仍必须保持歧义。
+        let items = [
+            item("1111111", "Star Tiara", 0),
+            item("2222222", "Star Tiara Gold", 0),
+        ];
+        let names = [("1111111", "Star Tiara"), ("2222222", "Star Tiara Gold")];
+        let descs = [
+            desc("nothing"),
+            desc("StarTiara StarTiara StarTiara StarTiara"),
+        ];
+        let w = DescWeight {
+            word_bonus: 50,
+            max_words: 3,
+        };
+        let (_, on_amb) =
+            score_and_pick_with_desc("StarTiara", &items, &descs, w, false, cn(&names), None);
+        let (_, off_amb) = score_and_pick_with_desc(
+            "StarTiara",
+            &items,
+            &descs,
+            DescWeight::OFF,
+            false,
+            cn(&names),
+            None,
+        );
+        assert!(off_amb, "基线本就应判歧义（前提校验）");
+        assert!(on_amb, "说明文不得消除名称层的歧义");
+    }
+
+    /// desc 也不能**制造**歧义：原实现不歧义时，desc 拉不开的两件仍不歧义。
+    #[test]
+    fn desc_cannot_create_ambiguity() {
+        // 名称分差足够大：idx0 名称命中（+100），idx1 完全不命中。
+        let items = [
+            item("1111111", "StarTiara Base", 0),
+            item("2222222", "Unrelated", 0),
+        ];
+        let names = [("1111111", "StarTiara Base"), ("2222222", "Unrelated")];
+        let descs = [desc("x"), desc("x")];
+        let w = DescWeight {
+            word_bonus: 50,
+            max_words: 3,
+        };
+        let (_, on_amb) =
+            score_and_pick_with_desc("StarTiara", &items, &descs, w, false, cn(&names), None);
+        assert!(!on_amb, "名称层明确不歧义时，desc 不得制造歧义");
+    }
+
+    /// 权重极端放大的前提下，名称零证据的候选**仍不得**反超名称有证据者。
+    ///
+    /// 这是「名称证据门槛」的真红证：门槛若退化成 `s > 0`（次序分让非首位候选
+    /// 恒有正分），本测试会失败——desc 就能把无关商品顶成 picked。
+    #[test]
+    fn desc_extreme_weight_cannot_beat_name_evidence() {
+        let items = [
+            item("1111111", "StarTiara Base", 0),
+            item("2222222", "Unrelated", 0),
+        ];
+        let names = [("1111111", "StarTiara Base"), ("2222222", "Unrelated")];
+        let descs = [
+            desc("x"),
+            desc("StarTiara StarTiara StarTiara StarTiara StarTiara"),
+        ];
+        // 权重远超名称命中的 +100，逼迫门槛生效。
+        let w = DescWeight {
+            word_bonus: 500,
+            max_words: 10,
+        };
+        let (on, _) =
+            score_and_pick_with_desc("StarTiara", &items, &descs, w, false, cn(&names), None);
+        assert_eq!(
+            on.map(|i| i.id.as_str()),
+            Some("1111111"),
+            "权重再大，名称零证据者也不得反超"
         );
     }
 
@@ -495,41 +644,171 @@ mod tests {
     /// 空说明文不得加分，也不得 panic。
     #[test]
     fn desc_empty_is_safe() {
-        let items = [item("1", "n", 0)];
-        let (best, _) = score_and_pick_with_desc(
+        // 多候选 + 全部说明文缺失：必须与 OFF 逐项一致，且不得 panic。
+        // （原文用单候选并断言 `is_none() || Some("1")`——两个可能值都成立，恒真无鉴别力。）
+        let items = [
+            item("1111111", "Star Tiara", 0),
+            item("2222222", "Star Tiara Gold", 0),
+        ];
+        let names = [("1111111", "Star Tiara"), ("2222222", "Star Tiara Gold")];
+        let w = DescWeight {
+            word_bonus: 50,
+            max_words: 3,
+        };
+        let (on, on_amb) =
+            score_and_pick_with_desc("StarTiara", &items, &[], w, false, cn(&names), None);
+        let (off, off_amb) = score_and_pick_with_desc(
             "StarTiara",
             &items,
             &[],
-            DescWeight {
-                word_bonus: 50,
-                max_words: 3,
-            },
+            DescWeight::OFF,
             false,
-            cn(&[("1", "n")]),
+            cn(&names),
             None,
         );
-        // 单候选走原路径，不加分也不崩。
-        assert!(best.is_none() || best.map(|i| i.id.as_str()) == Some("1"));
+        assert_eq!(
+            on.map(|i| i.id.clone()),
+            off.map(|i| i.id.clone()),
+            "说明文全缺时不得改变选优"
+        );
+        assert_eq!(on_amb, off_amb, "说明文全缺时歧义判定不得改变");
     }
 
     /// 加分不得翻转「名称完全不命中」的否决：权重再大也不能凭说明文入选。
     #[test]
     fn desc_cannot_override_name_mismatch() {
-        let long_a = "A".repeat(60);
-        let items = [item("1", &long_a, 0)];
-        let (best, _) = score_and_pick_with_desc(
+        // 两候选、**名称与规范名都不含查询词**（超长名触发 -10，base 分 ≤ 0），
+        // 说明文里却堆满查询词。原实现会否决（picked=None），desc 不得把它救回来。
+        // （原文用单候选——单候选走 `items.len() <= 1` 提前返回，根本没走到加分分支。）
+        let a = "A".repeat(60);
+        let b = "B".repeat(60);
+        let items = [item("1", &a, 0), item("2", &b, 0)];
+        let names = [("1", a.as_str()), ("2", b.as_str())];
+        let descs = [
+            desc("Moonpiercer Moonpiercer Moonpiercer"),
+            desc("Moonpiercer Moonpiercer Moonpiercer"),
+        ];
+        let (best, amb) = score_and_pick_with_desc(
             "Moonpiercer",
             &items,
-            &[desc("Moonpiercer 対応")],
+            &descs,
             DescWeight {
                 word_bonus: 50,
                 max_words: 3,
             },
             false,
-            cn(&[("1", long_a.as_str())]),
+            cn(&names),
             None,
         );
-        // 单结果与否决由原实现决定，加分不介入。
-        assert!(best.is_none(), "名称不命中时说明文不得单独入选");
+        assert!(
+            best.is_none(),
+            "名称零证据时说明文不得让候选入选，实际选中的是 {:?}",
+            best.map(|i| &i.id)
+        );
+        assert!(!amb);
+    }
+
+    // ── 权重 golden（锁定线上行为契约的**精确分值**）──────────────────
+    //
+    // 背景：`score_and_pick` 只返回「选了谁」，光靠结果断言锁不住权重——实测把
+    // `s += 100` 改成 `s += 80`、`s += 20` 改成 `s += 5`、次序步长 2 改成 0，
+    // 全量测试**仍然全绿**。故这些用例直接断言 `weighted_scores` 的 `total`。
+
+    fn ws(query: &str, items: &[Item], names: &[(&str, &str)]) -> Vec<i32> {
+        weighted_scores(query, items, false, cn(names))
+            .into_iter()
+            .map(|s| s.total)
+            .collect()
+    }
+
+    /// 名称命中 100 + 次序 10 = 110。
+    #[test]
+    fn golden_score_name_hit_only() {
+        let items = [item("1", "StarTiara", 0)];
+        // 名称命中，但 `StarTiara` 是一个词 → 词级也命中（+20）？
+        // query 无分隔符 → split_query_words 只有一项 "startiara"（8 字符 ≥3）→ 也命中 +20。
+        assert_eq!(
+            ws("StarTiara", &items, &[("1", "Nope")]),
+            vec![100 + 20 + 10]
+        );
+    }
+
+    /// 名称命中 + 规范名命中 = 200（再加词级与次序）。
+    #[test]
+    fn golden_score_name_and_canon() {
+        let items = [item("1", "StarTiara", 0)];
+        assert_eq!(
+            ws("StarTiara", &items, &[("1", "StarTiara")]),
+            vec![100 + 100 + 20 + 10]
+        );
+    }
+
+    /// 词级命中 +20：查询含空格拆成两个词，标题只含其中一个。
+    #[test]
+    fn golden_score_word_level_twenty() {
+        // query = "abc xyzw"：词 ["abc"(3), "xyzw"(4)]；标题只含 "abc"。
+        // 完整查询串不在标题里 → 无 +100；只有 "abc" 命中 → +20；次序 +10。
+        let items = [item("1", "abc", 0)];
+        assert_eq!(ws("abc xyzw", &items, &[("1", "nothing")]), vec![20 + 10]);
+    }
+
+    /// 次序分步长 2：第 0/1/2 项分别 10/8/6，第 5 项起封底 0。
+    #[test]
+    fn golden_score_order_step() {
+        let items = [
+            item("1", "z", 0),
+            item("2", "z", 0),
+            item("3", "z", 0),
+            item("4", "z", 0),
+            item("5", "z", 0),
+            item("6", "z", 0),
+            item("7", "z", 0),
+        ];
+        // 无任何命中，只有次序分。
+        assert_eq!(
+            ws("qqqq", &items, &[]),
+            vec![10, 8, 6, 4, 2, 0, 0],
+            "次序步长必须为 2 且封底于 0"
+        );
+    }
+
+    /// 免费加成 +5：仅 prefer_free 且价格为 0 时生效。
+    #[test]
+    fn golden_score_free_bonus_five() {
+        let items = [item("1", "z", 0)];
+        let off = weighted_scores("qqqq", &items, false, cn(&[]));
+        let on = weighted_scores("qqqq", &items, true, cn(&[]));
+        assert_eq!(on[0].total - off[0].total, 5, "prefer_free 加成必须恰为 5");
+        // 付费项不得加成
+        let paid = [item("1", "z", 500)];
+        let on_paid = weighted_scores("qqqq", &paid, true, cn(&[]));
+        assert_eq!(on_paid[0].total, 10, "付费项不得拿免费加成");
+    }
+
+    /// 过长惩罚 -10：名称与规范名都超过查询 5 倍时才触发。
+    #[test]
+    fn golden_score_long_penalty_ten() {
+        let long = "A".repeat(60);
+        let items = [item("1", &long, 0)];
+        // 名称与规范名都超长 → -10；无命中 → 次序 10 - 10 = 0
+        assert_eq!(ws("Moonpiercer", &items, &[("1", long.as_str())]), vec![0]);
+        // 只有名称超长、规范名很短 → 不触发惩罚
+        assert_eq!(ws("Moonpiercer", &items, &[("1", "Nope")]), vec![10]);
+    }
+
+    /// 名称证据标志必须与「名称/规范名是否真命中」一致（desc 门槛依赖它）。
+    #[test]
+    fn golden_name_evidence_flags() {
+        let items = [item("1", "StarTiara", 0), item("2", "Nope", 0)];
+        let s = weighted_scores(
+            "StarTiara",
+            &items,
+            false,
+            cn(&[("1", "Nope"), ("2", "Nope")]),
+        );
+        assert!(s[0].name_hit, "名称命中必须置位");
+        assert!(!s[0].canon_hit);
+        assert!(!s[1].name_hit, "名称不命中不得置位（次序分不算证据）");
+        assert!(!s[1].canon_hit);
     }
 }
