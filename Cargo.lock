@@ -1428,6 +1428,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "shell-mac",
  "shell-win",
  "tar",
