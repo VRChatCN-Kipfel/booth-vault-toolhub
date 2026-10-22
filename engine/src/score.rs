@@ -4,7 +4,7 @@
 //! 同名不同价必报歧义、单结果也须名称命中），改动会影响选优结果。
 //! `canonical_name` 与资源名提取以依赖注入传入，保持本层无 IO 可测。
 
-use crate::norm::norm;
+use crate::norm::{norm, norm_wide};
 
 /// 搜索结果条目（调用方从 BOOTH JSON 提取）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +34,7 @@ where
     if items.is_empty() {
         return (None, false);
     }
-    let qn = norm(query);
+    let qn = norm_wide(query);
 
     // 评分权重契约（+100 名称命中 / +100 规范名命中 / +20 词级 / +10-次序 / -10 过长）。
     let mut scored: Vec<(i32, usize)> = Vec::new();
@@ -42,10 +42,10 @@ where
         let name_l = it.name.to_lowercase();
         let cn = canonical_name(&it.id);
         let mut s = 0i32;
-        if !qn.is_empty() && norm(&name_l).contains(&qn) {
+        if !qn.is_empty() && norm_wide(&name_l).contains(&qn) {
             s += 100;
         }
-        if !qn.is_empty() && norm(&cn).contains(&qn) {
+        if !qn.is_empty() && norm_wide(&cn).contains(&qn) {
             s += 100;
         }
         for w in split_query_words(query) {

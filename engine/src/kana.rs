@@ -56,8 +56,10 @@ pub const fn enabled() -> bool {
 pub fn disabled_notice() -> String {
     format!(
         "本发行版未启用日文读音扩展（构建时未带 `kana` feature）。\
-         如需该能力，请前往 {}/releases 下载完整发行版（文件名不含 `lite` / `slim` 的那个）。\
+         如需该能力，请前往 {} 下载完整发行版（文件名不含 `lite` / `slim` 的那个）。\
          当前检索已降级为仅按原词匹配，结果可能偏少。",
+        // releases_url() 已含 `/releases`，此处**不得**再拼一次——历史缺陷曾拼成
+        // `.../releases/releases`，用户点进去是 404，而这段提示正是本功能唯一的自救入口。
         crate::update::releases_url()
     )
 }
@@ -256,10 +258,21 @@ mod tests {
     #[test]
     fn disabled_notice_points_to_releases() {
         let msg = disabled_notice();
-        assert!(msg.contains("releases"), "提示须含 releases 入口：{msg}");
         assert!(
             msg.contains("kana"),
             "提示须点明缺失的 feature，便于排查：{msg}"
+        );
+        // 必须给出**可直接点开**的完整 releases 地址。
+        // 断言完整 URL 而非 contains("releases")：历史的 `/releases/releases` 双层
+        // 死链同样含 "releases"，宽松断言抓不到它，而这条链接是本功能唯一的自救入口。
+        let expected = crate::update::releases_url();
+        assert!(
+            msg.contains(&expected),
+            "提示须含完整 releases 地址 {expected}，实际：{msg}"
+        );
+        assert!(
+            !msg.contains(&format!("{expected}/releases")),
+            "不得拼成 {expected}/releases 双层死链，实际：{msg}"
         );
     }
 }
