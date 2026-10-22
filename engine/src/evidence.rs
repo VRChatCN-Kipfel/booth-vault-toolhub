@@ -86,6 +86,36 @@ pub struct Excerpt {
     pub truncated: bool,
 }
 
+/// 小写化并记录**字符映射**：返回 `(小写串, map)`，其中 `map[i]` 是原串第 `i` 个
+/// 字符在小写串中的字节起点，末尾追加一项等于小写串总字节长度。
+///
+/// 为什么需要映射：`to_lowercase()` 会改变字节长度——`İ`(U+0130) 小写后是
+/// `i` + 组合点两个字符，`ẞ`(U+1E9E) 小写后字节数也变。直接拿小写串里的字节位置
+/// 去切原串（`description[..byte_pos]`）会落在字符中间，**panic**。
+/// 实测 `excerpt("İ猫が好きです", ["猫"], 20)` 会 panic：
+/// `end byte index 11 is not a char boundary; it is inside '猫'`。
+fn lowercase_with_map(s: &str) -> (String, Vec<usize>) {
+    let mut lower = String::with_capacity(s.len());
+    let mut map = Vec::with_capacity(s.chars().count() + 1);
+    for c in s.chars() {
+        map.push(lower.len());
+        for lc in c.to_lowercase() {
+            lower.push(lc);
+        }
+    }
+    map.push(lower.len());
+    (lower, map)
+}
+
+/// 把「小写串中的字节位置」换算成「原串中的字符索引」。
+///
+/// `map` 单调递增，故可用二分定位所属字符。
+fn char_index_for(lower_byte: usize, map: &[usize]) -> usize {
+    map.partition_point(|&start| start <= lower_byte)
+        .saturating_sub(1)
+        .min(map.len().saturating_sub(1))
+}
+
 /// 抽取摘录。`terms` 为空时等价于「取正文首部」。
 pub fn excerpt(description: &str, terms: &[String], max_chars: usize) -> Excerpt {
     let total = description.chars().count();
@@ -97,8 +127,8 @@ pub fn excerpt(description: &str, terms: &[String], max_chars: usize) -> Excerpt
             truncated,
         };
     }
-    let lower = description.to_lowercase();
-    // 命中位置按字符偏移记录，避免多字节字符把窗口切坏。
+    // 用带映射的小写化定位命中，**绝不**拿小写串的字节偏移直接切原串（会 panic）。
+    let (lower, map) = lowercase_with_map(description);
     let mut hit_char: Option<usize> = None;
     for t in terms {
         let t = t.trim();
@@ -106,13 +136,20 @@ pub fn excerpt(description: &str, terms: &[String], max_chars: usize) -> Excerpt
             continue;
         }
         if let Some(byte_pos) = lower.find(&t.to_lowercase()) {
-            hit_char = Some(description[..byte_pos].chars().count());
+            hit_char = Some(char_index_for(byte_pos, &map));
             break;
         }
     }
     let (start, hit) = match hit_char {
-        // 命中时向前留一点上下文，但不越过 0。
-        Some(pos) => (pos.saturating_sub(max_chars / 4), true),
+        // 命中时向前留一点上下文，但**同时回填尾部预算**：若命中点太靠后，
+        // 单纯 saturating_sub 会让窗口越过正文末尾、摘录短于 max_chars。
+        Some(pos) => {
+            let back = max_chars / 4;
+            let start = pos
+                .saturating_sub(back)
+                .min(total.saturating_sub(max_chars));
+            (start, true)
+        }
         None => (0, false),
     };
     let text: String = description.chars().skip(start).take(max_chars).collect();
@@ -201,6 +238,41 @@ mod tests {
         let e = excerpt(desc, &[], 5);
         assert_eq!(e.text.chars().count(), 5);
         assert!(e.truncated);
+    }
+
+    /// 小写化改变字节长度时不得 panic（历史缺陷：直接用小写串的字节偏移切原串）。
+    ///
+    /// 用例字符说明——这是实测踩出来的，别看名字猜：
+    ///   - `İ`(U+0130) 小写后是 `i` + 组合点，**会**改变字节长度；
+    ///   - `ẞ`(U+1E9E) 小写为 `ß`，字节数变化；
+    ///   - `Ω`(U+03A9) 与 ASCII `K` **不**改变长度，故不会 panic。
+    #[test]
+    fn excerpt_unicode_case_folding_does_not_panic() {
+        for desc in ["İ猫が好きです", "ẞ猫", "İstanbul 猫", "Ω猫", "K猫", "Aẞ猫"]
+        {
+            let e = excerpt(desc, &["猫".to_string()], 20);
+            assert!(
+                desc.contains(&e.text),
+                "摘录必须是原文连续子串：desc={desc:?} text={:?}",
+                e.text
+            );
+        }
+    }
+
+    /// 命中点靠后时必须回填尾部预算，摘录不得短于 max_chars（正文足够长时）。
+    #[test]
+    fn excerpt_fills_budget_at_tail() {
+        // 命中在最后一个字符，max_chars=5、total=10。
+        let desc = "あいうえおかきく猫";
+        let e = excerpt(desc, &["猫".to_string()], 5);
+        assert!(e.hit);
+        assert_eq!(
+            e.text.chars().count(),
+            5,
+            "命中靠后时窗口必须前移回填，实际：{:?}",
+            e.text
+        );
+        assert!(desc.contains(&e.text));
     }
 
     #[test]

@@ -136,6 +136,10 @@ pub fn thumb_from_json(item: &ItemJson) -> String {
 /// 错误类型为 `String` 而非 `reqwest::Error`：缓存命中时根本没有 `reqwest::Response`
 /// 可供 `r.json()` 消费，而 `reqwest::Error` 没有公开构造入口（无 `From<io::Error>`），
 /// 若硬要保留该类型，解析失败就只能谎报成空数据——那是静默错误，绝不能做。
+///
+/// 年龄门不在此处处理：`adult=t` 由 `session::parse_cookie` 注入 cookie jar，
+/// 与用户会话**共存**。历史上这里用显式 `Cookie` 头注入，会让 reqwest 跳过整个
+/// jar（`cookie.rs:242`），登录用户的 `_plaza_session_nktz7u` 因此丢失。
 pub fn fetch_item(client: &Client, item_id: &str) -> Result<ItemJson, String> {
     let url = ITEM_JSON_URL.replace("{id}", item_id);
     let mut headers = crate::session::default_headers();
