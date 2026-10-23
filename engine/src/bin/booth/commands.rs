@@ -76,6 +76,14 @@ pub fn run(cli: Cli) -> u8 {
                     cli.json,
                 );
             }
+            let desc = match engine::config::desc_weight(
+                args.desc_word_bonus,
+                args.desc_max_words,
+                &config,
+            ) {
+                Ok(w) => w,
+                Err(e) => return fail(cli.json, &e),
+            };
             cmd_search(
                 &config,
                 &args.files,
@@ -84,6 +92,7 @@ pub fn run(cli: Cli) -> u8 {
                 args.id.as_deref(),
                 args.cookie.as_deref(),
                 keep_failed,
+                desc,
                 cli.json,
             )
         }
@@ -516,6 +525,7 @@ fn cmd_search(
     force_id: Option<&str>,
     cookie: Option<&str>,
     keep_failed: bool,
+    desc: engine::score::DescWeight,
     json: bool,
 ) -> u8 {
     let base = match download_root(config, base_dir) {
@@ -567,6 +577,7 @@ fn cmd_search(
             force_id,
             cookie.as_deref(),
             keep_failed,
+            desc,
         ) {
             Ok(Some(id)) => matched.push(id),
             Ok(None) => {}
@@ -599,6 +610,7 @@ fn process_search_file(
     force_id: Option<&str>,
     cookie: Option<&str>,
     keep_failed: bool,
+    desc: engine::score::DescWeight,
 ) -> Result<Option<String>, String> {
     let fname = path
         .file_name()
@@ -619,7 +631,8 @@ fn process_search_file(
             &candidates,
             names.as_deref(),
             engine::kana::MAX_VARIANTS,
-            |id| canonical_name(client, id),
+            |id| canonical_info(client, id),
+            desc,
         );
         match outcome.hit {
             Some(h) => engine::fetch::fetch_item(client, &h.item.id)
@@ -643,9 +656,12 @@ fn process_search_file(
 }
 
 /// 规范名解析（score_and_pick 依赖注入）。
-fn canonical_name(client: &reqwest::blocking::Client, id: &str) -> String {
+fn canonical_info(client: &reqwest::blocking::Client, id: &str) -> engine::search::CanonInfo {
     engine::fetch::fetch_item(client, id)
-        .map(|i| i.name)
+        .map(|i| engine::search::CanonInfo {
+            name: i.name,
+            description: i.description,
+        })
         .unwrap_or_default()
 }
 

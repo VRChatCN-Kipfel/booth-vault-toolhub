@@ -176,6 +176,8 @@ export function SettingsPage() {
     proxy, setProxy, proxyUrl, setProxyUrl,
     cookie, setCookie, save,
     keepFailedDownloads, setKeepFailedDownloads,
+    descWordBonus, setDescWordBonus,
+    descMaxWords, setDescMaxWords,
   } = useAppConfigStore();
   const { checking, info, check } = useUpdateStore();
   const [ck, setCk] = useState<CookieCheck | null>(null);
@@ -378,6 +380,32 @@ export function SettingsPage() {
           失败临时文件
         </PanelLabel>
         <Muted>下载失败时保留 .part 供取证，只存本地。</Muted>
+      </Section>
+
+      <Section>
+        <PanelLabel>说明文加权</PanelLabel>
+        <Row>
+          <Input
+            type="number"
+            min={0}
+            value={descWordBonus}
+            onChange={(e) => setDescWordBonus(Number(e.target.value) || 0)}
+            style={{ maxWidth: 120 }}
+            placeholder="每命中词加分"
+          />
+          <Input
+            type="number"
+            min={0}
+            max={100}
+            value={descMaxWords}
+            onChange={(e) => setDescMaxWords(Number(e.target.value) || 0)}
+            style={{ maxWidth: 120 }}
+            placeholder="最多计词数"
+          />
+        </Row>
+        <Muted>
+          均为 0 = 不参与评分（默认）。开启后说明文中命中的检索词参与选优；加分 × 词数不得超过 100。
+        </Muted>
       </Section>
 
       <Section>

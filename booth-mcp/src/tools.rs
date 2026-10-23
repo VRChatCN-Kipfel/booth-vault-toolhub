@@ -121,6 +121,12 @@ struct SearchParams {
     /// 跳过内容缓存，强制联网（仅 query 模式）。
     #[serde(default)]
     no_cache: bool,
+    /// description 加权：说明文中每个命中词的加分（缺省读配置，配置缺省 = 关闭）。
+    #[serde(default)]
+    desc_word_bonus: Option<i32>,
+    /// description 加权：最多计几个命中词（缺省读配置，未给时按 3）。
+    #[serde(default)]
+    desc_max_words: Option<usize>,
     /// 归档根目录（默认读配置 download_root）。
     #[serde(default)]
     base_dir: Option<String>,
@@ -518,6 +524,15 @@ impl BoothServer {
         let mut matched: Vec<String> = Vec::new();
         let mut failures: Vec<String> = Vec::new();
 
+        let desc = match engine::config::desc_weight(
+            params.desc_word_bonus,
+            params.desc_max_words,
+            &config,
+        ) {
+            Ok(w) => w,
+            Err(e) => return tool_error(&e),
+        };
+
         for path_str in &params.files {
             let path = std::path::Path::new(path_str);
             let fname = path
@@ -546,6 +561,7 @@ impl BoothServer {
                 params.id.as_deref(),
                 params.cookie.as_deref(),
                 engine::config::keep_failed_downloads(&config),
+                desc,
             ) {
                 Ok(Some(id)) => matched.push(id),
                 Ok(None) => {}
@@ -871,6 +887,7 @@ fn process_search_file(
     force_id: Option<&str>,
     cookie: Option<&str>,
     keep_failed: bool,
+    desc: engine::score::DescWeight,
 ) -> Result<Option<String>, String> {
     let fname = path
         .file_name()
@@ -889,7 +906,8 @@ fn process_search_file(
             &candidates,
             names.as_deref(),
             engine::kana::MAX_VARIANTS,
-            |id| canonical_name(client, id),
+            |id| canonical_info(client, id),
+            desc,
         );
         match outcome.hit {
             Some(h) => engine::fetch::fetch_item(client, &h.item.id)
@@ -911,9 +929,12 @@ fn process_search_file(
 }
 
 /// 规范名解析（score_and_pick 依赖注入）。
-fn canonical_name(client: &reqwest::blocking::Client, id: &str) -> String {
+fn canonical_info(client: &reqwest::blocking::Client, id: &str) -> engine::search::CanonInfo {
     engine::fetch::fetch_item(client, id)
-        .map(|i| i.name)
+        .map(|i| engine::search::CanonInfo {
+            name: i.name,
+            description: i.description,
+        })
         .unwrap_or_default()
 }
 
@@ -941,5 +962,32 @@ fn apply_icon(cover: &std::path::Path, folder: &std::path::Path) {
     #[cfg(not(windows))]
     {
         let _ = (cover, folder);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// description 加权的 MCP 入口必须真的出现在工具 schema 里。
+    /// 只加字段不给默认值 / 写成私有字段时，agent 是看不见的——而 CLI 那边照样能跑，
+    /// 于是「三端一致」在 MCP 上静默失效。
+    #[test]
+    fn search_schema_exposes_desc_weight_params() {
+        let schema = schemars::schema_for!(SearchParams);
+        let text = serde_json::to_string(&schema).expect("schema 应可序列化");
+        // 防空转：先确认 schema 确实在列举字段名，否则下面的 contains 无区分力。
+        assert!(
+            text.contains("no_cache") && text.contains("files"),
+            "schema 没有列出字段名，本测试失去区分力"
+        );
+        assert!(
+            text.contains("desc_word_bonus"),
+            "MCP search 工具缺少 desc_word_bonus"
+        );
+        assert!(
+            text.contains("desc_max_words"),
+            "MCP search 工具缺少 desc_max_words"
+        );
     }
 }

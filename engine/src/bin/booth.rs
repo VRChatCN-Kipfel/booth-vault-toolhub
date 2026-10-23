@@ -82,6 +82,12 @@ struct SearchArgs {
     /// 归档根目录。
     #[arg(long)]
     base_dir: Option<PathBuf>,
+    /// description 加权：说明文中每个命中词的加分（缺省读配置，配置缺省 = 关闭）。
+    #[arg(long)]
+    desc_word_bonus: Option<i32>,
+    /// description 加权：最多计几个命中词（缺省读配置，未给时按 3）。
+    #[arg(long)]
+    desc_max_words: Option<usize>,
     /// 只搜索不实际整理。
     #[arg(long)]
     dry_run: bool,

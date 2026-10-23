@@ -13,11 +13,15 @@ interface AppConfigState {
   proxyUrl: string;
   cookie: string;
   keepFailedDownloads: boolean;
+  descWordBonus: number;
+  descMaxWords: number;
   setBoothRoot: (v: string) => void;
   setProxy: (v: boolean) => void;
   setProxyUrl: (v: string) => void;
   setCookie: (v: string) => void;
   setKeepFailedDownloads: (v: boolean) => void;
+  setDescWordBonus: (v: number) => void;
+  setDescMaxWords: (v: number) => void;
   save: () => Promise<void>;
   hydrate: () => Promise<void>;
 }
@@ -28,6 +32,8 @@ interface TomlSettings {
   proxyUrl: string;
   cookie: string;
   keepFailedDownloads: boolean;
+  descWordBonus: number;
+  descMaxWords: number;
 }
 
 async function loadLegacyStore(): Promise<Partial<AppConfigState> | null> {
@@ -51,12 +57,16 @@ export const useAppConfigStore = create<AppConfigState>((set, get) => ({
   proxyUrl: '',
   cookie: '',
   keepFailedDownloads: false,
+  descWordBonus: 0,
+  descMaxWords: 0,
 
   setBoothRoot: (v) => set({ boothRoot: v }),
   setProxy: (v) => set({ proxy: v }),
   setProxyUrl: (v) => set({ proxyUrl: v }),
   setCookie: (v) => set({ cookie: v }),
   setKeepFailedDownloads: (v) => set({ keepFailedDownloads: v }),
+  setDescWordBonus: (v) => set({ descWordBonus: v }),
+  setDescMaxWords: (v) => set({ descMaxWords: v }),
 
   save: async () => {
     const s = get();
@@ -66,6 +76,8 @@ export const useAppConfigStore = create<AppConfigState>((set, get) => ({
       proxyUrl: s.proxyUrl,
       cookie: s.cookie,
       keepFailedDownloads: s.keepFailedDownloads,
+      descWordBonus: s.descWordBonus,
+      descMaxWords: s.descMaxWords,
     });
   },
   hydrate: async () => {
@@ -79,6 +91,8 @@ export const useAppConfigStore = create<AppConfigState>((set, get) => ({
           proxyUrl: cfg.proxyUrl ?? '',
           cookie: cfg.cookie ?? '',
           keepFailedDownloads: cfg.keepFailedDownloads ?? false,
+          descWordBonus: cfg.descWordBonus ?? 0,
+          descMaxWords: cfg.descMaxWords ?? 0,
         });
         return;
       }

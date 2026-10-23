@@ -187,6 +187,8 @@ pub fn save_app_config(
     proxy_url: String,
     cookie: String,
     keep_failed_downloads: bool,
+    desc_word_bonus: i32,
+    desc_max_words: usize,
 ) -> Result<(), String> {
     let mut cfg = load_config();
     apply_gui_settings(
@@ -197,6 +199,8 @@ pub fn save_app_config(
             proxy_url,
             cookie,
             keep_failed_downloads,
+            desc_word_bonus,
+            desc_max_words,
         },
     );
     save_user_config(&cfg)
@@ -555,6 +559,7 @@ pub fn search(
     let cookie = resolve_cookie(cookie.as_deref(), &config);
     let client = make_session(&config, cookie.as_deref());
     let keep_failed = engine::config::keep_failed_downloads(&config);
+    let desc = engine::config::desc_weight(None, None, &config)?;
     let files = expand_directories(&files);
     let total = files.len();
 
@@ -577,7 +582,7 @@ pub fn search(
                 .filter(|s| !s.is_empty())
                 .or_else(|| force_id.as_deref().filter(|s| !s.is_empty()));
             if dry_run {
-                match pick_search_match(&client, path) {
+                match pick_search_match(&client, path, desc) {
                     Ok(pick) => {
                         let picked_id = pick.picked.as_ref().map(|p| p.id.clone());
                         let _ = on_event.send(ProgressEvent::Candidates {
@@ -623,6 +628,7 @@ pub fn search(
                     file_force,
                     cookie.as_deref(),
                     keep_failed,
+                    desc,
                 ) {
                     Ok(Some(id)) => {
                         matched += 1;
@@ -676,6 +682,7 @@ struct SearchPick {
 fn pick_search_match(
     client: &reqwest::blocking::Client,
     path: &std::path::Path,
+    desc: engine::score::DescWeight,
 ) -> Result<SearchPick, String> {
     let fname = path
         .file_name()
@@ -691,7 +698,8 @@ fn pick_search_match(
         &queries,
         names.as_deref(),
         engine::kana::MAX_VARIANTS,
-        |id| canonical_name(client, id),
+        |id| canonical_info(client, id),
+        desc,
     );
 
     // 候选列表供界面展示：取「最后尝试的那个检索词」的结果即可，
@@ -723,11 +731,12 @@ fn process_search_file(
     force_id: Option<&str>,
     cookie: Option<&str>,
     keep_failed: bool,
+    desc: engine::score::DescWeight,
 ) -> Result<Option<String>, String> {
     let item = if let Some(id) = force_id.filter(|s| !s.is_empty()) {
         engine::fetch::fetch_item(client, id).map_err(|e| format!("指定 ID {id} 获取失败: {e}"))?
     } else {
-        match pick_search_match(client, path)?.picked {
+        match pick_search_match(client, path, desc)?.picked {
             Some(it) => engine::fetch::fetch_item(client, &it.id)
                 .map_err(|e| format!("获取元数据失败: {e}"))?,
             None => return Ok(None),
@@ -746,10 +755,13 @@ fn process_search_file(
     Ok(Some(item.id))
 }
 
-/// 规范名解析（score_and_pick 依赖注入）。
-fn canonical_name(client: &reqwest::blocking::Client, id: &str) -> String {
+/// 规范名 + 说明文（评分依赖注入；两者同源，见 `engine::search::CanonInfo`）。
+fn canonical_info(client: &reqwest::blocking::Client, id: &str) -> engine::search::CanonInfo {
     engine::fetch::fetch_item(client, id)
-        .map(|i| i.name)
+        .map(|i| engine::search::CanonInfo {
+            name: i.name,
+            description: i.description,
+        })
         .unwrap_or_default()
 }
 

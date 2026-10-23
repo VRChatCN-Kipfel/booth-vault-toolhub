@@ -523,6 +523,17 @@ pub struct ResolveOutcome {
     pub tried: Vec<String>,
 }
 
+/// 商品的规范名与说明文。
+///
+/// **必须一起返回**：两者同源于一次 `fetch_item`（阻塞 GET）。拆成两个闭包会让同一
+/// id 被抓两次；而说明文只在 `DescWeight` 开启时参与评分，等到那时再补抓，等于把
+/// 选优成本翻倍。
+#[derive(Debug, Clone, Default)]
+pub struct CanonInfo {
+    pub name: String,
+    pub description: String,
+}
+
 /// 按文件名候选解析出「最可能是它」的商品（**三端唯一实现**）。
 ///
 /// 两轮**严格分离**：
@@ -542,7 +553,8 @@ pub fn resolve_by_name(
     candidates: &[String],
     resource_names: Option<&[String]>,
     max_variants: usize,
-    canonical: impl Fn(&str) -> String,
+    info: impl Fn(&str) -> CanonInfo,
+    weight: crate::score::DescWeight,
 ) -> ResolveOutcome {
     let mut tried: Vec<String> = Vec::new();
     let mut hit: Option<NamedHit> = None;
@@ -550,7 +562,7 @@ pub fn resolve_by_name(
     // 第一轮：原候选。
     for q in candidates {
         tried.push(q.clone());
-        if let Some(h) = pick_once(client, q, resource_names, &canonical) {
+        if let Some(h) = pick_once(client, q, resource_names, &info, weight) {
             hit = Some(h);
             break;
         }
@@ -561,7 +573,7 @@ pub fn resolve_by_name(
         let variants = crate::clean::with_kana_variants(candidates.to_vec(), max_variants);
         for q in variants.into_iter().filter(|c| !candidates.contains(c)) {
             tried.push(q.clone());
-            if let Some(h) = pick_once(client, &q, resource_names, &canonical) {
+            if let Some(h) = pick_once(client, &q, resource_names, &info, weight) {
                 hit = Some(h);
                 break;
             }
@@ -576,12 +588,25 @@ fn pick_once(
     client: &Client,
     q: &str,
     resource_names: Option<&[String]>,
-    canonical: &impl Fn(&str) -> String,
+    info: &impl Fn(&str) -> CanonInfo,
+    weight: crate::score::DescWeight,
 ) -> Option<NamedHit> {
     let results = search_booth(client, q).ok()?;
     if results.is_empty() {
         return None;
     }
+    pick_from_results(q, &results, resource_names, info, weight)
+}
+
+/// 评分决策本身——与取数（`search_booth` / `fetch_item`）分开，好让这层能用假数据
+/// 直接测：否则「开关开了但说明文没接进去」这种失效只能靠真实网络才能暴露。
+fn pick_from_results(
+    q: &str,
+    results: &[SearchItem],
+    resource_names: Option<&[String]>,
+    info: &impl Fn(&str) -> CanonInfo,
+    weight: crate::score::DescWeight,
+) -> Option<NamedHit> {
     let items: Vec<crate::score::Item> = results
         .iter()
         .map(|r| crate::score::Item {
@@ -590,13 +615,42 @@ fn pick_once(
             price: r.price,
         })
         .collect();
-    let (picked, ambiguous) =
-        crate::score::score_and_pick(q, &items, false, canonical, resource_names);
+    // 本轮的规范名/说明文缓存：`info` 可能是非缓存闭包（三端各自注入），
+    // 而开启 desc 时同一 id 会先取说明文、再被评分取规范名——不在这里收拢，
+    // 一次选优就会对每个候选抓两遍。
+    let memo: std::cell::RefCell<std::collections::HashMap<String, CanonInfo>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    let cached = |id: &str| -> CanonInfo {
+        if let Some(hit) = memo.borrow().get(id) {
+            return hit.clone();
+        }
+        let v = info(id);
+        memo.borrow_mut().insert(id.to_string(), v.clone());
+        v
+    };
+    let canonical = |id: &str| cached(id).name;
+    let (picked, ambiguous) = if weight.is_on() {
+        let descs: Vec<crate::score::DescriptionText> = items
+            .iter()
+            .map(|it| crate::score::DescriptionText::new(it.id.clone(), cached(&it.id).description))
+            .collect();
+        crate::score::score_and_pick_with_desc(
+            q,
+            &items,
+            &descs,
+            weight,
+            false,
+            canonical,
+            resource_names,
+        )
+    } else {
+        crate::score::score_and_pick(q, &items, false, canonical, resource_names)
+    };
     let p = picked?;
     if ambiguous {
         return None;
     }
-    let cn = canonical(&p.id);
+    let cn = cached(&p.id).name;
     // 名称命中用大小写不敏感的原串包含：`norm` 只留 ASCII，日文会被滤成空串。
     let name_ok = {
         let ql = q.trim().to_lowercase();
@@ -874,5 +928,126 @@ mod tests {
         assert!(keep("Kipfel 衣装", "shopA", &["vroid"]), "不该误伤");
         assert!(!keep("衣装", "vroidshop", &["VRoid"]), "店名也应参与匹配");
         assert!(keep("任意", "任意", &[""]), "空排除词不得过滤一切");
+    }
+
+    fn si(id: &str, name: &str, price: i64) -> SearchItem {
+        SearchItem {
+            id: id.to_string(),
+            name: name.to_string(),
+            price,
+            price_text: String::new(),
+            brand: String::new(),
+            shop: String::new(),
+            category: String::new(),
+            category_name: String::new(),
+            thumbnail: String::new(),
+        }
+    }
+
+    /// 接线死的：开关打开但说明文没接进去，用户看到的仍是「只按标题」的结果。
+    ///
+    /// 分值构造（`star tiara`，两词各 ≥3 字符）：
+    ///   首位「Star Tiara」        名称命中 +100、词级 +40、次序 +10        = 150
+    ///   次位「Star Tiara Gold」   名称命中 +100、词级 +40、次序 +8、
+    ///                             规范名命中 +100                          = 248
+    /// 基线分差 98（≥30，不判歧义），基线赢家是次位；只有把说明文接进去，首位才能
+    /// 靠 +100 加成反超（250 > 248）。故本测试同时钉住「开关生效」与「生效方向」。
+    #[test]
+    fn desc_weight_actually_changes_the_winner() {
+        let results = [
+            si("1111111", "Star Tiara", 0),
+            si("2222222", "Star Tiara Gold", 0),
+        ];
+        let info = |id: &str| match id {
+            // 规范名不含查询词 → 无规范名命中；说明文命中两个词 → +100。
+            "1111111" => CanonInfo {
+                name: "Other Item".to_string(),
+                description: "star tiara".to_string(),
+            },
+            _ => CanonInfo {
+                name: "Star Tiara Gold".to_string(),
+                description: String::new(),
+            },
+        };
+        let q = "star tiara";
+
+        let off = pick_from_results(q, &results, None, &info, crate::score::DescWeight::OFF)
+            .expect("关闭时基线赢家应命中");
+        assert_eq!(off.item.id, "2222222", "关闭时说明文不得参与");
+
+        let on_weight = crate::score::DescWeight::new(50, 2).expect("50×2 在上限内");
+        let on = pick_from_results(q, &results, None, &info, on_weight).expect("开启时也应命中");
+        assert_eq!(
+            on.item.id, "1111111",
+            "说明文已接进评分时首位应反超；仍是 2222222 说明开关没接线"
+        );
+    }
+
+    /// 每个候选只解析一次：说明文与规范名同源，分两次取就会把选优成本翻倍
+    /// （#71 的 memo 就是为这个问题加的，接线时最先会退化的也是这里）。
+    #[test]
+    fn desc_weight_does_not_double_canonical_lookups() {
+        use std::cell::Cell;
+        let results = [
+            si("1111111", "StarTiara Base", 0),
+            si("2222222", "StarTiara Variant", 0),
+            si("3333333", "StarTiara Deluxe", 0),
+        ];
+        let calls = Cell::new(0usize);
+        let info = |id: &str| {
+            calls.set(calls.get() + 1);
+            CanonInfo {
+                name: match id {
+                    "1111111" => "StarTiara Base",
+                    "2222222" => "StarTiara Variant",
+                    _ => "StarTiara Deluxe",
+                }
+                .to_string(),
+                description: "StarTiara 対応".to_string(),
+            }
+        };
+        let w = crate::score::DescWeight::new(50, 2).expect("50×2 在上限内");
+        let _ = pick_from_results("StarTiara", &results, None, &info, w);
+        assert_eq!(
+            calls.get(),
+            results.len(),
+            "开启说明文加权后每个候选仍只应解析一次，实际 {}",
+            calls.get()
+        );
+    }
+
+    /// 关闭时必须与「完全没有说明文」的旧路径逐位一致。
+    #[test]
+    fn desc_off_matches_plain_scoring() {
+        let results = [
+            si("1111111", "Star Tiara", 0),
+            si("2222222", "Star Tiara Gold", 0),
+        ];
+        let info = |id: &str| CanonInfo {
+            name: match id {
+                "1111111" => "Other Item",
+                _ => "Star Tiara Gold",
+            }
+            .to_string(),
+            description: "star tiara".to_string(),
+        };
+        let q = "star tiara";
+        let items: Vec<crate::score::Item> = results
+            .iter()
+            .map(|r| crate::score::Item {
+                id: r.id.clone(),
+                name: r.name.clone(),
+                price: r.price,
+            })
+            .collect();
+        let plain = crate::score::score_and_pick(q, &items, false, |id| info(id).name, None);
+        assert!(!plain.1, "本用例的基线不应歧义，否则测试前提不成立");
+
+        let got = pick_from_results(q, &results, None, &info, crate::score::DescWeight::OFF);
+        assert_eq!(
+            got.map(|h| h.item.id),
+            plain.0.map(|i| i.id.clone()),
+            "关闭时不得改变任何选优结果"
+        );
     }
 }
