@@ -165,7 +165,7 @@ pub fn score_and_pick_with_desc<'a, F>(
     resource_names: Option<&[String]>,
 ) -> (Option<&'a Item>, bool)
 where
-    F: Fn(&str) -> String,
+    F: Fn(&str) -> Option<String>,
 {
     // 未开启：直接走原实现，保证一分不差。
     if !weight.is_on() {
@@ -208,7 +208,7 @@ where
     //
     // **复用上面那份缓存**（`memo`），不新建：`score_and_pick_memo` 已把每个 id
     // 解析过一次，这里再 resol 会翻倍。
-    let canonical = |id: &str| -> String {
+    let canonical = |id: &str| -> Option<String> {
         if let Some(hit) = memo.borrow().get(id) {
             return hit.clone();
         }
@@ -250,13 +250,20 @@ where
 
     scored.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
     let best_idx = scored[0].1;
-    let best_cn = norm_wide(&canonical(&items[best_idx].id));
+    // 同名不同价判定：**两侧都必须取到规范名**才比较。取不到就压成空串的话，
+    // 任意两个都取不到规范名的不同商品会被判成同名 → 假歧义。
+    // 归一化必须与主判据同用 `norm_wide`，否则日文场景下同样会误判。
+    let best_cn = canonical(&items[best_idx].id).map(|c| norm_wide(&c));
     let best_price = items[best_idx].price;
     // 歧义 = 原实现已判歧义 **或** 新增的两条判据。desc 永远只能让歧义增加。
     let mut ambiguous = amb || base_ambiguous;
     for (_, idx2) in &scored[1..] {
         let it2 = &items[*idx2];
-        if norm_wide(&canonical(&it2.id)) == best_cn && it2.price != best_price {
+        if let Some(bc) = best_cn.as_deref()
+            && let Some(other) = canonical(&it2.id).map(|c| norm_wide(&c))
+            && other == bc
+            && it2.price != best_price
+        {
             ambiguous = true;
         }
     }
@@ -310,7 +317,7 @@ pub fn weighted_scores<F>(
     canonical_name: F,
 ) -> Vec<ItemScore>
 where
-    F: Fn(&str) -> String,
+    F: Fn(&str) -> Option<String>,
 {
     let qn = normalized_query(query);
     items
@@ -318,9 +325,13 @@ where
         .enumerate()
         .map(|(idx, it)| {
             let name_l = it.name.to_lowercase();
+            // 取不到规范名（None）时不参与 +100 与长度判据。历史实现把失败压成空串，
+            // 于是「规范名命中」静默失效，同名判定还退化成 `"" == ""`（不同商品判成同名）。
             let cn = canonical_name(&it.id);
             let name_hit = !qn.is_empty() && norm_wide(&name_l).contains(&qn);
-            let canon_hit = !qn.is_empty() && norm_wide(&cn).contains(&qn);
+            let canon_hit = cn
+                .as_deref()
+                .is_some_and(|c| !qn.is_empty() && norm_wide(c).contains(&qn));
             let mut s = 0i32;
             if name_hit {
                 s += 100;
@@ -337,9 +348,14 @@ where
             if prefer_free && it.price == 0 {
                 s += 5;
             }
-            if name_l.chars().count() as i64 > query.chars().count() as i64 * 5
-                && cn.chars().count() as i64 > query.chars().count() as i64 * 5
-            {
+            // 过长惩罚要求「名称与规范名**都**过长」；规范名取不到时只按名称判，
+            // 不把 None 当成「长度为 0」而误判为「不惩罚」。
+            let name_too_long = name_l.chars().count() as i64 > query.chars().count() as i64 * 5;
+            let canon_too_long = match cn.as_deref() {
+                Some(c) => c.chars().count() as i64 > query.chars().count() as i64 * 5,
+                None => true,
+            };
+            if name_too_long && canon_too_long {
                 s -= 10;
             }
             ItemScore {
@@ -354,8 +370,13 @@ where
 /// 评分选最佳。
 ///
 /// `prefer_free`：同分候选时优先免费项（付费/免费同款场景；付费项不因此被排除）。
-/// `canonical_name`：商品规范名解析器（JSON 名，含英文别名；调用方负责缓存/网络）。
+/// `canonical_name`：商品规范名解析器；**取不到时返回 `None`**。
 /// `resource_names`：已从 zip 内 .unitypackage 提取的资源名集合（可选，仅单结果兜底用）。
+///
+/// **为什么返回 `Option<String>` 而非 `String`**：历史实现把网络/解析失败
+/// `unwrap_or_default()` 成空串，导致「规范名命中 +100」静默失效，而 `:108` 的
+/// 「同名不同价」判定退化成 `"" == ""`——两个**不同**商品会被判成同名并报歧义。
+/// 改成 `Option` 后：取不到就不加分、同名判定要求两侧都 `Some`。
 ///
 /// 返回 `(最佳条目引用, 是否歧义)`。
 pub fn score_and_pick<'a, F>(
@@ -366,7 +387,7 @@ pub fn score_and_pick<'a, F>(
     resource_names: Option<&[String]>,
 ) -> (Option<&'a Item>, bool)
 where
-    F: Fn(&str) -> String,
+    F: Fn(&str) -> Option<String>,
 {
     let memo: CanonMemo = std::cell::RefCell::new(std::collections::HashMap::new());
     score_and_pick_memo(
@@ -385,7 +406,8 @@ where
 /// 评分本身对同一 id 至少调用 2 次（加权分 + 歧义同名比较），而
 /// `score_and_pick_with_desc` 还要再跑一遍完整流程——实测 N 个候选
 /// legacy 6 次、ON 12 次（4N）。缓存把「每个 id 一次」变成硬保证。
-type CanonMemo = std::cell::RefCell<std::collections::HashMap<String, String>>;
+type CanonMemo =
+    std::cell::RefCell<std::collections::HashMap<String, Option<String>>>;
 
 /// 带外部缓存的评分实现。
 ///
@@ -401,12 +423,12 @@ fn score_and_pick_memo<'a, F>(
     resource_names: Option<&[String]>,
 ) -> (Option<&'a Item>, bool)
 where
-    F: Fn(&str) -> String,
+    F: Fn(&str) -> Option<String>,
 {
     if items.is_empty() {
         return (None, false);
     }
-    let canonical = |id: &str| -> String {
+    let canonical = |id: &str| -> Option<String> {
         if let Some(hit) = memo.borrow().get(id) {
             return hit.clone();
         }
@@ -432,8 +454,10 @@ where
             let it = &items[0];
             // 必须与主判据同用 `norm_wide`：混用会让日文标题在主路径命中、
             // 在兜底路径不命中（或反之），同一份数据两种结论。
-            let cn = norm_wide(&canonical(&it.id));
-            if !qn.is_empty() && (cn.contains(&qn) || norm_wide(&it.name).contains(&qn)) {
+            // 规范名取不到（None）时只比对标题，不把 None 当成空串。
+            let cn_hit = canonical(&it.id)
+                .is_some_and(|c| !qn.is_empty() && norm_wide(&c).contains(&qn));
+            if cn_hit || (!qn.is_empty() && norm_wide(&it.name).contains(&qn)) {
                 return (Some(it), false);
             } // 标题/规范名都不命中 → 资源名二次校验。
             if let Some(res_names) = resource_names
@@ -463,12 +487,17 @@ where
     }
     let best_idx = scored[0].1;
     // 同理：同名判定必须与主判据同一归一化，否则日文场景下 `"" == ""` 会把
-    // 不同商品误判成同名。
-    let best_cn = norm_wide(&canonical(&items[best_idx].id));
+    // 不同商品误判成同名。**两侧都必须取到规范名**才比较——取不到就压成空串的话，
+    // 任意两个都取不到规范名的不同商品会被判成同名 → 假歧义。
+    let best_cn = canonical(&items[best_idx].id).map(|c| norm_wide(&c));
     let best_price = items[best_idx].price;
     for (_, idx2) in &scored[1..] {
         let it2 = &items[*idx2];
-        if norm_wide(&canonical(&it2.id)) == best_cn && it2.price != best_price {
+        if let Some(bc) = best_cn.as_deref()
+            && let Some(other) = canonical(&it2.id).map(|c| norm_wide(&c))
+            && other == bc
+            && it2.price != best_price
+        {
             ambiguous = true;
         }
     }
@@ -498,19 +527,20 @@ mod tests {
     }
 
     /// 规范名解析器（测试用：直接查表，带缓存语义）。
-    fn cn<'a>(table: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> String + 'a {
+    /// 测试用规范名解析器：查表命中返回 `Some`，未命中返回 `None`
+    /// （与生产实现语义一致——取不到就是 None，不是空串）。
+    fn cn<'a>(table: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |id| {
             table
                 .iter()
                 .find(|(i, _)| *i == id)
                 .map(|(_, n)| n.to_string())
-                .unwrap_or_default()
         }
     }
 
     #[test]
     fn score_empty() {
-        let (best, amb) = score_and_pick("q", &[], false, |_| String::new(), None);
+        let (best, amb) = score_and_pick("q", &[], false, |_| None, None);
         assert!(best.is_none());
         assert!(!amb);
     }
@@ -579,6 +609,64 @@ mod tests {
         let (best, amb) = score_and_pick("FreeSoundPack", &items, false, cn(&names), None);
         assert_eq!(best.map(|i| i.id.as_str()), Some("1111111"));
         assert!(amb);
+    }
+
+    // ── 规范名取不到（None）的语义 ───────────────────────────────
+
+    /// 规范名取不到时**不得**与其他取不到的候选判成同名。
+    ///
+    /// 历史实现用 `unwrap_or_default()` 把失败压成空串，于是 `norm("") == norm("")`
+    /// 恒成立——两个**完全不同**的商品被判成同名，再配上价格不同就报**假歧义**。
+    ///
+    /// 用例说明：必须让两候选的**基线分差 >30**，否则会命中「分差 <30 判歧义」
+    /// 那条判据，测不出同名判定的问题。故 idx1 的标题**不含查询词**（无 +100），
+    /// 只有 idx0 命中。
+    #[test]
+    fn missing_canonical_names_are_not_same_name() {
+        let items = [
+            item("1111111", "StarTiara A", 0),
+            item("2222222", "完全无关标题", 500),
+        ];
+        // 空表 ⇒ 规范名全是 None。
+        let names: [(&str, &str); 0] = [];
+        let (best, amb) = score_and_pick("StarTiara", &items, false, cn(&names), None);
+        assert_eq!(best.map(|i| i.id.as_str()), Some("1111111"));
+        assert!(
+            !amb,
+            "分差 >30 且规范名都取不到时不得报歧义（历史实现会因 \"\"==\"\" 触发同名不同价）"
+        );
+    }
+
+    /// 规范名取不到时不得凭空加分，也不得让无关标题命中。
+    ///
+    /// 注意：单结果 + 名称不命中时**会**被次序分放过（`score.rs` 的既有缺口，
+    /// `scored[0].0 <= 0` 因次序分恒 >0 而近乎不可达）。故本用例用**双候选**：
+    /// idx0 名称命中、idx1 不命中且规范名也取不到，验证 idx1 拿不到 +100。
+    #[test]
+    fn missing_canonical_name_adds_no_bonus() {
+        let names: [(&str, &str); 0] = [];
+        let items = [
+            item("1111111", "StarTiara A", 0),  // 名称命中
+            item("2222222", "完全无关标题", 0), // 名称不命中、规范名 None
+        ];
+        let (best, _) = score_and_pick("StarTiara", &items, false, cn(&names), None);
+        assert_eq!(
+            best.map(|i| i.id.as_str()),
+            Some("1111111"),
+            "规范名取不到时 idx1 不得拿到 +100 加分而反超"
+        );
+    }
+
+    /// 一侧有规范名、另一侧没有时不得判成同名。
+    #[test]
+    fn one_sided_canonical_name_is_not_same_name() {
+        let items = [
+            item("1111111", "StarTiara A", 0),
+            item("2222222", "StarTiara B", 500),
+        ];
+        let names = [("1111111", "StarTiara A")];
+        let (_, amb) = score_and_pick("StarTiara", &items, false, cn(&names), None);
+        assert!(!amb, "一侧取不到规范名时不得判成同名");
     }
 
     #[test]
@@ -862,13 +950,12 @@ mod tests {
 
         // legacy 路径：3 个候选 → 最多 3 次解析。
         let calls = Cell::new(0usize);
-        let counting = |id: &str| -> String {
+        let counting = |id: &str| -> Option<String> {
             calls.set(calls.get() + 1);
             names
                 .iter()
                 .find(|(i, _)| *i == id)
                 .map(|(_, n)| n.to_string())
-                .unwrap_or_default()
         };
         let _ = score_and_pick("StarTiara", &items, false, counting, None);
         assert_eq!(
@@ -880,13 +967,12 @@ mod tests {
 
         // ON 路径：同样最多 3 次（不是 2N 或 4N）。
         let calls2 = Cell::new(0usize);
-        let counting2 = |id: &str| -> String {
+        let counting2 = |id: &str| -> Option<String> {
             calls2.set(calls2.get() + 1);
             names
                 .iter()
                 .find(|(i, _)| *i == id)
                 .map(|(_, n)| n.to_string())
-                .unwrap_or_default()
         };
         let w = DescWeight::new(50, 2).expect("合法权重");
         let descs = descs_for(&items, &["nothing", "StarTiara 対応", "nothing"]);
@@ -1221,8 +1307,15 @@ mod tests {
     fn empty_items_is_safe_with_desc() {
         let items: [Item; 0] = [];
         let w = DescWeight::new(50, 2).expect("合法权重");
-        let (got, amb) =
-            score_and_pick_with_desc("x", &items, &[], w, false, |_| String::new(), None);
+        let (got, amb) = score_and_pick_with_desc(
+            "x",
+            &items,
+            &[],
+            w,
+            false,
+            |_| Some(String::new()),
+            None,
+        );
         assert!(got.is_none());
         assert!(!amb);
     }

@@ -553,7 +553,7 @@ pub fn resolve_by_name(
     candidates: &[String],
     resource_names: Option<&[String]>,
     max_variants: usize,
-    info: impl Fn(&str) -> CanonInfo,
+    info: impl Fn(&str) -> Option<CanonInfo>,
     weight: crate::score::DescWeight,
 ) -> ResolveOutcome {
     let mut tried: Vec<String> = Vec::new();
@@ -588,7 +588,7 @@ fn pick_once(
     client: &Client,
     q: &str,
     resource_names: Option<&[String]>,
-    info: &impl Fn(&str) -> CanonInfo,
+    info: &impl Fn(&str) -> Option<CanonInfo>,
     weight: crate::score::DescWeight,
 ) -> Option<NamedHit> {
     let results = search_booth(client, q).ok()?;
@@ -604,7 +604,7 @@ fn pick_from_results(
     q: &str,
     results: &[SearchItem],
     resource_names: Option<&[String]>,
-    info: &impl Fn(&str) -> CanonInfo,
+    info: &impl Fn(&str) -> Option<CanonInfo>,
     weight: crate::score::DescWeight,
 ) -> Option<NamedHit> {
     let items: Vec<crate::score::Item> = results
@@ -618,9 +618,12 @@ fn pick_from_results(
     // 本轮的规范名/说明文缓存：`info` 可能是非缓存闭包（三端各自注入），
     // 而开启 desc 时同一 id 会先取说明文、再被评分取规范名——不在这里收拢，
     // 一次选优就会对每个候选抓两遍。
-    let memo: std::cell::RefCell<std::collections::HashMap<String, CanonInfo>> =
+    //
+    // 缓存的是 `Option`：取不到（网络/解析失败）也要记住，否则同一个失败 id
+    // 会被反复重试；而「取不到」必须与「取到空串」区分开（后者会污染同名判定）。
+    let memo: std::cell::RefCell<std::collections::HashMap<String, Option<CanonInfo>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
-    let cached = |id: &str| -> CanonInfo {
+    let cached = |id: &str| -> Option<CanonInfo> {
         if let Some(hit) = memo.borrow().get(id) {
             return hit.clone();
         }
@@ -628,11 +631,14 @@ fn pick_from_results(
         memo.borrow_mut().insert(id.to_string(), v.clone());
         v
     };
-    let canonical = |id: &str| cached(id).name;
+    let canonical = |id: &str| cached(id).map(|ci| ci.name);
     let (picked, ambiguous) = if weight.is_on() {
         let descs: Vec<crate::score::DescriptionText> = items
             .iter()
-            .map(|it| crate::score::DescriptionText::new(it.id.clone(), cached(&it.id).description))
+            .map(|it| {
+                let d = cached(&it.id).map(|ci| ci.description).unwrap_or_default();
+                crate::score::DescriptionText::new(it.id.clone(), d)
+            })
             .collect();
         crate::score::score_and_pick_with_desc(
             q,
@@ -650,7 +656,9 @@ fn pick_from_results(
     if ambiguous {
         return None;
     }
-    let cn = cached(&p.id).name;
+    // 规范名取不到时退化为空串，**仅用于这里的名称命中比对**——它不参与评分与
+    // 同名判定，不会造成 `"" == ""` 那类假歧义。
+    let cn = cached(&p.id).map(|ci| ci.name).unwrap_or_default();
     // 名称命中用大小写不敏感的原串包含：`norm` 只留 ASCII，日文会被滤成空串。
     let name_ok = {
         let ql = q.trim().to_lowercase();
@@ -958,16 +966,18 @@ mod tests {
             si("1111111", "Star Tiara", 0),
             si("2222222", "Star Tiara Gold", 0),
         ];
-        let info = |id: &str| match id {
-            // 规范名不含查询词 → 无规范名命中；说明文命中两个词 → +100。
-            "1111111" => CanonInfo {
-                name: "Other Item".to_string(),
-                description: "star tiara".to_string(),
-            },
-            _ => CanonInfo {
-                name: "Star Tiara Gold".to_string(),
-                description: String::new(),
-            },
+        let info = |id: &str| -> Option<CanonInfo> {
+            Some(match id {
+                // 规范名不含查询词 → 无规范名命中；说明文命中两个词 → +100。
+                "1111111" => CanonInfo {
+                    name: "Other Item".to_string(),
+                    description: "star tiara".to_string(),
+                },
+                _ => CanonInfo {
+                    name: "Star Tiara Gold".to_string(),
+                    description: String::new(),
+                },
+            })
         };
         let q = "star tiara";
 
@@ -994,9 +1004,9 @@ mod tests {
             si("3333333", "StarTiara Deluxe", 0),
         ];
         let calls = Cell::new(0usize);
-        let info = |id: &str| {
+        let info = |id: &str| -> Option<CanonInfo> {
             calls.set(calls.get() + 1);
-            CanonInfo {
+            Some(CanonInfo {
                 name: match id {
                     "1111111" => "StarTiara Base",
                     "2222222" => "StarTiara Variant",
@@ -1004,7 +1014,7 @@ mod tests {
                 }
                 .to_string(),
                 description: "StarTiara 対応".to_string(),
-            }
+            })
         };
         let w = crate::score::DescWeight::new(50, 2).expect("50×2 在上限内");
         let _ = pick_from_results("StarTiara", &results, None, &info, w);
@@ -1023,13 +1033,15 @@ mod tests {
             si("1111111", "Star Tiara", 0),
             si("2222222", "Star Tiara Gold", 0),
         ];
-        let info = |id: &str| CanonInfo {
-            name: match id {
-                "1111111" => "Other Item",
-                _ => "Star Tiara Gold",
-            }
-            .to_string(),
-            description: "star tiara".to_string(),
+        let info = |id: &str| -> Option<CanonInfo> {
+            Some(CanonInfo {
+                name: match id {
+                    "1111111" => "Other Item",
+                    _ => "Star Tiara Gold",
+                }
+                .to_string(),
+                description: "star tiara".to_string(),
+            })
         };
         let q = "star tiara";
         let items: Vec<crate::score::Item> = results
@@ -1040,7 +1052,7 @@ mod tests {
                 price: r.price,
             })
             .collect();
-        let plain = crate::score::score_and_pick(q, &items, false, |id| info(id).name, None);
+        let plain = crate::score::score_and_pick(q, &items, false, |id| info(id).map(|ci| ci.name), None);
         assert!(!plain.1, "本用例的基线不应歧义，否则测试前提不成立");
 
         let got = pick_from_results(q, &results, None, &info, crate::score::DescWeight::OFF);

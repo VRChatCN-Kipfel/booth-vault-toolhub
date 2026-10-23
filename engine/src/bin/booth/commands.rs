@@ -655,14 +655,21 @@ fn process_search_file(
     Ok(Some(item.id))
 }
 
-/// 规范名解析（score_and_pick 依赖注入）。
-fn canonical_info(client: &reqwest::blocking::Client, id: &str) -> engine::search::CanonInfo {
+/// 规范名与说明文（评分依赖注入）。
+///
+/// 返回 `Option`：**取不到就返回 None，不再 `unwrap_or_default()` 压成空串**。
+/// 压成空串会让「规范名命中 +100」静默失效，并让同名判定退化成 `"" == ""`
+/// ——两个不同商品会被判成同名而报假歧义。
+fn canonical_info(
+    client: &reqwest::blocking::Client,
+    id: &str,
+) -> Option<engine::search::CanonInfo> {
     engine::fetch::fetch_item(client, id)
         .map(|i| engine::search::CanonInfo {
             name: i.name,
             description: i.description,
         })
-        .unwrap_or_default()
+        .ok()
 }
 
 /// audit 命令（全库巡检）。

@@ -928,14 +928,20 @@ fn process_search_file(
     Ok(Some(item.id))
 }
 
-/// 规范名解析（score_and_pick 依赖注入）。
-fn canonical_info(client: &reqwest::blocking::Client, id: &str) -> engine::search::CanonInfo {
+/// 规范名与说明文（评分依赖注入）。
+///
+/// 与 CLI 端同构：取不到返回 `None`，不把失败压成空串——空串会让「规范名命中
+/// +100」静默失效，并让同名判定退化成 `"" == ""`（不同商品被判成同名）。
+fn canonical_info(
+    client: &reqwest::blocking::Client,
+    id: &str,
+) -> Option<engine::search::CanonInfo> {
     engine::fetch::fetch_item(client, id)
         .map(|i| engine::search::CanonInfo {
             name: i.name,
             description: i.description,
         })
-        .unwrap_or_default()
+        .ok()
 }
 
 /// 图标注入：Windows 用 shell_win，其余平台 no-op。

@@ -756,13 +756,19 @@ fn process_search_file(
 }
 
 /// 规范名 + 说明文（评分依赖注入；两者同源，见 `engine::search::CanonInfo`）。
-fn canonical_info(client: &reqwest::blocking::Client, id: &str) -> engine::search::CanonInfo {
+///
+/// 与 CLI/MCP 同构：取不到返回 `None`。压成空串会让「规范名命中 +100」静默失效，
+/// 并让同名判定退化成 `"" == ""`（不同商品被判成同名）。
+fn canonical_info(
+    client: &reqwest::blocking::Client,
+    id: &str,
+) -> Option<engine::search::CanonInfo> {
     engine::fetch::fetch_item(client, id)
         .map(|i| engine::search::CanonInfo {
             name: i.name,
             description: i.description,
         })
-        .unwrap_or_default()
+        .ok()
 }
 
 /// audit：全库文件夹图标三件套巡检（递归扫描 ID 目录）。立刻返回 task_id。
