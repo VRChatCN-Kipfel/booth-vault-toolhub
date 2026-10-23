@@ -527,7 +527,6 @@ mod tests {
 
     // ── description 加权 ──────────────────────────────────────────
 
-
     /// 把「按位置排列的说明文」转成「按 id 绑定」的列表（`items[i]` 对应 `texts[i]`）。
     fn descs_for(items: &[Item], texts: &[&str]) -> Vec<DescriptionText> {
         items
