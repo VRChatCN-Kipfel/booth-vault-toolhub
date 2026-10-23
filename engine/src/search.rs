@@ -187,6 +187,113 @@ pub fn search_booth(client: &Client, query: &str) -> Result<Vec<SearchItem>, Str
     Ok(parse_search_html(&html))
 }
 
+/// 一次按名解析的结果。
+pub struct NamedHit {
+    pub item: crate::score::Item,
+    /// 命中所用的检索词（供展示与排查）。
+    pub query: String,
+}
+
+/// 按名解析的整体结果。
+pub struct ResolveOutcome {
+    pub hit: Option<NamedHit>,
+    /// 实际尝试过的检索词，按尝试顺序。
+    pub tried: Vec<String>,
+}
+
+/// 按文件名候选解析出「最可能是它」的商品（**三端唯一实现**）。
+///
+/// 两轮**严格分离**：
+///   1. 第一轮：原候选，按 `sanitize_query` 给出的优先级逐个试；
+///   2. 第二轮：仅当第一轮**全部落空**时，才试 `kana` 读音变体。
+///
+/// 历史缺陷：两轮被压成一次 `chain`，于是「变体轮是否运行」取决于第一个候选
+/// 是否返回了非空结果，而那个判据又与「名称是否真的命中」无关——触发与否
+/// 实际由标题长度决定（`scored[0].0 <= 0` 因次序分恒 >0 而近乎不可达）。
+///
+/// 接受条件必须是「名称真的命中 **且** 不歧义」：
+///   - `score_and_pick` 只返回「最优 + 歧义」，而次序分让首条恒有正分，
+///     只看 `is_some()` 会把无关商品当命中并错归档；
+///   - 变体轮用的是**推出来的词**，猜错代价是错归档，判据同样严格。
+pub fn resolve_by_name(
+    client: &Client,
+    candidates: &[String],
+    resource_names: Option<&[String]>,
+    max_variants: usize,
+    canonical: impl Fn(&str) -> String,
+) -> ResolveOutcome {
+    let mut tried: Vec<String> = Vec::new();
+    let mut hit: Option<NamedHit> = None;
+
+    // 第一轮：原候选。
+    for q in candidates {
+        tried.push(q.clone());
+        if let Some(h) = pick_once(client, q, resource_names, &canonical) {
+            hit = Some(h);
+            break;
+        }
+    }
+
+    // 第二轮：kana 读音变体。**只在第一轮全部落空后**进入。
+    if hit.is_none() && max_variants > 0 {
+        let variants = crate::clean::with_kana_variants(candidates.to_vec(), max_variants);
+        for q in variants.into_iter().filter(|c| !candidates.contains(c)) {
+            tried.push(q.clone());
+            if let Some(h) = pick_once(client, &q, resource_names, &canonical) {
+                hit = Some(h);
+                break;
+            }
+        }
+    }
+
+    ResolveOutcome { hit, tried }
+}
+
+/// 对单个检索词执行「搜索 → 评分 → 名称命中校验」。
+fn pick_once(
+    client: &Client,
+    q: &str,
+    resource_names: Option<&[String]>,
+    canonical: &impl Fn(&str) -> String,
+) -> Option<NamedHit> {
+    let results = search_booth(client, q).ok()?;
+    if results.is_empty() {
+        return None;
+    }
+    let items: Vec<crate::score::Item> = results
+        .iter()
+        .map(|r| crate::score::Item {
+            id: r.id.clone(),
+            name: r.name.clone(),
+            price: r.price,
+        })
+        .collect();
+    let (picked, ambiguous) =
+        crate::score::score_and_pick(q, &items, false, canonical, resource_names);
+    let p = picked?;
+    if ambiguous {
+        return None;
+    }
+    let cn = canonical(&p.id);
+    // 名称命中用大小写不敏感的原串包含：`norm` 只留 ASCII，日文会被滤成空串。
+    let name_ok = {
+        let ql = q.trim().to_lowercase();
+        !ql.is_empty() && (p.name.to_lowercase().contains(&ql) || cn.to_lowercase().contains(&ql))
+    };
+    // 资源名兜底：标题不命中但资源名命中时，`score_and_pick` 已据 resource_names 放行。
+    let resource_ok = resource_names.is_some_and(|rs| {
+        let ql = q.trim().to_lowercase();
+        !ql.is_empty() && rs.iter().any(|r| r.to_lowercase().contains(&ql))
+    });
+    if !name_ok && !resource_ok {
+        return None;
+    }
+    Some(NamedHit {
+        item: p.clone(),
+        query: q.to_string(),
+    })
+}
+
 /// 店铺 `/items?page=N` 翻页收集商品 ID（店铺根有 Cloudflare 护盾，必须走 /items）。
 pub fn crawl_item_ids(client: &Client, sub: &str, rate_limit: f64) -> Result<Vec<String>, String> {
     let r = re();

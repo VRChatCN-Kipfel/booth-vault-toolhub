@@ -786,34 +786,20 @@ fn process_search_file(
     let item = if let Some(id) = force_id.filter(|s| !s.is_empty()) {
         engine::fetch::fetch_item(client, id).map_err(|e| format!("指定 ID {id} 获取失败: {e}"))?
     } else {
+        // 与 CLI 共用 engine 的两轮解析：历史实现这里只判 `is_some()`，
+        // 既没有名称命中校验也没有歧义校验，且完全不做 kana 变体轮——
+        // 同一文件名在 CLI 能命中、在 MCP 落空。
         let candidates = engine::clean::sanitize_query(&fname);
         let names = engine::unitypackage::names_for_score(path);
-        let mut best: Option<engine::score::Item> = None;
-        for q in candidates {
-            let results =
-                engine::search::search_booth(client, &q).map_err(|e| format!("搜索失败: {e}"))?;
-            let items: Vec<engine::score::Item> = results
-                .iter()
-                .map(|r| engine::score::Item {
-                    id: r.id.clone(),
-                    name: r.name.clone(),
-                    price: r.price,
-                })
-                .collect();
-            let (picked, _) = engine::score::score_and_pick(
-                &q,
-                &items,
-                false,
-                |id| canonical_name(client, id),
-                names.as_deref(),
-            );
-            if let Some(p) = picked {
-                best = Some(p.clone());
-                break;
-            }
-        }
-        match best {
-            Some(it) => engine::fetch::fetch_item(client, &it.id)
+        let outcome = engine::search::resolve_by_name(
+            client,
+            &candidates,
+            names.as_deref(),
+            engine::kana::MAX_VARIANTS,
+            |id| canonical_name(client, id),
+        );
+        match outcome.hit {
+            Some(h) => engine::fetch::fetch_item(client, &h.item.id)
                 .map_err(|e| format!("获取元数据失败: {e}"))?,
             None => return Ok(None),
         }
