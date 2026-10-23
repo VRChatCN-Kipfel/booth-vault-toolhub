@@ -138,6 +138,8 @@ pub fn thumb_from_json(item: &ItemJson) -> String {
     String::new()
 }
 
+/// 校验并解析商品 JSON 响应体（**纯函数**，不联网，可直接测）。
+///
 /// 获取商品 JSON。
 ///
 /// 走内容缓存：商品元数据变化慢（TTL 6h），而按名搜索会对同一商品反复取值。
@@ -154,9 +156,43 @@ pub fn thumb_from_json(item: &ItemJson) -> String {
 /// 可供 `r.json()` 消费，而 `reqwest::Error` 没有公开构造入口（无 `From<io::Error>`），
 /// 若硬要保留该类型，解析失败就只能谎报成空数据——那是静默错误，绝不能做。
 ///
-/// 年龄门不在此处处理：`adult=t` 由 `session::parse_cookie` 注入 cookie jar，
+/// 三条判据与 [`fetch_item`] 内联版本完全一致，抽出来是为了：
+///   - 可对 `{}` / `{"error":"x"}` / id 不符 / name 空 等毒化样本做单测；
+///   - 三端（CLI/MCP/GUI）共享同一套判据，不各写一份。
+pub fn parse_item_body(body: &[u8], item_id: &str) -> Result<ItemJson, String> {
+    let item: ItemJson = serde_json::from_slice(body)
+        .map_err(|e| format!("fetch_item {item_id}: body 不是合法商品 JSON: {e}"))?;
+    if item.name.trim().is_empty() {
+        return Err(format!(
+            "fetch_item {item_id}: 响应缺少商品名（可能是错误体冒充）"
+        ));
+    }
+    if !item.id.is_empty() && item.id != item_id {
+        return Err(format!(
+            "fetch_item {item_id}: 响应 id 不符（得到 {}）",
+            item.id
+        ));
+    }
+    Ok(item)
+}
+
+/// 获取商品 JSON。
+///
+/// **年龄门**：不在此处处理。`adult=t` 由 `session::parse_cookie` 注入 cookie jar，
 /// 与用户会话**共存**。历史上这里用显式 `Cookie` 头注入，会让 reqwest 跳过整个
 /// jar（`cookie.rs:242`），登录用户的 `_plaza_session_nktz7u` 因此丢失。
+///
+/// **响应用必须校验**，否则错误体会被当成商品：
+///   - 状态码必须 200（`get` 会把 404/500 当正常响应返回）；
+///   - 解析后 `id` 必须与请求的 id 相符；
+///   - `name` 必须非空。
+///
+/// 历史实现只做 `r.json()`，于是 `{}`、`{"error":"..."}` 被 serde 解成
+/// `ItemJson::default()` 返回 `Ok`，空 id/名的「商品」照样进入评分与整理。
+///
+/// 错误类型为 `String`：`reqwest::Error` 没有公开构造入口（无 `From<io::Error>`），
+/// 若保留它，状态码不符与解析失败就只能谎报成空数据——那是静默错误。
+/// 全仓 25 个调用点原本都只用 `Display`/`to_string()`，改类型零改动。
 pub fn fetch_item(client: &Client, item_id: &str) -> Result<ItemJson, String> {
     let url = ITEM_JSON_URL.replace("{id}", item_id);
     let mut headers = crate::session::default_headers();
@@ -179,20 +215,8 @@ pub fn fetch_item(client: &Client, item_id: &str) -> Result<ItemJson, String> {
             String::from_utf8_lossy(&r.body[..r.body.len().min(120)])
         ));
     }
-    let item: ItemJson = serde_json::from_slice(&r.body)
-        .map_err(|e| format!("fetch_item {item_id}: body 不是合法 JSON: {e}"))?;
-    if item.name.trim().is_empty() {
-        return Err(format!(
-            "fetch_item {item_id}: 响应缺少商品名（可能是错误体冒充）"
-        ));
-    }
-    if !item.id.is_empty() && item.id != item_id {
-        return Err(format!(
-            "fetch_item {item_id}: 响应 id 不符（得到 {}）",
-            item.id
-        ));
-    }
-    Ok(item)
+    // 校验与解析共用同一纯函数（#70 的可测性收益），三端判据一致。
+    parse_item_body(&r.body, item_id)
 }
 
 /// 同上，但保留原始响应载荷（供需要状态码/最终 URL 的调用方使用）。
@@ -336,5 +360,64 @@ mod tests {
                 ("https://free2".to_string(), "file_1".to_string()),
             ]
         );
+    }
+
+    // ── parse_item_body：毒化样本（评审 P0-4 的回归）─────────────
+    //
+    // 历史实现只做 `r.json()`：`{}`、`{"error":"x"}` 会被 serde 解成
+    // `ItemJson::default()` 返回 `Ok`，空 id/名的「商品」照样进入评分与整理。
+
+    /// 空对象不得成为商品。
+    #[test]
+    fn parse_item_rejects_empty_object() {
+        let err = parse_item_body(b"{}", "123").expect_err("空对象必须被拒");
+        assert!(err.contains("缺少商品名"), "实际：{err}");
+    }
+
+    /// 错误体不得成为商品。
+    #[test]
+    fn parse_item_rejects_error_json() {
+        let err = parse_item_body(br#"{"error":"not found"}"#, "123").expect_err("错误体必须被拒");
+        assert!(err.contains("缺少商品名"), "实际：{err}");
+    }
+
+    /// id 不符必须被拒（防止串号）。
+    #[test]
+    fn parse_item_rejects_id_mismatch() {
+        let body = r#"{"id":"999","name":"某商品"}"#.as_bytes();
+        let err = parse_item_body(body, "123").expect_err("id 不符必须被拒");
+        assert!(err.contains("id 不符"), "实际：{err}");
+    }
+
+    /// 非 JSON 必须被拒。
+    #[test]
+    fn parse_item_rejects_non_json() {
+        let err = parse_item_body(b"<html>login</html>", "123").expect_err("HTML 必须被拒");
+        assert!(err.contains("不是合法商品 JSON"), "实际：{err}");
+    }
+
+    /// 正常商品必须通过。
+    #[test]
+    fn parse_item_accepts_valid() {
+        let body = r#"{"id":"123","name":"キプフェル","price":5500}"#.as_bytes();
+        let it = parse_item_body(body, "123").expect("合法商品应通过");
+        assert_eq!(it.name, "キプフェル");
+        assert_eq!(it.id, "123");
+    }
+
+    /// `id` 缺省时不因"不符"被拒（容错：某些响应体不带 id）。
+    #[test]
+    fn parse_item_tolerates_missing_id() {
+        let body = r#"{"name":"某商品"}"#.as_bytes();
+        let it = parse_item_body(body, "123").expect("缺 id 不应因不符被拒");
+        assert_eq!(it.name, "某商品");
+    }
+
+    /// `name` 只有空白同样视为缺失。
+    #[test]
+    fn parse_item_rejects_blank_name() {
+        let err =
+            parse_item_body(br#"{"id":"123","name":"   "}"#, "123").expect_err("空白名必须被拒");
+        assert!(err.contains("缺少商品名"), "实际：{err}");
     }
 }
