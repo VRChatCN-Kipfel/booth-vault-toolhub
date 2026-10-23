@@ -608,34 +608,21 @@ fn process_search_file(
         engine::fetch::fetch_item(client, id).map_err(|e| format!("指定 ID {id} 获取失败: {e}"))?
     } else {
         // 搜索候选 → 评分选优。
+        // 两轮解析（原候选 → kana 读音变体）统一由 engine 实现：
+        //   历史实现把两轮 `chain` 成一次循环，「变体轮是否运行」取决于首个候选
+        //   是否返回非空结果，而那个判据与「名称是否真的命中」无关——触发与否
+        //   实际由标题长度决定。且 MCP/GUI 各写一份、完全不做变体轮。
         let candidates = engine::clean::sanitize_query(&fname);
         let names = engine::unitypackage::names_for_score(path);
-        let mut best: Option<engine::score::Item> = None;
-        for q in candidates {
-            let results =
-                engine::search::search_booth(client, &q).map_err(|e| format!("搜索失败: {e}"))?;
-            let items: Vec<engine::score::Item> = results
-                .iter()
-                .map(|r| engine::score::Item {
-                    id: r.id.clone(),
-                    name: r.name.clone(),
-                    price: r.price,
-                })
-                .collect();
-            let (picked, _) = engine::score::score_and_pick(
-                &q,
-                &items,
-                false,
-                |id| canonical_name(client, id),
-                names.as_deref(),
-            );
-            if let Some(p) = picked {
-                best = Some(p.clone());
-                break;
-            }
-        }
-        match best {
-            Some(it) => engine::fetch::fetch_item(client, &it.id)
+        let outcome = engine::search::resolve_by_name(
+            client,
+            &candidates,
+            names.as_deref(),
+            engine::kana::MAX_VARIANTS,
+            |id| canonical_name(client, id),
+        );
+        match outcome.hit {
+            Some(h) => engine::fetch::fetch_item(client, &h.item.id)
                 .map_err(|e| format!("获取元数据失败: {e}"))?,
             None => return Ok(None),
         }

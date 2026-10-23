@@ -135,7 +135,10 @@ impl Default for UpdateInfo {
 }
 
 /// 拼接 releases 页面 URL。
-fn releases_url() -> String {
+///
+/// 公开：其他模块（如 `kana::disabled_notice`）需要给出「去哪里换发行版」的
+/// 可执行入口，该地址单点定义在此，不得各模块各写一份。
+pub fn releases_url() -> String {
     format!("https://github.com/{REPO_OWNER}/{REPO_NAME}/releases")
 }
 

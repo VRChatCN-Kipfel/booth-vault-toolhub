@@ -683,44 +683,35 @@ fn pick_search_match(
         .unwrap_or_default();
     let queries = engine::clean::sanitize_query(&fname);
     let names = engine::unitypackage::names_for_score(path);
+
+    // 命中判定与 CLI/MCP **共用 engine 实现**：此处此前只判 `is_some()`、
+    // 无名称命中与歧义校验、无 kana 变体轮，三端行为不一致。
+    let outcome = engine::search::resolve_by_name(
+        client,
+        &queries,
+        names.as_deref(),
+        engine::kana::MAX_VARIANTS,
+        |id| canonical_name(client, id),
+    );
+
+    // 候选列表供界面展示：取「最后尝试的那个检索词」的结果即可，
+    // 不再重复完整评分链（那是命中判定的职责）。
     let mut last: Vec<SearchCandidate> = Vec::new();
-    for q in queries {
-        let results =
-            engine::search::search_booth(client, &q).map_err(|e| format!("搜索失败: {e}"))?;
-        let items: Vec<engine::score::Item> = results
+    if let Some(q) = outcome.tried.last()
+        && let Ok(results) = engine::search::search_booth(client, q)
+    {
+        last = results
             .iter()
-            .map(|r| engine::score::Item {
+            .map(|r| SearchCandidate {
                 id: r.id.clone(),
                 name: r.name.clone(),
                 price: r.price,
             })
             .collect();
-        last = items
-            .iter()
-            .map(|it| SearchCandidate {
-                id: it.id.clone(),
-                name: it.name.clone(),
-                price: it.price,
-            })
-            .collect();
-        let (picked, ambiguous) = engine::score::score_and_pick(
-            &q,
-            &items,
-            false,
-            |id| canonical_name(client, id),
-            names.as_deref(),
-        );
-        if let Some(p) = picked {
-            return Ok(SearchPick {
-                candidates: last,
-                picked: Some(p.clone()),
-                ambiguous,
-            });
-        }
     }
     Ok(SearchPick {
         candidates: last,
-        picked: None,
+        picked: outcome.hit.map(|h| h.item),
         ambiguous: false,
     })
 }

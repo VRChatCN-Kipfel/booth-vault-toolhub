@@ -20,6 +20,11 @@ encoding_rs = "0.8"
 fancy-regex = "0.16"
 feed-rs = "2.4"
 flate2 = "1"
+# 日文读音变体（engine/src/kana.rs）。embed-ipadic 在构建期下载 ipadic 并把词典
+# 编进二进制，实测 +45.56MB。**没有 feature 开关**：保留开关就必须让 lite 单独
+# 构建一份 `--no-default-features` 的 CLI，而 release.yml 从未这样做——开关与
+# 「换小体积发行版」的承诺在生产上从未成立，故直接删掉开关，只有一种发行版。
+lindera = { version = "6.2", features = ["embed-ipadic"] }
 tar = "0.4"
 phf = { version = "0.13", features = ["macros"] }
 reqwest = { version = "0.13", features = ["blocking", "json", "cookies", "http2", "system-proxy", "gzip", "brotli", "deflate"] }
