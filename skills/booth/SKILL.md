@@ -26,7 +26,7 @@ BOOTH（日本数字创作集市，VRChat 素材主产地）素材的**下载 / 
 | 入口 | 说明 | 适用 |
 |------|------|------|
 | **`booth` CLI** | 编译后的二进制，十二子命令 | 终端/agent 首选 |
-| **booth-mcp** | MCP stdio server，暴露十一工具（无 shell） | opencode / Claude Code 等 MCP 客户端 |
+| **booth-mcp** | MCP stdio server，暴露十工具（无 shell） | opencode / Claude Code 等 MCP 客户端 |
 | 原 `python scripts/booth.py` | 旧版 Python（仅参考，已废弃） | 不推荐 |
 
 ## 找到 CLI / MCP 二进制（先定位，再调用）
@@ -101,9 +101,9 @@ booth update-check [--proxy]                               # 工具自更新检�
 
 ## MCP 接入（可选）
 
-以 stdio server 运行 `booth-mcp`，同十一工具
+以 stdio server 运行 `booth-mcp`，同十工具
 （download / organize / search / audit / version_audit / library / preview /
-update_check / cookie_check / collections / inspect），详见下表。
+update_check / cookie_check / inspect），详见下表。
 
 **契约以代码为准**：`search` 的输出信封是 `engine::search::SearchOutput`（10 个字段：
 `command` `mode` `query` `url` `total` `shown` `page` `has_next` `sort_note` `items`），
