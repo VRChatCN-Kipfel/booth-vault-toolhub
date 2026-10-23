@@ -14,12 +14,29 @@ pub struct Item {
     pub price: i64,
 }
 
-/// description 文本的来源（随条目可选提供）。
+/// 一条商品说明文，**与商品 id 绑定**。
 ///
-/// 与 `Item` 分开而不是直接塞进 `Item`：`Item` 是既有三端契约的公开结构，
-/// 加字段会让所有构造点必须改；而且多数调用路径（搜索页）本来就没有说明文。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DescriptionText(pub String);
+/// 为什么必须带 id：历史实现是 `DescriptionText(pub String)` 且按**位置**取
+/// （`descriptions.get(idx)`）。调用方只要对 items 做过一次过滤或重排
+/// （`filter(...).collect()` 之类），加成就会**静默落到另一个商品上**——
+/// 分数看起来完全正常，没有任何报错。id 绑定后按商品查，位置不再参与。
+///
+/// 与 `Item` 分开而不是直接塞进去：`Item` 是既有三端契约的公开结构，
+/// 加字段会强制所有构造点改动；且多数路径（搜索页）本来就没有说明文。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescriptionText {
+    pub id: String,
+    pub text: String,
+}
+
+impl DescriptionText {
+    pub fn new(id: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            text: text.into(),
+        }
+    }
+}
 
 /// description 加权配置。
 ///
@@ -32,18 +49,40 @@ pub struct DescriptionText(pub String);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DescWeight {
     /// 说明文中每个命中词的分值（0 = 不参与评分）。
-    pub word_bonus: i32,
+    word_bonus: i32,
     /// 最多计多少个命中词（防长说明文靠堆词刷分）。
-    pub max_words: usize,
+    max_words: usize,
+}
+
+/// 构造 [`DescWeight`] 时的校验错误。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DescWeightError {
+    /// `word_bonus` 必须 > 0（负值会让排序反向，0 表示关闭）。
+    NonPositiveBonus,
+    /// `max_words` 必须在 1..=100。
+    BadMaxWords,
+    /// 单项加成 × 词数上限不得超过 100（等于名称命中档）。
+    TooStrong,
+}
+
+impl std::fmt::Display for DescWeightError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DescWeightError::NonPositiveBonus => write!(f, "word_bonus 必须为正整数"),
+            DescWeightError::BadMaxWords => write!(f, "max_words 必须在 1..=100"),
+            DescWeightError::TooStrong => write!(
+                f,
+                "word_bonus × max_words 不得超过 100（等于名称命中档），否则说明文能压过标题"
+            ),
+        }
+    }
 }
 
 impl Default for DescWeight {
     fn default() -> Self {
-        // 默认关闭。开启与否由调用方（CLI/MCP/GUI）决定，判定逻辑本身不变。
-        Self {
-            word_bonus: 0,
-            max_words: 3,
-        }
+        // 默认关闭，且与 `OFF` **完全等价**。历史实现是 Default{0,3} ≠ OFF{0,0}：
+        // 两个「关闭」状态不一样，调用方容易误判成「开启了但没效果」。
+        Self::OFF
     }
 }
 
@@ -53,6 +92,40 @@ impl DescWeight {
         word_bonus: 0,
         max_words: 0,
     };
+
+    /// 构造一个**参与评分**的权重。参数越界一律返回错误，不做静默修正。
+    ///
+    /// 为什么必须校验（字段此前是 `pub`，这些都能传进去）：
+    ///   - `word_bonus = -50` → 排序**静默反向**；
+    ///   - `max_words = 0` → `is_on()` 静默为 false，看着像开了其实没效果；
+    ///   - `word_bonus = 5000` → 实测可传，远超名称命中档 +100，说明文因此
+    ///     能压过标题——正是评审担心的「desc 越过名称证据」。
+    pub fn new(word_bonus: i32, max_words: usize) -> Result<Self, DescWeightError> {
+        if word_bonus <= 0 {
+            return Err(DescWeightError::NonPositiveBonus);
+        }
+        if max_words == 0 || max_words > 100 {
+            return Err(DescWeightError::BadMaxWords);
+        }
+        // 用 i64 先算上限，避免 i32 乘法溢出绕过校验。
+        if (word_bonus as i64) * (max_words as i64) > 100 {
+            return Err(DescWeightError::TooStrong);
+        }
+        Ok(Self {
+            word_bonus,
+            max_words,
+        })
+    }
+
+    /// 单词加分数（供测试与诊断读取；字段本身不公开以免绕过校验）。
+    pub fn word_bonus(&self) -> i32 {
+        self.word_bonus
+    }
+
+    /// 词数上限。
+    pub fn max_words(&self) -> usize {
+        self.max_words
+    }
 
     /// 是否实际参与评分。
     pub fn is_on(&self) -> bool {
@@ -98,6 +171,15 @@ where
     if picked.is_none() || items.len() <= 1 {
         return (picked, amb);
     }
+    // 说明文按 **id** 建索引：位置在调用方过滤/重排后会错配，重复 id 首条胜出。
+    let desc_by_id: std::collections::HashMap<&str, &str> = {
+        let mut m: std::collections::HashMap<&str, &str> =
+            std::collections::HashMap::with_capacity(descriptions.len());
+        for d in descriptions {
+            m.entry(d.id.as_str()).or_insert(d.text.as_str());
+        }
+        m
+    };
     // 到这里：原实现的歧义与否决已定调。下面只可能在「都已有名称证据的候选」之间
     // 重排，且最终返回的 `ambiguous` 是 `原歧义 || 新歧义`——desc 只能增加歧义，
     // 永远不能消除它。
@@ -116,9 +198,11 @@ where
         // 「有证据」，说明文就能把无关商品顶上去（实测权重 500 时确实会反超）。
         let has_name_evidence = bs.name_hit || bs.canon_hit;
         let bonus = if has_name_evidence {
-            descriptions
-                .get(idx)
-                .map(|d| weight.word_bonus * desc_word_hits(query, &d.0, weight.max_words) as i32)
+            // **按商品 id 查**，不按位置：位置在调用方过滤/重排后会错配。
+            // 重复 id 首条胜出，未知 id 直接忽略（不加分也不报错）。
+            desc_by_id
+                .get(items[idx].id.as_str())
+                .map(|d| weight.word_bonus * desc_word_hits(query, d, weight.max_words) as i32)
                 .unwrap_or(0)
         } else {
             0
@@ -443,8 +527,119 @@ mod tests {
 
     // ── description 加权 ──────────────────────────────────────────
 
-    fn desc(s: &str) -> DescriptionText {
-        DescriptionText(s.to_string())
+
+    /// 把「按位置排列的说明文」转成「按 id 绑定」的列表（`items[i]` 对应 `texts[i]`）。
+    fn descs_for(items: &[Item], texts: &[&str]) -> Vec<DescriptionText> {
+        items
+            .iter()
+            .zip(texts.iter())
+            .map(|(it, t)| DescriptionText::new(it.id.clone(), *t))
+            .collect()
+    }
+
+    /// 安全阀：权重关闭时必须与 `score_and_pick` **完全一致**（含歧义标记）。
+    /// 这是整个改动不破坏既有行为的前提。
+    /// **P0-4 回归**：说明文必须按 id 对齐，调用方重排后加成不得错配。
+    ///
+    /// 历史实现用 `DescriptionText(pub String)` 并按位置取（`descriptions.get(idx)`）：
+    /// 调用方只要对 items 做过一次 `filter`/重排，加成就会**静默落到另一个商品上**
+    /// —— 分数看起来完全正常，没有任何报错。本测试把「按 id」钉死。
+    #[test]
+    fn description_alignment_by_id() {
+        let items = [
+            item("1111111", "StarTiara Base", 0),
+            item("2222222", "StarTiara Variant", 0),
+        ];
+        let names = [
+            ("1111111", "StarTiara Base"),
+            ("2222222", "StarTiara Variant"),
+        ];
+        let w = DescWeight::new(50, 2).expect("50×2 在上限内");
+
+        // 只有 2222222 的说明文命中查询词。
+        let descs_hit_second = vec![
+            DescriptionText::new("1111111", "nothing"),
+            DescriptionText::new("2222222", "StarTiara 対応"),
+        ];
+        let a = score_and_pick_with_desc(
+            "StarTiara",
+            &items,
+            &descs_hit_second,
+            w,
+            false,
+            cn(&names),
+            None,
+        );
+
+        // **把描述顺序颠倒**：若实现按位置取，加成会落到 1111111 上。
+        let descs_reordered = vec![
+            DescriptionText::new("2222222", "StarTiara 対応"),
+            DescriptionText::new("1111111", "nothing"),
+        ];
+        let b = score_and_pick_with_desc(
+            "StarTiara",
+            &items,
+            &descs_reordered,
+            w,
+            false,
+            cn(&names),
+            None,
+        );
+
+        assert_eq!(
+            a.0.map(|i| i.id.clone()),
+            b.0.map(|i| i.id.clone()),
+            "描述顺序变化不得改变选优结果（按 id 而非位置对齐）"
+        );
+        assert_eq!(
+            a.0.map(|i| i.id.as_str()),
+            Some("2222222"),
+            "命中说明文的那个候选应胜出"
+        );
+    }
+
+    /// 未知 id 的说明文必须被忽略（不加分、不报错）。
+    #[test]
+    fn unknown_description_is_ignored() {
+        let items = [
+            item("1111111", "StarTiara Base", 0),
+            item("2222222", "StarTiara Variant", 0),
+        ];
+        let names = [
+            ("1111111", "StarTiara Base"),
+            ("2222222", "StarTiara Variant"),
+        ];
+        let w = DescWeight::new(50, 2).expect("合法权重");
+        let descs = vec![DescriptionText::new("9999999", "StarTiara StarTiara")];
+        let (got, _) =
+            score_and_pick_with_desc("StarTiara", &items, &descs, w, false, cn(&names), None);
+        assert_eq!(
+            got.map(|i| i.id.as_str()),
+            Some("1111111"),
+            "未知 id 不得给任何候选加分，应回落到次序分最高的首位"
+        );
+    }
+
+    /// 重复 id 时首条胜出（确定性，不随实现选择变化）。
+    #[test]
+    fn duplicate_description_first_wins() {
+        let items = [
+            item("1", "StarTiara Base", 0),
+            item("2", "StarTiara Var", 0),
+        ];
+        let names = [("1", "StarTiara Base"), ("2", "StarTiara Var")];
+        let w = DescWeight::new(50, 2).expect("合法权重");
+        let descs = vec![
+            DescriptionText::new("2", "StarTiara 対応"),
+            DescriptionText::new("2", "nothing"),
+        ];
+        let (got, _) =
+            score_and_pick_with_desc("StarTiara", &items, &descs, w, false, cn(&names), None);
+        assert_eq!(
+            got.map(|i| i.id.as_str()),
+            Some("2"),
+            "重复 id 应以首条为准（第二条 nothing 不得覆盖）"
+        );
     }
 
     /// 安全阀：权重关闭时必须与 `score_and_pick` **完全一致**（含歧义标记）。
@@ -456,7 +651,7 @@ mod tests {
             item("2222222", "Star Tiara Gold", 0),
         ];
         let names = [("1111111", "Star Tiara"), ("2222222", "Star Tiara Gold")];
-        let descs = [desc("何もない"), desc("Star Tiara 対応")];
+        let descs = descs_for(&items, &["何もない", "Star Tiara 対応"]);
         for prefer_free in [false, true] {
             let legacy = score_and_pick("StarTiara", &items, prefer_free, cn(&names), None);
             let with = score_and_pick_with_desc(
@@ -484,6 +679,62 @@ mod tests {
         assert!(!DescWeight::OFF.is_on());
     }
 
+    /// `Default` 必须与 `OFF` **完全相等**：历史实现 Default{0,3} ≠ OFF{0,0}，
+    /// 两个「关闭」状态不一致，调用方容易误判成「开启了但没效果」。
+    #[test]
+    fn default_equals_off() {
+        assert_eq!(DescWeight::default(), DescWeight::OFF);
+        assert_eq!(DescWeight::default().max_words(), 0);
+        assert_eq!(DescWeight::default().word_bonus(), 0);
+    }
+
+    /// 构造器必须拒绝越界参数——不做静默修正。
+    #[test]
+    fn new_rejects_invalid() {
+        // 负值会让排序静默反向。
+        assert_eq!(
+            DescWeight::new(-50, 3),
+            Err(DescWeightError::NonPositiveBonus)
+        );
+        // 0 会让 is_on() 静默为 false。
+        assert_eq!(
+            DescWeight::new(0, 3),
+            Err(DescWeightError::NonPositiveBonus)
+        );
+        // max_words = 0 同样静默失效。
+        assert_eq!(DescWeight::new(10, 0), Err(DescWeightError::BadMaxWords));
+        // 上限 100。
+        assert_eq!(DescWeight::new(10, 101), Err(DescWeightError::BadMaxWords));
+        // 加成强度不得超过名称命中档（+100）：10×11=110 被拒。
+        assert_eq!(DescWeight::new(10, 11), Err(DescWeightError::TooStrong));
+        // 正常值通过。
+        let w = DescWeight::new(50, 2).expect("50×2=100 恰好在上限内");
+        assert!(w.is_on());
+        assert_eq!(w.word_bonus(), 50);
+        assert_eq!(w.max_words(), 2);
+    }
+
+    /// 溢出防御：极大值不得因 i32 乘法回绕而绕过上限检查。
+    #[test]
+    fn new_rejects_overflow_without_wrapping() {
+        assert_eq!(
+            DescWeight::new(i32::MAX, 2),
+            Err(DescWeightError::TooStrong),
+            "i32::MAX × 2 用 i64 计算应判超限，不能回绕成负数而放行"
+        );
+    }
+
+    /// **评审最担心的场景**：极大的 word_bonus 曾经可以传进去（实测 5000 可传），
+    /// 让说明文压过标题。现在构造阶段就拦住。
+    #[test]
+    fn extreme_weight_is_unconstructible() {
+        assert!(
+            DescWeight::new(5000, 3).is_err(),
+            "5000×3 远超 +100，必须被拒"
+        );
+        assert!(DescWeight::new(1000, 1).is_err());
+    }
+
     /// 开启后，说明文命中更多的候选应被提到前面。
     #[test]
     fn desc_on_promotes_description_match() {
@@ -499,10 +750,10 @@ mod tests {
             ("1111111", "StarTiara Base"),
             ("2222222", "StarTiara Variant"),
         ];
-        let descs = [
-            desc("全く関係ない説明"),
-            desc("この商品は StarTiara に対応しています"),
-        ];
+        let descs = descs_for(
+            &items,
+            &["全く関係ない説明", "この商品は StarTiara に対応しています"],
+        );
         let w = DescWeight {
             word_bonus: 50,
             max_words: 3,
@@ -527,10 +778,10 @@ mod tests {
             item("2222222", "Another Item", 0),
         ];
         let names = [("1111111", "StarTiara Base"), ("2222222", "Another Item")];
-        let descs = [
-            desc("全く関係ない説明"),
-            desc("StarTiara StarTiara StarTiara 対応"),
-        ];
+        let descs = descs_for(
+            &items,
+            &["全く関係ない説明", "StarTiara StarTiara StarTiara 対応"],
+        );
         let w = DescWeight {
             word_bonus: 50,
             max_words: 3,
@@ -554,10 +805,10 @@ mod tests {
             item("2222222", "Star Tiara Gold", 0),
         ];
         let names = [("1111111", "Star Tiara"), ("2222222", "Star Tiara Gold")];
-        let descs = [
-            desc("nothing"),
-            desc("StarTiara StarTiara StarTiara StarTiara"),
-        ];
+        let descs = descs_for(
+            &items,
+            &["nothing", "StarTiara StarTiara StarTiara StarTiara"],
+        );
         let w = DescWeight {
             word_bonus: 50,
             max_words: 3,
@@ -586,7 +837,7 @@ mod tests {
             item("2222222", "Unrelated", 0),
         ];
         let names = [("1111111", "StarTiara Base"), ("2222222", "Unrelated")];
-        let descs = [desc("x"), desc("x")];
+        let descs = descs_for(&items, &["x", "x"]);
         let w = DescWeight {
             word_bonus: 50,
             max_words: 3,
@@ -607,10 +858,10 @@ mod tests {
             item("2222222", "Unrelated", 0),
         ];
         let names = [("1111111", "StarTiara Base"), ("2222222", "Unrelated")];
-        let descs = [
-            desc("x"),
-            desc("StarTiara StarTiara StarTiara StarTiara StarTiara"),
-        ];
+        let descs = descs_for(
+            &items,
+            &["x", "StarTiara StarTiara StarTiara StarTiara StarTiara"],
+        );
         // 权重远超名称命中的 +100，逼迫门槛生效。
         let w = DescWeight {
             word_bonus: 500,
@@ -684,10 +935,13 @@ mod tests {
         let b = "B".repeat(60);
         let items = [item("1", &a, 0), item("2", &b, 0)];
         let names = [("1", a.as_str()), ("2", b.as_str())];
-        let descs = [
-            desc("Moonpiercer Moonpiercer Moonpiercer"),
-            desc("Moonpiercer Moonpiercer Moonpiercer"),
-        ];
+        let descs = descs_for(
+            &items,
+            &[
+                "Moonpiercer Moonpiercer Moonpiercer",
+                "Moonpiercer Moonpiercer Moonpiercer",
+            ],
+        );
         let (best, amb) = score_and_pick_with_desc(
             "Moonpiercer",
             &items,
