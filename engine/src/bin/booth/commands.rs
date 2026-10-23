@@ -115,6 +115,19 @@ pub fn run(cli: Cli) -> u8 {
         Command::Preview { archive, limit } => cmd_preview(&archive, limit, cli.json),
         Command::CookieCheck { cookie } => cmd_cookie_check(&config, cookie.as_deref(), cli.json),
         Command::Cache { command } => cmd_cache(command, cli.json),
+        Command::Inspect {
+            id,
+            term,
+            excerpt_chars,
+            cookie,
+        } => cmd_inspect(
+            &config,
+            &id,
+            &term,
+            excerpt_chars,
+            cookie.as_deref(),
+            cli.json,
+        ),
         Command::Shell { command } => cmd_shell(command),
         Command::UpdateCheck { proxy } => cmd_update_check(proxy, cli.json),
     }
@@ -123,6 +136,66 @@ pub fn run(cli: Cli) -> u8 {
 /// 解析配置里的下载根目录；未配置时返回 None（调用方用默认值）。
 fn download_root<'a>(config: &'a AppConfig, arg: Option<&'a Path>) -> Option<&'a Path> {
     arg.or_else(|| config.download_root.as_deref().map(Path::new))
+}
+
+/// 商品资料可核验视图。
+///
+/// 存在的理由：`description` 是不可信外部数据，直接交给 agent 等于让它拿一段无从
+/// 核验的文本当依据。本命令把正文与来源指纹、连续原文摘录一起给出，使上层能判断
+/// 「这段资料有没有被改过」「引用的是不是原文里的连续片段」。
+fn cmd_inspect(
+    config: &AppConfig,
+    id: &str,
+    terms: &[String],
+    excerpt_chars: usize,
+    cookie: Option<&str>,
+    json: bool,
+) -> u8 {
+    let cookie = resolve_cookie(cookie, config);
+    let client = make_session(
+        config,
+        engine::config::resolve_cookie(cookie.as_deref(), config).as_deref(),
+    );
+    let item = match engine::fetch::fetch_item(&client, id) {
+        Ok(i) => i,
+        Err(e) => return fail(json, &format!("获取商品 {id} 失败: {e}")),
+    };
+    let out = engine::evidence::inspect_item(&item, terms, excerpt_chars);
+    if json {
+        match serde_json::to_string_pretty(&out) {
+            Ok(s) => println!("{s}"),
+            Err(e) => return fail(true, &format!("序列化失败: {e}")),
+        }
+    } else {
+        println!("[{}] {}", out.id, out.name);
+        println!("  店铺: {}", out.shop);
+        println!(
+            "  分类: {}",
+            if out.category.is_empty() {
+                "-"
+            } else {
+                &out.category
+            }
+        );
+        println!("  价格: {}", out.price_text);
+        if !out.tags.is_empty() {
+            println!("  标签: {}", out.tags.join(", "));
+        }
+        println!("  指纹: {}", out.source_hash);
+        println!(
+            "  摘录{}: {}",
+            if out.excerpt_hit {
+                "（命中检索词）"
+            } else {
+                "（首部，非检索命中）"
+            },
+            out.excerpt.replace('\n', " ")
+        );
+        if out.excerpt_truncated {
+            println!("  （原文更长，已截断到 {excerpt_chars} 字符；完整正文见 --json）");
+        }
+    }
+    0
 }
 
 /// 缓存运维命令：`stats` / `clear`。

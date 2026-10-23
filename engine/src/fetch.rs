@@ -23,8 +23,19 @@ pub struct ItemJson {
     pub category: CategoryJson,
     pub shop: ShopJson,
     pub images: Vec<ImageJson>,
+    /// 商品标签。真实响应形如 `[{"name":"テンプレート","url":"..."}]`。
+    /// 参与来源指纹（`evidence::SourceFields`），故必须解析；缺失时为空表。
+    pub tags: Vec<TagJson>,
     #[serde(rename = "variations")]
     pub variations: Vec<VariationJson>,
+}
+
+/// 标签对象。只用 `name` 参与指纹，`url` 是纯展示派生字段。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct TagJson {
+    pub name: String,
+    pub url: String,
 }
 
 /// 店铺对象。

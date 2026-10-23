@@ -218,6 +218,24 @@ enum Command {
         #[command(subcommand)]
         command: CacheCmd,
     },
+    /// 查看商品资料的可核验视图（来源指纹 + 连续原文摘录）。
+    ///
+    /// `description` 是**不可信外部数据**。本命令把正文与 `source_hash`（内容漂移
+    /// 检测）和 `excerpt`（是否原文连续片段）一起给出，供上层判断该不该采信，
+    /// 而不是把一段无从核验的文本直接丢给 agent。
+    Inspect {
+        /// 7 位 BOOTH 商品 ID。
+        id: String,
+        /// 摘录围绕的检索词，可多次；不给则取正文首部（此时 excerpt_hit=false）。
+        #[arg(long)]
+        term: Vec<String>,
+        /// 摘录最多多少字符。
+        #[arg(long, default_value_t = engine::evidence::DEFAULT_EXCERPT_CHARS)]
+        excerpt_chars: usize,
+        /// BOOTH 登录 Cookie。
+        #[arg(long)]
+        cookie: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

@@ -169,6 +169,85 @@ pub fn is_contiguous_quote(field_text: &str, quote: &str) -> bool {
     !q.is_empty() && field_text.contains(q)
 }
 
+/// 商品资料的可核验视图（**三端统一出口**）。
+///
+/// 设计立场：`description` 是**不可信外部数据**。把它交给上层（agent / 人）时，
+/// 必须同时给出「这段资料是否被改动过」与「引用的是不是原文连续片段」，否则上层
+/// 无法判断该不该采信。故本结构把 `source_hash` 与 `excerpt` 与正文**绑在一起**
+/// 返回，而不是让调用方自己去凑。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct InspectOutput {
+    pub command: String,
+    pub id: String,
+    pub name: String,
+    /// 分类展示名（父分类/子分类中取可用者，可能为空）。
+    pub category: String,
+    /// 标签名（顺序按响应，指纹计算时会排序）。
+    pub tags: Vec<String>,
+    pub shop: String,
+    /// 价格展示串（站点原文，可能是「無料」等非数字）。
+    pub price_text: String,
+    /// 说明文全文。**不可信外部数据**，引用时须配合下方两项核验。
+    pub description: String,
+    /// 来源指纹：`canonical_json` 的 SHA-256（小写十六进制）。
+    /// 同一份资料重复取到应恒等；内容任何改动都会变。
+    pub source_hash: String,
+    /// 围绕查询词（或首部）的**连续**原文片段。
+    pub excerpt: String,
+    /// 摘录是否围绕某个检索词命中；false 表示「这不是围绕需求的证据」。
+    pub excerpt_hit: bool,
+    /// 原文是否长于摘录（被截断）。
+    pub excerpt_truncated: bool,
+}
+
+/// 摘录默认长度（字符）。足够看清上下文，又不会让 agent 上下文被单条商品淹没。
+pub const DEFAULT_EXCERPT_CHARS: usize = 200;
+
+/// 由商品资料生成可核验视图。
+///
+/// `terms` 为空等价于「取正文首部」，此时 `excerpt_hit` 为 false —— 如实告知
+/// 调用方「这段不是围绕需求的证据」，不要把它当命中。
+pub fn inspect_item(
+    item: &crate::fetch::ItemJson,
+    terms: &[String],
+    max_chars: usize,
+) -> InspectOutput {
+    let tag_names: Vec<String> = item.tags.iter().map(|t| t.name.clone()).collect();
+    let category = if item.category.name.is_empty() {
+        item.category
+            .parent
+            .as_ref()
+            .map(|p| p.name.clone())
+            .unwrap_or_default()
+    } else {
+        item.category.name.clone()
+    };
+    let fields = SourceFields {
+        name: &item.name,
+        category: &category,
+        tags: &tag_names,
+        description: &item.description,
+    };
+    // 先算指纹再移出所有权：`fields` 借用了 category/tag_names，
+    // 在同一作用域里把它们 move 进结构体会触发借用检查。
+    let hash = source_hash(&fields);
+    let ex = excerpt(&item.description, terms, max_chars);
+    InspectOutput {
+        command: "inspect".to_string(),
+        id: item.id.clone(),
+        name: item.name.clone(),
+        category,
+        tags: tag_names,
+        shop: item.shop.name.clone(),
+        price_text: item.price.to_string(),
+        description: item.description.clone(),
+        source_hash: hash,
+        excerpt: ex.text,
+        excerpt_hit: ex.hit,
+        excerpt_truncated: ex.truncated,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +310,29 @@ mod tests {
         assert!(desc.starts_with(&e.text));
     }
 
+    /// 命中时摘录**必须包含命中的词**，而不只是「原文的某个连续子串」。
+    ///
+    /// 这是区分「真的围着命中词取」与「无条件取正文首部」的唯一断言：后者同样
+    /// 满足 `desc.contains(&e.text)`，只靠上一条测试无法区分（实测把
+    /// `skip(start)` 改成恒 `skip(0)` 时上一条仍绿）。故命中词刻意放在尾部，
+    /// 使两种实现的输出必然不同。
+    #[test]
+    fn excerpt_centers_on_the_hit_not_the_head() {
+        let desc = format!("{}{}", "あ".repeat(80), "マヌカ");
+        let e = excerpt(desc.as_str(), &["マヌカ".to_string()], 20);
+        assert!(e.hit);
+        assert!(
+            e.text.contains("マヌカ"),
+            "摘录必须包含命中的词，实际：{}",
+            e.text
+        );
+        // 对照：首部 20 字里根本没有这个词，说明不是取开头。
+        assert!(
+            !desc.chars().take(20).collect::<String>().contains("マヌカ"),
+            "测试前提：命中词必须在尾部"
+        );
+    }
+
     #[test]
     fn excerpt_respects_char_budget_for_cjk() {
         // 多字节字符下 max_chars 按字符而非字节计，否则会切坏字符。
@@ -283,5 +385,66 @@ mod tests {
         // 倒序拼接不是原文
         assert!(!is_contiguous_quote(field, "桔梗：対応素体"));
         assert!(!is_contiguous_quote(field, "   "), "空引用不得通过");
+    }
+
+    fn item_with(name: &str, desc: &str, tags: &[&str]) -> crate::fetch::ItemJson {
+        crate::fetch::ItemJson {
+            id: "1234567".to_string(),
+            name: name.to_string(),
+            description: desc.to_string(),
+            tags: tags
+                .iter()
+                .map(|t| crate::fetch::TagJson {
+                    name: t.to_string(),
+                    url: String::new(),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// 接线死的：`inspect_item` 存在但没人调，或调了却没把指纹/摘录带出去，
+    /// 上层拿到的仍是一段无从核验的正文。本测试钉住「三样东西必须一起出现」。
+    #[test]
+    fn inspect_output_carries_hash_and_excerpt_together() {
+        let it = item_with(
+            "StarTiara",
+            "対応素体：桔梗。StarTiara 用の衣装です。",
+            &["VRChat"],
+        );
+        let out = inspect_item(&it, &["桔梗".to_string()], 50);
+        assert_eq!(out.command, "inspect");
+        assert_eq!(out.id, "1234567");
+        assert!(!out.source_hash.is_empty(), "必须带来源指纹");
+        assert_eq!(out.source_hash.len(), 64, "应为 SHA-256 十六进制");
+        assert!(!out.excerpt.is_empty(), "必须带摘录");
+        // 摘录必须是正文的**连续**子串——这是它可被引用的前提。
+        assert!(
+            is_contiguous_quote(&out.description, &out.excerpt),
+            "摘录必须是原文连续子串：{}",
+            out.excerpt
+        );
+        assert!(out.excerpt_hit, "围绕 桔梗 应判命中");
+        assert_eq!(out.tags, vec!["VRChat"]);
+    }
+
+    /// 不给检索词时必须**如实**说这不是围绕需求的证据，而不是悄悄当成命中。
+    #[test]
+    fn inspect_without_terms_reports_no_hit() {
+        let it = item_with("n", "長い説明文です。これは十分に長い本文です。", &[]);
+        let out = inspect_item(&it, &[], 10);
+        assert!(!out.excerpt_hit, "无检索词不得报 hit");
+        assert!(out.excerpt_truncated, "原文更长应报 truncated");
+        assert_eq!(out.excerpt.chars().count(), 10);
+    }
+
+    /// 指纹必须对「内容」敏感、对「标签顺序」不敏感。
+    #[test]
+    fn inspect_hash_tracks_content_not_tag_order() {
+        let a = inspect_item(&item_with("n", "d", &["b", "a"]), &[], 10);
+        let b = inspect_item(&item_with("n", "d", &["a", "b"]), &[], 10);
+        assert_eq!(a.source_hash, b.source_hash, "标签顺序不得影响指纹");
+        let c = inspect_item(&item_with("n", "d2", &["a", "b"]), &[], 10);
+        assert_ne!(a.source_hash, c.source_hash, "正文变化必须改变指纹");
     }
 }
