@@ -296,8 +296,11 @@ fn cmd_organize(
     let mut ok = 0usize;
     let mut failures: Vec<String> = Vec::new();
     for path in archives {
-        if !path.is_file() {
-            failures.push(format!("找不到文件: {}", path.display()));
+        // 用 engine 的统一判据，不再各自拼 `is_file()` + 自有文案：
+        // 三端此前对同一目录分别报「找不到文件」/「不是文件」，
+        // 同一种失败在不同入口给出不同结论，用户无法据此判断该做什么。
+        if let Err(msg) = engine::organize::check_input_file(path) {
+            failures.push(msg);
             continue;
         }
         let item_id = match force_id {

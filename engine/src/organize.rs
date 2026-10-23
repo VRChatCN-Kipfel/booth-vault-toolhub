@@ -1271,4 +1271,42 @@ mod tests {
         assert!(e.contains("无法读取输入"), "{e}");
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    /// 三端必须**共用**这个判据，不得各自拼 `is_file()` + 自有文案。
+    ///
+    /// 历史缺陷：同一目录输入，CLI 报「找不到文件」、engine 报「不是文件」——
+    /// 同一种失败在不同入口给出不同结论，用户无法据此判断该做什么。
+    ///
+    /// 本测试守住「文案只有一处定义」，并验证两条文案**可区分**（三分支的意义
+    /// 就在于此：目录要用户展开，读不到要用户检查权限/路径）。
+    #[test]
+    fn input_check_message_distinguishes_directory_from_unreadable() {
+        let tmp = tmpdir("check_single_source");
+        let dir = tmp.join("d");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let from_dir = check_input_file(&dir).expect_err("目录必须失败");
+        let from_missing = check_input_file(&tmp.join("nope.zip")).expect_err("缺失必须失败");
+
+        // 两条文案都必须带具体路径，否则用户不知道该改哪个。
+        assert!(
+            from_dir.contains(&dir.display().to_string()),
+            "目录错误须含路径：{from_dir}"
+        );
+        assert!(
+            from_missing.contains("nope.zip"),
+            "缺失错误须含路径：{from_missing}"
+        );
+        // 必须能区分两种失败。
+        assert!(
+            from_dir.contains("不是文件"),
+            "目录必须识别为「不是文件」：{from_dir}"
+        );
+        assert!(
+            from_missing.contains("无法读取输入"),
+            "缺失必须识别为「无法读取」：{from_missing}"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

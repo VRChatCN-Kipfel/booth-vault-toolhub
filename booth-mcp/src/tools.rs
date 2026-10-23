@@ -374,8 +374,9 @@ impl BoothServer {
         let mut failures: Vec<String> = Vec::new();
         for path_str in &params.archive {
             let path = std::path::PathBuf::from(path_str);
-            if !path.is_file() {
-                failures.push(format!("找不到文件: {path_str}"));
+            // 与 CLI/GUI 共用 engine 的统一判据（此前三端各写一份 is_file + 文案）。
+            if let Err(msg) = engine::organize::check_input_file(&path) {
+                failures.push(msg);
                 continue;
             }
             let item_id = match params.id.as_deref().filter(|s| !s.is_empty()) {
