@@ -296,9 +296,9 @@ fn cmd_organize(
     let mut ok = 0usize;
     let mut failures: Vec<String> = Vec::new();
     for path in archives {
-        // 用 engine 的统一判据，不再各自拼 `is_file()` + 自有文案：
-        // 三端此前对同一目录分别报「找不到文件」/「不是文件」，
-        // 同一种失败在不同入口给出不同结论，用户无法据此判断该做什么。
+        // 用 engine 的统一判据，不再各自拼 `is_file()` + 自有文案。
+        // 此前本处报「找不到文件」、engine 报「不是文件」，同一种失败给出两种结论。
+        // GUI organize 无预检，由 engine 守卫兜底（见 organize_archive）。
         if let Err(msg) = engine::organize::check_input_file(path) {
             failures.push(msg);
             continue;
