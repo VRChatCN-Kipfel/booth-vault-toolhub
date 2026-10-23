@@ -924,6 +924,51 @@ mod tests {
         assert_eq!(on_amb, off_amb, "说明文全缺时歧义判定不得改变");
     }
 
+    /// 单候选时 desc 必须与 OFF 结果一致。
+    ///
+    /// **注意**：这条不是「守卫是否生效」的验证——实测删掉 `items.len() <= 1`
+    /// 守卫后（R4 变异）本测试**仍然通过**：单候选时 `scored` 只有一项，`best_idx`
+    /// 必为 0，`picked` 与 `ambiguous` 都不受加分影响。也就是说该守卫是**纯优化**
+    /// 而非行为保证，无法为其写出有区分力的测试。
+    ///
+    /// 保留本测试的价值是另一件事：它守住「单候选路径与 OFF 等价」这个**外部契约**，
+    /// 将来若有人在加分分支里加入影响 picked/ambiguous 的逻辑，这里会红。
+    #[test]
+    fn single_item_is_untouched_by_desc() {
+        let items = [item("1", "StarTiara Base", 0)];
+        let names = [("1", "StarTiara Base")];
+        let w = DescWeight::new(50, 2).expect("合法权重");
+        let descs = vec![DescriptionText::new("1", "StarTiara StarTiara")];
+        let (on, on_amb) =
+            score_and_pick_with_desc("StarTiara", &items, &descs, w, false, cn(&names), None);
+        let (off, off_amb) = score_and_pick_with_desc(
+            "StarTiara",
+            &items,
+            &descs,
+            DescWeight::OFF,
+            false,
+            cn(&names),
+            None,
+        );
+        assert_eq!(
+            on.map(|i| i.id.clone()),
+            off.map(|i| i.id.clone()),
+            "单候选必须与 OFF 一致（守卫被删则会不同）"
+        );
+        assert_eq!(on_amb, off_amb, "单候选的歧义标记也必须一致");
+    }
+
+    /// 零候选：两个入口都返回 (None, false)，不得 panic。
+    #[test]
+    fn empty_items_is_safe_with_desc() {
+        let items: [Item; 0] = [];
+        let w = DescWeight::new(50, 2).expect("合法权重");
+        let (got, amb) =
+            score_and_pick_with_desc("x", &items, &[], w, false, |_| String::new(), None);
+        assert!(got.is_none());
+        assert!(!amb);
+    }
+
     /// 加分不得翻转「名称完全不命中」的否决：权重再大也不能凭说明文入选。
     #[test]
     fn desc_cannot_override_name_mismatch() {

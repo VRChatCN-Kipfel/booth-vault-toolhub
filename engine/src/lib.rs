@@ -11,7 +11,6 @@ pub mod integrity;
 pub mod norm;
 pub mod organize;
 pub mod score;
-pub mod score_baseline;
 pub mod search;
 pub mod session;
 pub mod unitypackage;
