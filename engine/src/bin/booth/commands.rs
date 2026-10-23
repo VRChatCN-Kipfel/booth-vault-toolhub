@@ -466,6 +466,8 @@ fn cmd_collections(
             .unwrap_or_else(engine::config::default_rate_limit_secs);
         let mut changed: Vec<serde_json::Value> = Vec::new();
         let mut checked = 0usize;
+        // 是否需要写盘：快照变化或 checked_at 推进，任一发生就要落盘。
+        let mut dirty = false;
         let mut failures: Vec<String> = Vec::new();
         for (i, id) in ids.iter().enumerate() {
             if i > 0 {
@@ -480,7 +482,6 @@ fn cmd_collections(
                     checked += 1;
                     let mut fresh = engine::collections::snapshot_from(&item, id);
                     fresh.added_at = old.added_at;
-                    fresh.checked_at = engine::collections::now_secs();
                     let changes = engine::collections::diff(&old, &fresh);
                     if !changes.is_empty() {
                         changed.push(serde_json::json!({
@@ -488,17 +489,24 @@ fn cmd_collections(
                             "name": fresh.name,
                             "changes": changes.iter().map(|c| c.describe()).collect::<Vec<_>>(),
                         }));
-                        // 只有真有变动才更新快照：否则每次 check 都写盘，
-                        // 徒增与 GUI 并发的写窗口。
                         lists.put(kind, fresh);
                     }
+                    // **无论有无变动都要推进 `checked_at`**：轮换靠它排序。
+                    // 只推进「有变动」的条目会让其余条目永远停在 0，平局退化成
+                    // id 字典序，第 N+1 条起永远轮不到——正是 pick_batch 要修的 bug。
+                    // 这一写与上面的快照更新是两回事：前者是进度，后者是数据变化。
+                    engine::collections::mark_checked(
+                        &mut lists,
+                        kind,
+                        id,
+                        engine::collections::now_secs(),
+                    );
+                    dirty = true;
                 }
                 Err(e) => failures.push(format!("{id}: {e}")),
             }
         }
-        if !changed.is_empty()
-            && let Err(e) = engine::collections::save(&path, &lists)
-        {
+        if dirty && let Err(e) = engine::collections::save(&path, &lists) {
             if json {
                 println!(
                     "{}",

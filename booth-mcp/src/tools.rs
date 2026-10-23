@@ -894,6 +894,8 @@ impl BoothServer {
                     .unwrap_or_else(engine::config::default_rate_limit_secs);
                 let mut changed: Vec<serde_json::Value> = Vec::new();
                 let mut checked = 0usize;
+                // 是否需要写盘：快照变化或 checked_at 推进，任一发生就要落盘。
+                let mut dirty = false;
                 let mut failures: Vec<String> = Vec::new();
                 for (i, id) in ids.iter().enumerate() {
                     if i > 0 {
@@ -907,7 +909,6 @@ impl BoothServer {
                             checked += 1;
                             let mut fresh = engine::collections::snapshot_from(&item, id);
                             fresh.added_at = old.added_at;
-                            fresh.checked_at = engine::collections::now_secs();
                             let changes = engine::collections::diff(&old, &fresh);
                             if !changes.is_empty() {
                                 changed.push(serde_json::json!({
@@ -916,13 +917,21 @@ impl BoothServer {
                                 }));
                                 lists.put(kind, fresh);
                             }
+                            // **无论有无变动都要推进 `checked_at`**：轮换靠它排序。
+                            // 只推进有变动的条目会让其余条目永远停在 0，平局退化成
+                            // id 字典序，第 N+1 条起永远轮不到。与 CLI 同一契约。
+                            engine::collections::mark_checked(
+                                &mut lists,
+                                kind,
+                                id,
+                                engine::collections::now_secs(),
+                            );
+                            dirty = true;
                         }
                         Err(e) => failures.push(format!("{id}: {e}")),
                     }
                 }
-                if !changed.is_empty()
-                    && let Err(e) = engine::collections::save(&path, &lists)
-                {
+                if dirty && let Err(e) = engine::collections::save(&path, &lists) {
                     return tool_error(&format!("清单写入失败: {e}"));
                 }
                 let out = serde_json::json!({

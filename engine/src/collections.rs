@@ -360,6 +360,26 @@ pub fn pick_batch(lists: &Lists, kind: Kind, limit: usize) -> Vec<String> {
         .collect()
 }
 
+/// 记录「这一条刚查过」，把 `checked_at` 推进到新值并写回清单。
+///
+/// **为什么必须由 engine 提供而不是让调用方自己设**：轮换契约是
+/// 「`pick_batch` 按 `checked_at` 升序取前 N 条，查过就推进」，两半必须成对
+/// 使用。历史实现把「推进」交给调用方，而 CLI 与 MCP 都把它写在了
+/// `if !changes.is_empty()` 里——**没有变动就不推进**，于是
+/// `snapshot_from` 恒置的 0 永远不变，平局退化成 id 字典序，
+/// 第 N+1 条起**永远轮不到**。这个缺陷 engine 单测看不见（`pick_batch`
+/// 本身是对的），只在真实多轮调用里显现。
+///
+/// 返回是否确实推进（`None` 表示该 id 不在清单里，不凭空创建条目）。
+pub fn mark_checked(lists: &mut Lists, kind: Kind, id: &str, now: u64) -> bool {
+    let Some(mut s) = lists.get(kind, id).cloned() else {
+        return false;
+    };
+    s.checked_at = now;
+    lists.put(kind, s);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -722,6 +742,59 @@ mod tests {
         }
         assert_eq!(pick_batch(&lists, Kind::Own, 0).len(), 4);
         assert_eq!(pick_batch(&lists, Kind::Own, 2).len(), 2);
+    }
+
+    /// `snapshot_from` 建出来的条目 `checked_at` 恒为 0 —— 这是轮换的起点。
+    /// 把该事实钉住：调用方若以为「新建即已检查」，轮换就永远不动。
+    #[test]
+    fn snapshot_from_starts_unchecked() {
+        let it = crate::fetch::ItemJson {
+            id: "1111111".to_string(),
+            name: "n".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(snapshot_from(&it, "1111111").checked_at, 0);
+    }
+
+    /// **mark_checked 让轮换真正推进**：即使内容毫无变化（`diff` 为空）也必须推进，
+    /// 否则平局退化成 id 字典序，第 N+1 条永远轮不到。
+    ///
+    /// 这是原缺陷的正面回归：engine 的 `pick_batch` 一直是对的，错在调用方把
+    /// 「推进」写在了 `if !changes.is_empty()` 里。故必须有一条测试直接断言
+    /// 「连续 N 轮后所有条目都被轮到」，而不是只测排序函数本身。
+    #[test]
+    fn mark_checked_makes_rotation_advance_without_changes() {
+        let mut lists = Lists::default();
+        for id in ["a", "b", "c"] {
+            lists.put(Kind::Watch, snap(id, 100, false)); // checked_at 均为 0
+        }
+        // limit=1 逐轮跑 3 轮，每轮标记刚查过的那一条（模拟真实调用方）。
+        let mut seen: Vec<String> = Vec::new();
+        for round in 1..=3u64 {
+            let batch = pick_batch(&lists, Kind::Watch, 1);
+            assert_eq!(batch.len(), 1);
+            let id = batch[0].clone();
+            seen.push(id.clone());
+            assert!(
+                mark_checked(&mut lists, Kind::Watch, &id, round * 100),
+                "在册条目必须能推进"
+            );
+        }
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            "三轮应覆盖全部条目；若仍重复取同一条，说明推进没生效"
+        );
+    }
+
+    /// 不在册的 id 不得被凭空创建（追加不存在的条目会让后续 `check` 报错源不明）。
+    #[test]
+    fn mark_checked_ignores_unknown_id() {
+        let mut lists = Lists::default();
+        lists.put(Kind::Watch, snap("a", 1, false));
+        assert!(!mark_checked(&mut lists, Kind::Watch, "zzz", 999));
+        assert_eq!(lists.len(Kind::Watch), 1);
     }
 
     /// 空清单返回空批次，不得 panic。

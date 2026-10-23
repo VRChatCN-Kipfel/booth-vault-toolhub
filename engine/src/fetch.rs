@@ -171,25 +171,18 @@ pub fn thumb_from_json(item: &ItemJson) -> String {
 
 /// 校验并解析商品 JSON 响应体（**纯函数**，不联网，可直接测）。
 ///
-/// 获取商品 JSON。
-///
-/// 走内容缓存：商品元数据变化慢（TTL 6h），而按名搜索会对同一商品反复取值。
-///
-/// **响应用必须校验**，否则错误体会被当成商品：
-///   - 状态码必须 200（`get` 会把 404/500 当正常响应返回，不查就会解析错误体）；
+/// **响应体必须校验**，否则错误体会被当成商品：
 ///   - 解析后 `id` 必须与请求的 id 相符；
 ///   - `name` 必须非空。
 ///
 /// 历史实现只做 `r.json()`，于是 `{}`、`{"error":"..."}` 会被 serde 解成
 /// `ItemJson::default()` 返回 `Ok`，空 id/名的「商品」还会被缓存 6 小时。
 ///
-/// 错误类型为 `String` 而非 `reqwest::Error`：缓存命中时根本没有 `reqwest::Response`
-/// 可供 `r.json()` 消费，而 `reqwest::Error` 没有公开构造入口（无 `From<io::Error>`），
-/// 若硬要保留该类型，解析失败就只能谎报成空数据——那是静默错误，绝不能做。
-///
-/// 三条判据与 [`fetch_item`] 内联版本完全一致，抽出来是为了：
+/// 抽成纯函数是为了：
 ///   - 可对 `{}` / `{"error":"x"}` / id 不符 / name 空 等毒化样本做单测；
 ///   - 三端（CLI/MCP/GUI）共享同一套判据，不各写一份。
+///
+/// 状态码校验留在 [`fetch_item`] 里（只有它持有响应对象），本函数只处理 body。
 pub fn parse_item_body(body: &[u8], item_id: &str) -> Result<ItemJson, String> {
     let item: ItemJson = serde_json::from_slice(body)
         .map_err(|e| format!("fetch_item {item_id}: body 不是合法商品 JSON: {e}"))?;
