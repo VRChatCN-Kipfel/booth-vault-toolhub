@@ -374,8 +374,11 @@ impl BoothServer {
         let mut failures: Vec<String> = Vec::new();
         for path_str in &params.archive {
             let path = std::path::PathBuf::from(path_str);
-            if !path.is_file() {
-                failures.push(format!("找不到文件: {path_str}"));
+            // 与 CLI 共用 engine 的统一判据。此前 CLI/MCP 各写一份 is_file + 自有文案，
+            // 同一目录在 CLI/MCP 报「找不到文件」、在 engine 报「不是文件」，用户无法据此判断该做什么。
+            // GUI organize 无预检，由 engine 守卫兜底（见 organize_archive）。
+            if let Err(msg) = engine::organize::check_input_file(&path) {
+                failures.push(msg);
                 continue;
             }
             let item_id = match params.id.as_deref().filter(|s| !s.is_empty()) {
