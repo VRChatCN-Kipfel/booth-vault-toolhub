@@ -160,7 +160,18 @@ where
     if !weight.is_on() {
         return score_and_pick(query, items, prefer_free, canonical_name, resource_names);
     }
-    let (picked, amb) = score_and_pick(query, items, prefer_free, &canonical_name, resource_names);
+    // **共享缓存**：整个函数（含对 `score_and_pick` 的那次调用）只用这一份。
+    // 若让 `score_and_pick` 自建缓存、下面那段再建一份，同一 id 会被解析两次
+    // ——实测 ON 路径 6 次而非 3 次，等于白做。
+    let memo: CanonMemo = std::cell::RefCell::new(std::collections::HashMap::new());
+    let (picked, amb) = score_and_pick_memo(
+        query,
+        items,
+        prefer_free,
+        &canonical_name,
+        &memo,
+        resource_names,
+    );
     // 单候选或名称层已否决时不介入：
     //   - 单候选不存在排序，加分只影响多候选先后；
     //   - `picked == None` 表示名称零证据，说明文**不得**把它救回来（它可能只是
@@ -183,8 +194,19 @@ where
     // 到这里：原实现的歧义与否决已定调。下面只可能在「都已有名称证据的候选」之间
     // 重排，且最终返回的 `ambiguous` 是 `原歧义 || 新歧义`——desc 只能增加歧义，
     // 永远不能消除它。
+    //
+    // **复用上面那份缓存**（`memo`），不新建：`score_and_pick_memo` 已把每个 id
+    // 解析过一次，这里再 resol 会翻倍。
+    let canonical = |id: &str| -> String {
+        if let Some(hit) = memo.borrow().get(id) {
+            return hit.clone();
+        }
+        let v = canonical_name(id);
+        memo.borrow_mut().insert(id.to_string(), v.clone());
+        v
+    };
     // 基分走与 `score_and_pick` 完全相同的唯一实现，杜绝两处字面量漂移。
-    let base_scores = weighted_scores(query, items, prefer_free, &canonical_name);
+    let base_scores = weighted_scores(query, items, prefer_free, canonical);
     let mut scored: Vec<(i32, usize)> = Vec::with_capacity(items.len());
     let mut base: Vec<i32> = Vec::with_capacity(items.len());
     for (idx, bs) in base_scores.iter().enumerate() {
@@ -217,13 +239,13 @@ where
 
     scored.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
     let best_idx = scored[0].1;
-    let best_cn = norm(&canonical_name(&items[best_idx].id));
+    let best_cn = norm(&canonical(&items[best_idx].id));
     let best_price = items[best_idx].price;
     // 歧义 = 原实现已判歧义 **或** 新增的两条判据。desc 永远只能让歧义增加。
     let mut ambiguous = amb || base_ambiguous;
     for (_, idx2) in &scored[1..] {
         let it2 = &items[*idx2];
-        if norm(&canonical_name(&it2.id)) == best_cn && it2.price != best_price {
+        if norm(&canonical(&it2.id)) == best_cn && it2.price != best_price {
             ambiguous = true;
         }
     }
@@ -335,14 +357,57 @@ pub fn score_and_pick<'a, F>(
 where
     F: Fn(&str) -> String,
 {
+    let memo: CanonMemo = std::cell::RefCell::new(std::collections::HashMap::new());
+    score_and_pick_memo(
+        query,
+        items,
+        prefer_free,
+        &canonical_name,
+        &memo,
+        resource_names,
+    )
+}
+
+/// 规范名缓存（对同一 id 只解析一次）。
+///
+/// `canonical_name` 由调用方注入，生产实现是阻塞网络 GET（`fetch_item`）。
+/// 评分本身对同一 id 至少调用 2 次（加权分 + 歧义同名比较），而
+/// `score_and_pick_with_desc` 还要再跑一遍完整流程——实测 N 个候选
+/// legacy 6 次、ON 12 次（4N）。缓存把「每个 id 一次」变成硬保证。
+type CanonMemo = std::cell::RefCell<std::collections::HashMap<String, String>>;
+
+/// 带外部缓存的评分实现。
+///
+/// **必须能把缓存传进来**：否则 `score_and_pick_with_desc` 内部调
+/// `score_and_pick` 时会建一份新缓存，而它自己那段又建另一份——两份互不共享，
+/// 同一 id 仍被解析两次（实测 ON 路径 6 次而非 3 次）。
+fn score_and_pick_memo<'a, F>(
+    query: &str,
+    items: &'a [Item],
+    prefer_free: bool,
+    canonical_name: &F,
+    memo: &CanonMemo,
+    resource_names: Option<&[String]>,
+) -> (Option<&'a Item>, bool)
+where
+    F: Fn(&str) -> String,
+{
     if items.is_empty() {
         return (None, false);
     }
+    let canonical = |id: &str| -> String {
+        if let Some(hit) = memo.borrow().get(id) {
+            return hit.clone();
+        }
+        let v = canonical_name(id);
+        memo.borrow_mut().insert(id.to_string(), v.clone());
+        v
+    };
     let qn = norm(query);
 
     // 评分权重契约（+100 名称命中 / +100 规范名命中 / +20 词级 / +10-次序 / +5 免费 / -10 过长）。
     // 唯一实现在 `weighted_scores`，本函数只负责排序与判定。
-    let mut scored: Vec<(i32, usize)> = weighted_scores(query, items, prefer_free, &canonical_name)
+    let mut scored: Vec<(i32, usize)> = weighted_scores(query, items, prefer_free, canonical)
         .into_iter()
         .enumerate()
         .map(|(idx, sc)| (sc.total, idx))
@@ -354,7 +419,7 @@ where
         // 无任何名称匹配：唯一结果也须名称命中。
         if items.len() == 1 {
             let it = &items[0];
-            let cn = norm(&canonical_name(&it.id));
+            let cn = norm(&canonical(&it.id));
             if !qn.is_empty() && (cn.contains(&qn) || norm(&it.name).contains(&qn)) {
                 return (Some(it), false);
             } // 标题/规范名都不命中 → 资源名二次校验。
@@ -384,11 +449,11 @@ where
         ambiguous = true;
     }
     let best_idx = scored[0].1;
-    let best_cn = norm(&canonical_name(&items[best_idx].id));
+    let best_cn = norm(&canonical(&items[best_idx].id));
     let best_price = items[best_idx].price;
     for (_, idx2) in &scored[1..] {
         let it2 = &items[*idx2];
-        if norm(&canonical_name(&it2.id)) == best_cn && it2.price != best_price {
+        if norm(&canonical(&it2.id)) == best_cn && it2.price != best_price {
             ambiguous = true;
         }
     }
@@ -638,6 +703,67 @@ mod tests {
             got.map(|i| i.id.as_str()),
             Some("2"),
             "重复 id 应以首条为准（第二条 nothing 不得覆盖）"
+        );
+    }
+
+    /// **P0-5 回归**：`canonical_name` 对每个 id 只应解析一次。
+    ///
+    /// 生产实现是阻塞网络 GET（`fetch_item`）。历史实现里 `score_and_pick` 对同一
+    /// id 至少调用 2 次（评分 + 歧义同名比较），而 `score_and_pick_with_desc` 又把
+    /// 整套流程跑一遍 —— 实测 N 个候选 legacy 6 次、ON 12 次（4N）。
+    ///
+    /// 本测试用 `Cell` 计数，断言「调用次数 == 候选数」。
+    #[test]
+    fn canonical_name_is_resolved_once_per_item() {
+        use std::cell::Cell;
+
+        let items = [
+            item("1111111", "Star Tiara", 0),
+            item("2222222", "Star Tiara Gold", 0),
+            item("3333333", "Star Tiara Deluxe", 0),
+        ];
+        let names = [
+            ("1111111", "Star Tiara"),
+            ("2222222", "Star Tiara Gold"),
+            ("3333333", "Star Tiara Deluxe"),
+        ];
+
+        // legacy 路径：3 个候选 → 最多 3 次解析。
+        let calls = Cell::new(0usize);
+        let counting = |id: &str| -> String {
+            calls.set(calls.get() + 1);
+            names
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, n)| n.to_string())
+                .unwrap_or_default()
+        };
+        let _ = score_and_pick("StarTiara", &items, false, counting, None);
+        assert_eq!(
+            calls.get(),
+            items.len(),
+            "legacy 路径：每个候选只应解析一次，实际 {}",
+            calls.get()
+        );
+
+        // ON 路径：同样最多 3 次（不是 2N 或 4N）。
+        let calls2 = Cell::new(0usize);
+        let counting2 = |id: &str| -> String {
+            calls2.set(calls2.get() + 1);
+            names
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, n)| n.to_string())
+                .unwrap_or_default()
+        };
+        let w = DescWeight::new(50, 2).expect("合法权重");
+        let descs = descs_for(&items, &["nothing", "StarTiara 対応", "nothing"]);
+        let _ = score_and_pick_with_desc("StarTiara", &items, &descs, w, false, counting2, None);
+        assert_eq!(
+            calls2.get(),
+            items.len(),
+            "ON 路径：每个候选只应解析一次（不是 2N/4N），实际 {}",
+            calls2.get()
         );
     }
 
