@@ -486,15 +486,16 @@ impl BoothServer {
                 exclude: params.exclude.clone(),
                 page: params.page.unwrap_or(1),
             };
-            let items = match engine::search::search_with(&client, &sq, params.no_cache) {
-                Ok(v) => v,
-                Err(e) => return tool_error(&format!("搜索失败: {e}")),
-            };
+            let (items, parsed_count) =
+                match engine::search::search_with_count(&client, &sq, params.no_cache) {
+                    Ok(v) => v,
+                    Err(e) => return tool_error(&format!("搜索失败: {e}")),
+                };
             let limit = params.limit.unwrap_or(20);
             // 统一契约：与 CLI 共用 `engine::search::SearchOutput`，字段逐项一致。
             // 历史实现只输出 6 个字段（缺 price_text/brand/category），而 SKILL.md
             // 声称三端一致，agent 按文档取字段会拿到 null。
-            let result = engine::search::into_output(&sq, &items, limit);
+            let result = engine::search::into_output(&sq, &items, parsed_count, limit);
             let text = serde_json::to_string_pretty(&result).unwrap_or_default();
             return CallToolResult::success(vec![ContentBlock::text(text)]);
         }

@@ -464,7 +464,9 @@ fn cmd_search_query(
         config,
         engine::config::resolve_cookie(cookie, config).as_deref(),
     );
-    let items = match engine::search::search_with(&client, q, no_cache) {
+    // 用 with_count 版本：has_next 需要「exclude 过滤前」的原始条数，
+    // 否则整页被排除时会谎报 total=0/has_next=false。
+    let (items, parsed_count) = match engine::search::search_with_count(&client, q, no_cache) {
         Ok(v) => v,
         Err(e) => {
             if json {
@@ -484,7 +486,7 @@ fn cmd_search_query(
     let total = items.len();
     if json {
         // 统一契约：字段在 engine::search::SearchOutput 单点定义，与 MCP 端逐字段一致。
-        let out = engine::search::into_output(q, &items, limit);
+        let out = engine::search::into_output(q, &items, parsed_count, limit);
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
         let shown: Vec<&engine::search::SearchItem> = items.iter().take(limit).collect();

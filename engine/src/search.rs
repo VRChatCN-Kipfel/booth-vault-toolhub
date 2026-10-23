@@ -296,7 +296,16 @@ pub struct SearchOutput {
 }
 
 /// 组装统一输出。
-pub fn into_output(q: &SearchQuery, items: &[SearchItem], limit: usize) -> SearchOutput {
+///
+/// `parsed_count` 是**本地 exclude 过滤之前**站点本页返回的条数。`has_next` 必须基于它：
+/// 历史实现用过滤后的 `items.len() >= 60` 判断，于是「整页都被 exclude 排除」时会
+/// 报 `total=0, has_next=false`，谎称没有下一页。
+pub fn into_output(
+    q: &SearchQuery,
+    items: &[SearchItem],
+    parsed_count: usize,
+    limit: usize,
+) -> SearchOutput {
     let u = build_search_url(q);
     let (_sort, note) = effective_sort(q.sort.as_deref().unwrap_or(""), q.page);
     SearchOutput {
@@ -307,8 +316,8 @@ pub fn into_output(q: &SearchQuery, items: &[SearchItem], limit: usize) -> Searc
         total: items.len(),
         shown: items.len().min(limit),
         page: q.page,
-        // 单页解析无法确定总页数：只有「本页条数达到站点单页上限」才提示还有下一页。
-        has_next: items.len() >= 60,
+        // 站点单页固定返回 60 条；达到上限说明后面还有。
+        has_next: parsed_count >= 60,
         sort_note: note,
         items: items.iter().take(limit).map(SearchRow::from_item).collect(),
     }
@@ -326,9 +335,6 @@ pub fn into_output(q: &SearchQuery, items: &[SearchItem], limit: usize) -> Searc
 ///   - 查询词放在 `q`，标签用复数键 `tags[]`，价格用 `min_price`/`max_price`。
 pub fn build_search_url(q: &SearchQuery) -> String {
     let mut parts: Vec<String> = Vec::new();
-    if !q.query.trim().is_empty() {
-        parts.push(format!("q={}", urlencode(&q.query)));
-    }
     let (sort, sort_note) = effective_sort(q.sort.as_deref().unwrap_or(""), q.page);
     if !sort.is_empty() {
         parts.push(format!("sort={}", urlencode(&sort)));
@@ -361,12 +367,39 @@ pub fn build_search_url(q: &SearchQuery) -> String {
     if q.page > 1 {
         parts.push(format!("page={}", q.page));
     }
-    let base = "https://booth.pm/ja/items";
+    // **端点必须是 `/ja/search/<查询词>`（词写在路径里）**，不能用 `/ja/items?q=`。
+    //
+    // 实测（2026-10）：
+    //   - `/ja/items?q=X&page=2` → 302 到 `/ja/search/X`，**page 被丢弃**，
+    //     page=2/3 返回的首条 ID 完全相同（9024927），即永远停在第一页；
+    //   - `/ja/search/X?page=2` → 首条 ID 变为 5479202，**真正翻页**；
+    //   - `/ja/search?q=X` → **404**（该端点不接受 `q` 参数，词必须在路径里）。
+    // 用错端点的后果是「以为在翻页、其实没有」——且若同时给出 sort_note 说明，
+    // 就变成带说明的欺骗，比静默失效更糟。
+    let base = if q.query.trim().is_empty() {
+        "https://booth.pm/ja/search".to_string()
+    } else {
+        format!("https://booth.pm/ja/search/{}", urlencode(&q.query))
+    };
     if parts.is_empty() {
-        base.to_string()
+        base
     } else {
         format!("{base}?{}", parts.join("&"))
     }
+}
+
+/// 判断响应体是否为「未登录」伪装页。
+///
+/// 未登录时 BOOTH 会返回 **HTTP 200** 的登录页——状态码检查拦不住它。
+/// 识别依据（任一）：
+///   - 跳转/表单指向 `/users/sign_in`；
+///   - 含 `_plaza_session` 缺失提示类文案（保守起见不依赖文案，只用上方 URL 特征）。
+///
+/// **不能**把「解析出 0 条」当作登录页：合法的零结果搜索同样解析出 0 条，
+/// 误判会把正常空结果报成错误。
+fn looks_like_login_page(body: &str) -> bool {
+    let head: String = body.chars().take(4096).collect();
+    head.contains("/users/sign_in") || head.contains("users/sign_in")
 }
 
 /// 带过滤轴的搜索（走内容缓存，列表页 TTL 10 分钟）。
@@ -377,13 +410,14 @@ pub fn search_with(
 ) -> Result<Vec<SearchItem>, String> {
     let url = build_search_url(q);
     let cache = crate::cache::shared();
+    let scope = crate::cache::scope_of(crate::session::session_cookie().as_deref());
     let ttl = if no_cache { 0 } else { crate::cache::TTL_PAGE };
     let r = crate::http::get_cached(
         client,
         &url,
         default_headers(),
         cache.as_deref(),
-        crate::cache::scope_of(crate::session::session_cookie().as_deref()),
+        scope,
         ttl,
     )
     .map_err(|e| format!("search request: {e}"))?;
@@ -391,6 +425,15 @@ pub fn search_with(
         return Err(format!("search status {}", r.status));
     }
     let html = String::from_utf8_lossy(&r.body);
+    // 登录页伪装成 200，必须在**解析与入库之前**拦住。
+    if looks_like_login_page(&html) {
+        // 若这条是从缓存读出来的（历史版本写入的登录页），驱逐它，
+        // 否则用户会一直读到登录页直到 TTL 过期——这正是评审指出的危害。
+        if let Some(c) = cache.as_deref() {
+            c.remove(scope, &url);
+        }
+        return Err("search: 返回登录页而非搜索结果，请到设置页填写有效 Cookie".to_string());
+    }
     let mut items = parse_search_html(&html);
     // BOOTH 不支持关键词排除，只能本地后置过滤。
     if !q.exclude.is_empty() {
@@ -402,6 +445,51 @@ pub fn search_with(
         });
     }
     Ok(items)
+}
+
+/// 带过滤轴的搜索，返回**原始条数**（exclude 过滤前）。
+///
+/// `into_output` 的 `has_next` 需要它：过滤后的条数无法反映站点是否还有下一页。
+pub fn search_with_count(
+    client: &Client,
+    q: &SearchQuery,
+    no_cache: bool,
+) -> Result<(Vec<SearchItem>, usize), String> {
+    let url = build_search_url(q);
+    let cache = crate::cache::shared();
+    let scope = crate::cache::scope_of(crate::session::session_cookie().as_deref());
+    let ttl = if no_cache { 0 } else { crate::cache::TTL_PAGE };
+    let r = crate::http::get_cached(
+        client,
+        &url,
+        default_headers(),
+        cache.as_deref(),
+        scope,
+        ttl,
+    )
+    .map_err(|e| format!("search request: {e}"))?;
+    if !(200..300).contains(&r.status) {
+        return Err(format!("search status {}", r.status));
+    }
+    let html = String::from_utf8_lossy(&r.body);
+    if looks_like_login_page(&html) {
+        if let Some(c) = cache.as_deref() {
+            c.remove(scope, &url);
+        }
+        return Err("search: 返回登录页而非搜索结果，请到设置页填写有效 Cookie".to_string());
+    }
+    let parsed = parse_search_html(&html);
+    let parsed_count = parsed.len();
+    let mut items = parsed;
+    if !q.exclude.is_empty() {
+        items.retain(|it| {
+            let hay = format!("{} {}", it.name, it.shop).to_lowercase();
+            !q.exclude
+                .iter()
+                .any(|w| !w.trim().is_empty() && hay.contains(&w.to_lowercase()))
+        });
+    }
+    Ok((items, parsed_count))
 }
 
 /// 搜索 BOOTH：`?q=...` 返回商品列表（历史入口，无过滤轴、不走缓存）。
@@ -523,9 +611,11 @@ mod tests {
     #[test]
     fn build_url_matches_legacy_for_plain_query() {
         let q = SearchQuery::simple("メカ");
+        // 端点必须是 /ja/search/<词>（词在路径里）——/ja/items?q= 会丢 page，
+        // /ja/search?q= 则直接 404。见 build_search_url 的实测注释。
         assert_eq!(
             build_search_url(&q),
-            "https://booth.pm/ja/items?q=%E3%83%A1%E3%82%AB"
+            "https://booth.pm/ja/search/%E3%83%A1%E3%82%AB"
         );
     }
 
@@ -545,7 +635,8 @@ mod tests {
         };
         let url = build_search_url(&q);
         for frag in [
-            "q=%E8%A1%A3%E8%A3%85",
+            // 查询词在**路径**里，不是 q 参数。
+            "/ja/search/%E8%A1%A3%E8%A3%85",
             "sort=new",
             "adult=exclude",
             "min_price=1000",
@@ -556,6 +647,10 @@ mod tests {
         ] {
             assert!(url.contains(frag), "缺少 {frag}：{url}");
         }
+        assert!(
+            !url.contains("q="),
+            "查询词必须走路径，q= 参数形式在 /ja/search 上会 404：{url}"
+        );
         // 对照：这个参数名**无效**（实测与假参数同效），不得出现在 URL 里。
         assert!(
             !url.contains("is_sold_out"),
@@ -579,6 +674,12 @@ mod tests {
             "popularity 翻页必须切到 new，否则永远返回第一页：{url}"
         );
         assert!(url.contains("page=3"), "切换排序后必须真的发 page：{url}");
+        // 端点必须是能翻页的那一个：用 /ja/items?q= 时 page 会被站点丢弃
+        // （实测 page=2/3 首条 ID 相同），翻页形同虚设。
+        assert!(
+            url.starts_with("https://booth.pm/ja/search/"),
+            "必须用 /ja/search/<词> 端点，否则 page 被丢弃：{url}"
+        );
         // 第一页保留用户的人气排序意图。
         let q1 = SearchQuery {
             query: "x".into(),
@@ -609,7 +710,47 @@ mod tests {
     #[test]
     fn empty_query_yields_bare_base() {
         let url = build_search_url(&SearchQuery::default());
-        assert_eq!(url, "https://booth.pm/ja/items");
+        // 无查询词时是搜索首页（词在路径里时才是 /ja/search/<词>）。
+        assert_eq!(url, "https://booth.pm/ja/search");
+    }
+
+    /// 登录页伪装成 200，必须能被识别出来（状态码检查拦不住它）。
+    ///
+    /// 这是评审 P0-2 的原始危害：登录页 200 会被当作正常响应解析（0 条）并入库，
+    /// 之后同一 URL 在 TTL 内一直返回登录页。
+    #[test]
+    fn detects_login_page_disguised_as_200() {
+        let login = r#"<html><body><a href="/users/sign_in">sign in</a></body></html>"#;
+        assert!(looks_like_login_page(login));
+        // 正常搜索页不得误判。
+        let ok = r#"<li data-product-id="1" data-product-name="x" data-product-price="0"></li>"#;
+        assert!(!looks_like_login_page(ok));
+        // **合法零结果不得误判成登录页**：这是保守判据的关键。
+        let empty =
+            r#"<html><body><div class="no-result">該当する商品がありません</div></body></html>"#;
+        assert!(!looks_like_login_page(empty), "零结果不得被当成登录页");
+    }
+
+    /// `has_next` 必须用**过滤前**的原始条数：整页被 exclude 排除时
+    /// 过滤后为 0，但站点确实还有下一页。
+    #[test]
+    fn has_next_uses_prefilter_count() {
+        let q = SearchQuery {
+            query: "x".into(),
+            exclude: vec!["everything".into()],
+            ..Default::default()
+        };
+        // 解析到 60 条但全部被 exclude 掉。
+        let items: Vec<SearchItem> = Vec::new();
+        let out = into_output(&q, &items, 60, 20);
+        assert_eq!(out.total, 0, "过滤后应为 0");
+        assert!(
+            out.has_next,
+            "站点本页给了 60 条（到上限），必须报还有下一页"
+        );
+        // 对照：站点只给 10 条 → 没有下一页。
+        let out2 = into_output(&q, &items, 10, 20);
+        assert!(!out2.has_next);
     }
 
     #[test]
