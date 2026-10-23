@@ -52,22 +52,41 @@ pub fn run(cli: Cli) -> u8 {
             keep_failed,
             cli.json,
         ),
-        Command::Search {
-            files,
-            base_dir,
-            dry_run,
-            id,
-            cookie,
-        } => cmd_search(
-            &config,
-            &files,
-            base_dir.as_deref(),
-            dry_run,
-            id.as_deref(),
-            cookie.as_deref(),
-            keep_failed,
-            cli.json,
-        ),
+        Command::Search(args) => {
+            // 两种模式互斥（argparse 已拦混用）：有 query 走纯检索，否则走按名归档。
+            if let Some(q) = args.query {
+                return cmd_search_query(
+                    &config,
+                    &engine::search::SearchQuery {
+                        query: q,
+                        sort: args.sort,
+                        kind: args.kind,
+                        adult: args.adult,
+                        tags: args.tag,
+                        category: args.category,
+                        min_price: args.min_price,
+                        max_price: args.max_price,
+                        in_stock: args.in_stock,
+                        exclude: args.exclude,
+                        page: args.page,
+                    },
+                    args.limit,
+                    args.no_cache,
+                    args.cookie.as_deref(),
+                    cli.json,
+                );
+            }
+            cmd_search(
+                &config,
+                &args.files,
+                args.base_dir.as_deref(),
+                args.dry_run,
+                args.id.as_deref(),
+                args.cookie.as_deref(),
+                keep_failed,
+                cli.json,
+            )
+        }
         Command::Audit {
             base,
             dry_run,
@@ -86,6 +105,7 @@ pub fn run(cli: Cli) -> u8 {
         }
         Command::Preview { archive, limit } => cmd_preview(&archive, limit, cli.json),
         Command::CookieCheck { cookie } => cmd_cookie_check(&config, cookie.as_deref(), cli.json),
+        Command::Cache { command } => cmd_cache(command, cli.json),
         Command::Shell { command } => cmd_shell(command),
         Command::UpdateCheck { proxy } => cmd_update_check(proxy, cli.json),
     }
@@ -94,6 +114,79 @@ pub fn run(cli: Cli) -> u8 {
 /// 解析配置里的下载根目录；未配置时返回 None（调用方用默认值）。
 fn download_root<'a>(config: &'a AppConfig, arg: Option<&'a Path>) -> Option<&'a Path> {
     arg.or_else(|| config.download_root.as_deref().map(Path::new))
+}
+
+/// 缓存运维命令：`stats` / `clear`。
+///
+/// 为什么必须有入口：缓存键含登录态作用域，而「补填 Cookie 后同一 URL 仍命中旧
+/// 匿名登录页直到 TTL 过期」是真实故障形态——没有清理入口，用户只能手动删文件。
+fn cmd_cache(command: crate::CacheCmd, json: bool) -> u8 {
+    let Some(path) = engine::config::http_cache_path() else {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "command": "cache", "ok": false,
+                    "error": "无法确定缓存路径（用户配置目录不可用）",
+                }))
+                .unwrap()
+            );
+        } else {
+            eprintln!("无法确定缓存路径（用户配置目录不可用）");
+        }
+        return 2;
+    };
+    let Some(cache) = engine::cache::Cache::open(&path) else {
+        // 打不开不等于空缓存：如实报错，不伪造 entries=0。
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "command": "cache", "ok": false,
+                    "error": format!("缓存库无法打开（可能被另一进程占用）: {}", path.display()),
+                }))
+                .unwrap()
+            );
+        } else {
+            eprintln!("缓存库无法打开（可能被另一进程占用）: {}", path.display());
+        }
+        return 2;
+    };
+    match command {
+        crate::CacheCmd::Stats => {
+            let entries = cache.count();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "command": "cache", "op": "stats", "ok": true,
+                        "entries": entries, "path": path.display().to_string(),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                println!("缓存条目 {entries} 条（{}）", path.display());
+            }
+            0
+        }
+        crate::CacheCmd::Clear => {
+            cache.clear();
+            let entries = cache.count();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "command": "cache", "op": "clear", "ok": true,
+                        "cleared": true, "entries": entries,
+                    }))
+                    .unwrap()
+                );
+            } else {
+                println!("缓存已清空（剩余 {entries} 条）");
+            }
+            0
+        }
+    }
 }
 
 /// download 命令（下载免费商品）。
@@ -139,7 +232,10 @@ fn cmd_download(
     }
 
     let cookie = resolve_cookie(cookie, config);
-    let client = make_session(config, cookie.as_deref());
+    let client = make_session(
+        config,
+        engine::config::resolve_cookie(cookie.as_deref(), config).as_deref(),
+    );
     let rate_limit = config
         .rate_limit_secs
         .unwrap_or_else(default_rate_limit_secs);
@@ -286,7 +382,10 @@ fn cmd_organize(
         }
     };
     let cookie = resolve_cookie(cookie, config);
-    let client = make_session(config, cookie.as_deref());
+    let client = make_session(
+        config,
+        engine::config::resolve_cookie(cookie.as_deref(), config).as_deref(),
+    );
     let opts = engine::organize::OrganizeOptions {
         out_root: &out_root,
         dry_run,
@@ -353,7 +452,61 @@ fn icon_fn(cover: &Path, folder: &Path) -> Result<(), String> {
     engine::organize::default_icon_fn(cover, folder)
 }
 
-/// search 命令（按名搜索）。
+/// 通用检索（`booth search --query`）：只检索、不归档。
+///
+/// 与 `cmd_search`（按名归档）是两条互斥路径：这里不碰磁盘库存，也不改任何文件。
+fn cmd_search_query(
+    config: &AppConfig,
+    q: &engine::search::SearchQuery,
+    limit: usize,
+    no_cache: bool,
+    cookie: Option<&str>,
+    json: bool,
+) -> u8 {
+    let client = make_session(
+        config,
+        engine::config::resolve_cookie(cookie, config).as_deref(),
+    );
+    // 用 with_count 版本：has_next 需要「exclude 过滤前」的原始条数，
+    // 否则整页被排除时会谎报 total=0/has_next=false。
+    let (items, parsed_count) = match engine::search::search_with_count(&client, q, no_cache) {
+        Ok(v) => v,
+        Err(e) => {
+            if json {
+                let out = serde_json::json!({
+                    "command": "search",
+                    "mode": "query",
+                    "query": q.query,
+                    "error": e,
+                });
+                println!("{}", serde_json::to_string_pretty(&out).unwrap());
+            } else {
+                eprintln!("搜索失败: {e}");
+            }
+            return 2;
+        }
+    };
+    let total = items.len();
+    if json {
+        // 统一契约：字段在 engine::search::SearchOutput 单点定义，与 MCP 端逐字段一致。
+        let out = engine::search::into_output(q, &items, parsed_count, limit);
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    } else {
+        let shown: Vec<&engine::search::SearchItem> = items.iter().take(limit).collect();
+        println!("找到 {total} 条，显示前 {} 条", shown.len());
+        let (_s, note) = engine::search::effective_sort(q.sort.as_deref().unwrap_or(""), q.page);
+        if let Some(n) = note {
+            println!("  注意：{n}");
+        }
+        for it in &shown {
+            println!("  [{}] {}  {}  {}", it.id, it.name, it.price_text, it.shop);
+        }
+    }
+    // 空结果不算错误：站点确实可能没有匹配项（与「请求失败」必须区分）。
+    0
+}
+
+/// 搜索命令（按名搜索）。
 #[allow(clippy::too_many_arguments)]
 fn cmd_search(
     config: &AppConfig,
@@ -375,7 +528,10 @@ fn cmd_search(
         }
     };
     let cookie = resolve_cookie(cookie, config);
-    let client = make_session(config, cookie.as_deref());
+    let client = make_session(
+        config,
+        engine::config::resolve_cookie(cookie.as_deref(), config).as_deref(),
+    );
     let mut matched: Vec<String> = Vec::new();
     let mut failures: Vec<String> = Vec::new();
 
@@ -679,7 +835,10 @@ fn cmd_version_audit(
         return fail(json, &format!("FATAL: {} 不存在", base.display()));
     }
     let cookie = resolve_cookie(cookie, config);
-    let client = make_session(config, cookie.as_deref());
+    let client = make_session(
+        config,
+        engine::config::resolve_cookie(cookie.as_deref(), config).as_deref(),
+    );
     let rate_limit = config
         .rate_limit_secs
         .unwrap_or_else(default_rate_limit_secs);

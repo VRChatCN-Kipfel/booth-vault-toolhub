@@ -80,7 +80,47 @@ struct OrganizeResult {
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 struct SearchParams {
     /// 待整理的文件路径。
+    #[serde(default)]
     files: Vec<String>,
+    /// 通用检索词：给了就走纯检索（只搜索、不整理），与 `files` 互斥。
+    #[serde(default)]
+    query: Option<String>,
+    /// 排序：new / popularity / liked / price_asc / price_desc（仅 query 模式）。
+    #[serde(default)]
+    sort: Option<String>,
+    /// 商品类型：digital / physical（仅 query 模式）。
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+    /// R-18：include / exclude / only（仅 query 模式）。
+    #[serde(default)]
+    adult: Option<String>,
+    /// 标签过滤，可多个（仅 query 模式）。
+    #[serde(default)]
+    tag: Vec<String>,
+    /// 分类 slug（日语原文，仅 query 模式）。
+    #[serde(default)]
+    category: Option<String>,
+    /// 最低价（日元，仅 query 模式）。
+    #[serde(default)]
+    min_price: Option<i64>,
+    /// 最高价（日元，仅 query 模式）。
+    #[serde(default)]
+    max_price: Option<i64>,
+    /// 仅在售（仅 query 模式）。
+    #[serde(default)]
+    in_stock: bool,
+    /// 排除词，可多个；本地后置过滤（仅 query 模式）。
+    #[serde(default)]
+    exclude: Vec<String>,
+    /// 页码，从 1 起（仅 query 模式）。
+    #[serde(default)]
+    page: Option<u32>,
+    /// 最多返回多少条（仅 query 模式）。
+    #[serde(default)]
+    limit: Option<usize>,
+    /// 跳过内容缓存，强制联网（仅 query 模式）。
+    #[serde(default)]
+    no_cache: bool,
     /// 归档根目录（默认读配置 download_root）。
     #[serde(default)]
     base_dir: Option<String>,
@@ -270,7 +310,10 @@ impl BoothServer {
                 return tool_error("未指定输出目录：用 out 或配置文件 download_root");
             }
         };
-        let client = make_session(&config, params.cookie.as_deref());
+        let client = make_session(
+            &config,
+            engine::config::resolve_cookie(params.cookie.as_deref(), &config).as_deref(),
+        );
         let rate_limit = config
             .rate_limit_secs
             .unwrap_or_else(default_rate_limit_secs);
@@ -360,7 +403,10 @@ impl BoothServer {
                 return tool_error("未指定输出目录：用 out 或配置文件 download_root");
             }
         };
-        let client = make_session(&config, params.cookie.as_deref());
+        let client = make_session(
+            &config,
+            engine::config::resolve_cookie(params.cookie.as_deref(), &config).as_deref(),
+        );
         let keep_failed = params
             .keep_failed
             .unwrap_or_else(|| engine::config::keep_failed_downloads(&config));
@@ -415,19 +461,60 @@ impl BoothServer {
         CallToolResult::success(vec![ContentBlock::text(text)])
     }
 
-    /// 按名搜索并整理本地文件。
+    /// 按名搜索并整理本地文件；或 query 模式通用检索。
     #[tool(
-        description = "本地文件（无 ID）按名搜索 BOOTH：生成搜索候选 → 搜索 → 评分选优（含 unitypackage 资源名验真）→ 整理归档。歧义时选最佳。"
+        description = "两种互斥模式：给 files 走「本地文件按名搜索 BOOTH → 评分选优 → 整理归档」；给 query 走纯检索（只搜不整理，支持 sort/type/adult/tag/category/价格/in_stock/exclude/page 过滤轴，走内容缓存，no_cache 可强制联网）。"
     )]
     async fn search(&self, Parameters(params): Parameters<SearchParams>) -> CallToolResult {
         let config = load_config();
+        // query 模式：纯检索，不要求归档目录（那是归档模式的参数）。
+        if let Some(q) = params.query.clone() {
+            if !params.files.is_empty() {
+                return tool_error("files 与 query 互斥：要么按名归档，要么纯检索");
+            }
+            let client = make_session(
+                &config,
+                engine::config::resolve_cookie(params.cookie.as_deref(), &config).as_deref(),
+            );
+            let sq = engine::search::SearchQuery {
+                query: q,
+                sort: params.sort.clone(),
+                kind: params.kind.clone(),
+                adult: params.adult.clone(),
+                tags: params.tag.clone(),
+                category: params.category.clone(),
+                min_price: params.min_price,
+                max_price: params.max_price,
+                in_stock: params.in_stock,
+                exclude: params.exclude.clone(),
+                page: params.page.unwrap_or(1),
+            };
+            let (items, parsed_count) =
+                match engine::search::search_with_count(&client, &sq, params.no_cache) {
+                    Ok(v) => v,
+                    Err(e) => return tool_error(&format!("搜索失败: {e}")),
+                };
+            let limit = params.limit.unwrap_or(20);
+            // 统一契约：与 CLI 共用 `engine::search::SearchOutput`，字段逐项一致。
+            // 历史实现只输出 6 个字段（缺 price_text/brand/category），而 SKILL.md
+            // 声称三端一致，agent 按文档取字段会拿到 null。
+            let result = engine::search::into_output(&sq, &items, parsed_count, limit);
+            let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+            return CallToolResult::success(vec![ContentBlock::text(text)]);
+        }
+        if params.files.is_empty() {
+            return tool_error("未指定输入：要么给 files（按名归档），要么给 query（纯检索）");
+        }
         let base = match params.base_dir.or(config.download_root.clone()) {
             Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
             _ => {
                 return tool_error("未指定归档目录：用 base_dir 或配置文件 download_root");
             }
         };
-        let client = make_session(&config, params.cookie.as_deref());
+        let client = make_session(
+            &config,
+            engine::config::resolve_cookie(params.cookie.as_deref(), &config).as_deref(),
+        );
         let mut matched: Vec<String> = Vec::new();
         let mut failures: Vec<String> = Vec::new();
 
@@ -547,7 +634,10 @@ impl BoothServer {
         if !base.is_dir() {
             return tool_error(&format!("FATAL: {} 不存在", base.display()));
         }
-        let client = make_session(&config, params.cookie.as_deref());
+        let client = make_session(
+            &config,
+            engine::config::resolve_cookie(params.cookie.as_deref(), &config).as_deref(),
+        );
         let rate_limit = config
             .rate_limit_secs
             .unwrap_or_else(default_rate_limit_secs);

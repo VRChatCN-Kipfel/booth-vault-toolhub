@@ -3,7 +3,8 @@
 use reqwest::blocking::Client;
 use serde::Deserialize;
 
-use crate::http::get;
+use crate::cache;
+use crate::http::CachedBody;
 
 /// BOOTH 商品 JSON 端点。
 pub const ITEM_JSON_URL: &str = "https://booth.pm/ja/items/{id}.json";
@@ -120,13 +121,75 @@ pub fn thumb_from_json(item: &ItemJson) -> String {
     String::new()
 }
 
-/// 获取商品 JSON（transport 错误重试，HTTP 状态码留给调用方）。
-pub fn fetch_item(client: &Client, item_id: &str) -> Result<ItemJson, reqwest::Error> {
+/// 获取商品 JSON。
+///
+/// 走内容缓存：商品元数据变化慢（TTL 6h），而按名搜索会对同一商品反复取值。
+///
+/// **响应用必须校验**，否则错误体会被当成商品：
+///   - 状态码必须 200（`get` 会把 404/500 当正常响应返回，不查就会解析错误体）；
+///   - 解析后 `id` 必须与请求的 id 相符；
+///   - `name` 必须非空。
+///
+/// 历史实现只做 `r.json()`，于是 `{}`、`{"error":"..."}` 会被 serde 解成
+/// `ItemJson::default()` 返回 `Ok`，空 id/名的「商品」还会被缓存 6 小时。
+///
+/// 错误类型为 `String` 而非 `reqwest::Error`：缓存命中时根本没有 `reqwest::Response`
+/// 可供 `r.json()` 消费，而 `reqwest::Error` 没有公开构造入口（无 `From<io::Error>`），
+/// 若硬要保留该类型，解析失败就只能谎报成空数据——那是静默错误，绝不能做。
+pub fn fetch_item(client: &Client, item_id: &str) -> Result<ItemJson, String> {
     let url = ITEM_JSON_URL.replace("{id}", item_id);
     let mut headers = crate::session::default_headers();
     headers.insert(reqwest::header::ACCEPT, "application/json".parse().unwrap());
-    let r = get(client, &url, headers)?;
-    r.json()
+    let cache = cache::shared();
+    let scope = cache::scope_of(crate::session::session_cookie().as_deref());
+    let r = crate::http::get_cached(
+        client,
+        &url,
+        headers,
+        cache.as_deref(),
+        scope,
+        cache::TTL_ITEM,
+    )
+    .map_err(|e| format!("fetch_item {item_id}: {e}"))?;
+    if r.status != 200 {
+        return Err(format!(
+            "fetch_item {item_id}: 状态码 {}（期望 200），响应体前 120 字：{}",
+            r.status,
+            String::from_utf8_lossy(&r.body[..r.body.len().min(120)])
+        ));
+    }
+    let item: ItemJson = serde_json::from_slice(&r.body)
+        .map_err(|e| format!("fetch_item {item_id}: body 不是合法 JSON: {e}"))?;
+    if item.name.trim().is_empty() {
+        return Err(format!(
+            "fetch_item {item_id}: 响应缺少商品名（可能是错误体冒充）"
+        ));
+    }
+    if !item.id.is_empty() && item.id != item_id {
+        return Err(format!(
+            "fetch_item {item_id}: 响应 id 不符（得到 {}）",
+            item.id
+        ));
+    }
+    Ok(item)
+}
+
+/// 同上，但保留原始响应载荷（供需要状态码/最终 URL 的调用方使用）。
+pub fn fetch_item_raw(client: &Client, item_id: &str) -> Result<CachedBody, String> {
+    let url = ITEM_JSON_URL.replace("{id}", item_id);
+    let mut headers = crate::session::default_headers();
+    headers.insert(reqwest::header::ACCEPT, "application/json".parse().unwrap());
+    let cache = cache::shared();
+    let scope = cache::scope_of(crate::session::session_cookie().as_deref());
+    crate::http::get_cached(
+        client,
+        &url,
+        headers,
+        cache.as_deref(),
+        scope,
+        cache::TTL_ITEM,
+    )
+    .map_err(|e| format!("fetch_item {item_id}: {e}"))
 }
 
 /// 免费可下载文件列表：[(url, filename)]。

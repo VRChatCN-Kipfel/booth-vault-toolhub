@@ -78,7 +78,38 @@ const HTTP_HEADER_NAMES: &[&str] = &[
 ///
 /// `cookie`: 'k=v; k2=v2' 串 / Netscape cookies.txt 路径 / 存原始 Cookie 串的文本文件路径。
 pub fn make_session(config: &AppConfig, cookie: Option<&str>) -> Client {
+    remember_cookie(cookie);
     build_client(config, cookie, true, false)
+}
+
+/// 进程级「当前会话 cookie」存储（供缓存作用域派生）。
+///
+/// `remember_cookie` 与 `session_cookie` **必须共用同一个 `OnceLock`**：
+/// 各自 `get_or_init` 会得到两个互不相干的单元，写一边读另一边恒为 None，
+/// 缓存作用域就永远退回匿名（静默错误）。
+fn cookie_cell() -> &'static std::sync::Mutex<Option<String>> {
+    static CURRENT: std::sync::OnceLock<std::sync::Mutex<Option<String>>> =
+        std::sync::OnceLock::new();
+    CURRENT.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 记住本次会话使用的 cookie。
+///
+/// 为什么需要：`fetch_item` / `search_booth` 这类函数签名里没有 cookie，
+/// 但它们要算缓存 scope 才知道该读写哪一份条目。放在这里而非给各调用方加参数，
+/// 是为了不改那 20+ 处既有签名。
+fn remember_cookie(cookie: Option<&str>) {
+    if let Ok(mut guard) = cookie_cell().lock() {
+        *guard = cookie.map(str::to_string).filter(|s| !s.trim().is_empty());
+    }
+}
+
+/// 当前会话的 cookie（供缓存作用域派生用）。
+///
+/// 返回的是调用方传入的原始 cookie 串；**不得**用它做展示或日志——
+/// `cache::scope_of` 只取摘要，明文留在内存里。
+pub fn session_cookie() -> Option<String> {
+    cookie_cell().lock().ok().and_then(|g| g.clone())
 }
 
 /// 同 [`make_session`]，但**不跟随重定向**（供登录态探针判定 302 目标），
@@ -504,7 +535,7 @@ fn parse_netscape_rows(text: &str) -> Option<Vec<(String, String)>> {
 /// **注入与统计必须共用这里**。统计若绕过它、直接对参数本身调 `sanitize_cookie`，
 /// 传入文件路径时会把**路径字符串**当 cookie 解析（`D:` 被切成一条），
 /// 得出「生效 1 条、无会话项」这种与事实相反、且自相矛盾的结论。
-fn load_cookie_pairs(cookie_arg: &str) -> SanitizedCookie {
+pub(crate) fn load_cookie_pairs(cookie_arg: &str) -> SanitizedCookie {
     let p = Path::new(cookie_arg);
     if p.is_file()
         && let Ok(text) = std::fs::read_to_string(p)

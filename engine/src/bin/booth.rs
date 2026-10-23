@@ -31,6 +31,68 @@ struct Cli {
     command: Command,
 }
 
+/// `booth search` 的全部参数。
+///
+/// 拆成独立结构体只为让 `Command` 各变体体积接近（clippy `large_enum_variant`）。
+/// 语义不变：`files`（按名归档）与 `query`（纯检索）互斥。
+#[derive(clap::Args)]
+struct SearchArgs {
+    /// 待整理的文件路径。
+    #[arg(required_unless_present = "query", conflicts_with = "query")]
+    files: Vec<PathBuf>,
+    /// 通用检索词（只搜索、不整理）。与 `files` 互斥。
+    #[arg(long, short = 'q')]
+    query: Option<String>,
+    /// 排序：new / popularity / liked / price_asc / price_desc（仅 `--query`）。
+    #[arg(long)]
+    sort: Option<String>,
+    /// 商品类型：digital / physical（仅 `--query`）。
+    #[arg(long = "type")]
+    kind: Option<String>,
+    /// R-18 处理：include / exclude / only（仅 `--query`，默认 include）。
+    #[arg(long)]
+    adult: Option<String>,
+    /// 标签过滤，可多次（仅 `--query`）。
+    #[arg(long)]
+    tag: Vec<String>,
+    /// 分类 slug，需日语原文如 `3D衣装`（仅 `--query`）。
+    #[arg(long)]
+    category: Option<String>,
+    /// 最低价（日元，仅 `--query`）。
+    #[arg(long)]
+    min_price: Option<i64>,
+    /// 最高价（日元，仅 `--query`）。
+    #[arg(long)]
+    max_price: Option<i64>,
+    /// 仅在售（仅 `--query`）。
+    #[arg(long)]
+    in_stock: bool,
+    /// 排除词，可多次；本地后置过滤（仅 `--query`）。
+    #[arg(long)]
+    exclude: Vec<String>,
+    /// 页码，从 1 起（仅 `--query`）。
+    #[arg(long, default_value_t = 1)]
+    page: u32,
+    /// 最多返回多少条（仅 `--query`）。
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
+    /// 跳过内容缓存，强制联网（仅 `--query`）。
+    #[arg(long)]
+    no_cache: bool,
+    /// 归档根目录。
+    #[arg(long)]
+    base_dir: Option<PathBuf>,
+    /// 只搜索不实际整理。
+    #[arg(long)]
+    dry_run: bool,
+    /// 强制指定 BOOTH 商品 ID（跳过搜索）。
+    #[arg(long)]
+    id: Option<String>,
+    /// BOOTH 登录 Cookie。
+    #[arg(long)]
+    cookie: Option<String>,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// 整店/散链下载免费商品（需 Cookie 拉文件）。
@@ -71,24 +133,15 @@ enum Command {
         #[arg(long)]
         cookie: Option<String>,
     },
-    /// 本地文件（无 ID）按名搜索 BOOTH 后整理。
-    Search {
-        /// 待整理的文件路径。
-        #[arg(required = true)]
-        files: Vec<PathBuf>,
-        /// 归档根目录。
-        #[arg(long)]
-        base_dir: Option<PathBuf>,
-        /// 只搜索不实际整理。
-        #[arg(long)]
-        dry_run: bool,
-        /// 强制指定 BOOTH 商品 ID（跳过搜索）。
-        #[arg(long)]
-        id: Option<String>,
-        /// BOOTH 登录 Cookie。
-        #[arg(long)]
-        cookie: Option<String>,
-    },
+    /// 本地文件（无 ID）按名搜索 BOOTH 后整理；或 `--query` 通用检索。
+    ///
+    /// 两种模式互斥：给 `files` 走「按名归档」老链路；给 `--query` 走纯检索、
+    /// 只输出结果不做整理。混用直接报错，避免语义含糊。
+    ///
+    /// 检索轴整体装箱：本枚举其余变体都很小，若把十几个过滤字段直接摊在
+    /// `SearchComplete` 上，会让整个 `Command` 的栈占用由最大变体决定
+    /// （clippy `large_enum_variant`）。箱子换来的是每个 `Command` 值都变轻。
+    Search(Box<SearchArgs>),
     /// 全库文件夹图标三件套完整性巡检 + 自动修复。
     Audit {
         /// 巡检根目录。
@@ -152,6 +205,21 @@ enum Command {
         #[arg(long)]
         cookie: Option<String>,
     },
+    /// HTTP 内容缓存：查看条目数或清空。
+    ///
+    /// 缓存键含登录态作用域，不同账号/匿名各存一份；`clear` 是清掉污染条目的唯一入口。
+    Cache {
+        #[command(subcommand)]
+        command: CacheCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum CacheCmd {
+    /// 显示缓存条目数。
+    Stats,
+    /// 清空全部缓存条目。
+    Clear,
 }
 
 #[derive(Subcommand)]
