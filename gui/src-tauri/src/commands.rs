@@ -692,12 +692,13 @@ fn pick_search_match(
     let names = engine::unitypackage::names_for_score(path);
 
     // 命中判定与 CLI/MCP **共用 engine 实现**：此处此前只判 `is_some()`、
-    // 无名称命中与歧义校验、无 kana 变体轮，三端行为不一致。
+    // 无名称命中与歧义校验、无同义词轮与 kana 变体轮，三端行为不一致。
     let outcome = engine::search::resolve_by_name(
         client,
         &queries,
         names.as_deref(),
         engine::kana::MAX_VARIANTS,
+        engine::synonyms::MAX_SYNONYMS,
         |id| canonical_info(client, id),
         desc,
     );
@@ -756,13 +757,19 @@ fn process_search_file(
 }
 
 /// 规范名 + 说明文（评分依赖注入；两者同源，见 `engine::search::CanonInfo`）。
-fn canonical_info(client: &reqwest::blocking::Client, id: &str) -> engine::search::CanonInfo {
+///
+/// 与 CLI/MCP 同构：取不到返回 `None`。压成空串会让「规范名命中 +100」静默失效，
+/// 并让同名判定退化成 `"" == ""`（不同商品被判成同名）。
+fn canonical_info(
+    client: &reqwest::blocking::Client,
+    id: &str,
+) -> Option<engine::search::CanonInfo> {
     engine::fetch::fetch_item(client, id)
         .map(|i| engine::search::CanonInfo {
             name: i.name,
             description: i.description,
         })
-        .unwrap_or_default()
+        .ok()
 }
 
 /// audit：全库文件夹图标三件套巡检（递归扫描 ID 目录）。立刻返回 task_id。

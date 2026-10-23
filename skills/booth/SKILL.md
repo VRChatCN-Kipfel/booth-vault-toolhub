@@ -25,8 +25,8 @@ BOOTH（日本数字创作集市，VRChat 素材主产地）素材的**下载 / 
 
 | 入口 | 说明 | 适用 |
 |------|------|------|
-| **`booth` CLI** | 编译后的二进制，十子命令 | 终端/agent 首选 |
-| **booth-mcp** | MCP stdio server，暴露九工具（无 shell） | opencode / Claude Code 等 MCP 客户端 |
+| **`booth` CLI** | 编译后的二进制，十四子命令 | 终端/agent 首选 |
+| **booth-mcp** | MCP stdio server，暴露十一工具（无 shell） | opencode / Claude Code 等 MCP 客户端 |
 | 原 `python scripts/booth.py` | 旧版 Python（仅参考，已废弃） | 不推荐 |
 
 ## 找到 CLI / MCP 二进制（先定位，再调用）
@@ -92,6 +92,10 @@ booth version-audit [--base DIR] [--fix]                   # 版本巡检；--fi
 booth library  [--base DIR] [--refresh]                    # 列出库存（走持久化索引）
 booth preview  <本地包...> [--limit N]                      # 列出包内条目（名称/大小）
 booth cookie-check [--cookie ...] [--json]                 # 检测 Cookie 是否可用（探针，不触发下载）
+booth cache stats|clear                                    # HTTP 内容缓存：条目数 / 清空
+booth watch    <add|remove|list|check> [ID...] [--limit N]  # 关注清单：等降价/补货
+booth own      <add|remove|list|check> [ID...] [--limit N]  # 已购清单：等作者更新
+booth inspect  <ID> [--term 词]... [--excerpt-chars N]     # 商品资料可核验视图（指纹 + 连续原文摘录）
 booth update-check [--proxy]                               # 工具自更新检查
 ```
 
@@ -99,8 +103,18 @@ booth update-check [--proxy]                               # 工具自更新检�
 
 ## MCP 接入（可选）
 
-以 stdio server 运行 `booth-mcp`，同九工具（download/organize/search/audit/version_audit/library/preview/update_check/cookie_check），
-JSON 输入输出与 CLI 完全一致。客户端配置示例（`.mcp.json` 片段）：
+以 stdio server 运行 `booth-mcp`，同十一工具
+（download / organize / search / audit / version_audit / library / preview /
+update_check / cookie_check / collections / inspect），详见下表。
+
+**契约以代码为准**：`search` 的输出信封是 `engine::search::SearchOutput`（10 个字段：
+`command` `mode` `query` `url` `total` `shown` `page` `has_next` `sort_note` `items`），
+CLI 与 MCP 共用同一个结构体，字段不会各自漂移。但两端的外层信封不同——CLI 走
+`--json` 直出该结构，MCP 把它序列化成单个 text content block；失败时 CLI 用退出码
+（`1` 有失败项 / `2` 致命）表达，MCP 用 `isError` 的 content block 表达。
+需要机器判断成败时按各自通道读，不要假设两端错误形态一致。
+
+客户端配置示例（`.mcp.json` 片段）：
 
 ```json
 { "mcpServers": {

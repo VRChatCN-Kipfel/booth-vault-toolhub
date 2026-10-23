@@ -536,11 +536,15 @@ pub struct CanonInfo {
 
 /// 按文件名候选解析出「最可能是它」的商品（**三端唯一实现**）。
 ///
-/// 两轮**严格分离**：
-///   1. 第一轮：原候选，按 `sanitize_query` 给出的优先级逐个试；
-///   2. 第二轮：仅当第一轮**全部落空**时，才试 `kana` 读音变体。
+/// 三轮**严格分离**，原候选永远优先：
+///   1. 原候选，按 `sanitize_query` 给出的优先级逐个试；
+///   2. 同义词（中文泛称 → 日文行业词），仅当第一轮全部落空；
+///   3. kana 读音变体（日文汉字 → 假名），仅当前两轮全部落空。
 ///
-/// 历史缺陷：两轮被压成一次 `chain`，于是「变体轮是否运行」取决于第一个候选
+/// 后两轮都用**猜出来的词**，猜错代价是错归档，所以判据与前一轮同样严格：
+/// 名称真的命中且不歧义。
+///
+/// 历史缺陷：轮次曾被压成一次 `chain`，于是「变体轮是否运行」取决于第一个候选
 /// 是否返回了非空结果，而那个判据又与「名称是否真的命中」无关——触发与否
 /// 实际由标题长度决定（`scored[0].0 <= 0` 因次序分恒 >0 而近乎不可达）。
 ///
@@ -553,14 +557,19 @@ pub fn resolve_by_name(
     candidates: &[String],
     resource_names: Option<&[String]>,
     max_variants: usize,
-    info: impl Fn(&str) -> CanonInfo,
+    max_synonyms: usize,
+    info: impl Fn(&str) -> Option<CanonInfo>,
     weight: crate::score::DescWeight,
 ) -> ResolveOutcome {
     let mut tried: Vec<String> = Vec::new();
     let mut hit: Option<NamedHit> = None;
+    // 已经排进计划的检索词（三轮共用）。跨轮重复会让同一个词发两次阻塞请求，
+    // 白花一次 0.5~0.8s 限速额度；`tried` 还用于 GUI 候选展示，重复项会显示成两条。
+    let mut planned: Vec<String> = Vec::new();
 
     // 第一轮：原候选。
     for q in candidates {
+        planned.push(q.clone());
         tried.push(q.clone());
         if let Some(h) = pick_once(client, q, resource_names, &info, weight) {
             hit = Some(h);
@@ -568,10 +577,37 @@ pub fn resolve_by_name(
         }
     }
 
-    // 第二轮：kana 读音变体。**只在第一轮全部落空后**进入。
+    // 第二轮：中文泛称 → 日文同义词。**惰性生成**：第一轮命中就不展开，
+    // 读音轮要调 lindera 词典，白算一遍是实打实的开销。
+    if hit.is_none() && max_synonyms > 0 {
+        let words = dedup_rounds(
+            &[crate::synonyms::with_synonyms(
+                candidates.to_vec(),
+                max_synonyms,
+            )],
+            &planned,
+        );
+        for q in words {
+            planned.push(q.clone());
+            tried.push(q.clone());
+            if let Some(h) = pick_once(client, &q, resource_names, &info, weight) {
+                hit = Some(h);
+                break;
+            }
+        }
+    }
+
+    // 第三轮：kana 读音变体。
     if hit.is_none() && max_variants > 0 {
-        let variants = crate::clean::with_kana_variants(candidates.to_vec(), max_variants);
-        for q in variants.into_iter().filter(|c| !candidates.contains(c)) {
+        let words = dedup_rounds(
+            &[crate::clean::with_kana_variants(
+                candidates.to_vec(),
+                max_variants,
+            )],
+            &planned,
+        );
+        for q in words {
+            planned.push(q.clone());
             tried.push(q.clone());
             if let Some(h) = pick_once(client, &q, resource_names, &info, weight) {
                 hit = Some(h);
@@ -583,12 +619,32 @@ pub fn resolve_by_name(
     ResolveOutcome { hit, tried }
 }
 
+/// 三轮候选去重：按给出的顺序拼接，**跳过任何已在前面出现过的词**。
+///
+/// 抽成纯函数是为了能直接测：去重错会表现为「同一个词发两次阻塞请求」——多花
+/// 一次 0.5~0.8s 限速额度、浪费站点风控配额，且 GUI 候选列表会出现重复项。
+/// 这类退化不会让任何断言失败，只能靠直接断言顺序与唯一性来钉住。
+fn dedup_rounds(rounds: &[Vec<String>], seeds: &[String]) -> Vec<String> {
+    let mut seen: Vec<String> = seeds.to_vec();
+    let mut out: Vec<String> = Vec::new();
+    for round in rounds {
+        for q in round {
+            if seen.iter().any(|s| s == q) {
+                continue;
+            }
+            seen.push(q.clone());
+            out.push(q.clone());
+        }
+    }
+    out
+}
+
 /// 对单个检索词执行「搜索 → 评分 → 名称命中校验」。
 fn pick_once(
     client: &Client,
     q: &str,
     resource_names: Option<&[String]>,
-    info: &impl Fn(&str) -> CanonInfo,
+    info: &impl Fn(&str) -> Option<CanonInfo>,
     weight: crate::score::DescWeight,
 ) -> Option<NamedHit> {
     let results = search_booth(client, q).ok()?;
@@ -604,7 +660,7 @@ fn pick_from_results(
     q: &str,
     results: &[SearchItem],
     resource_names: Option<&[String]>,
-    info: &impl Fn(&str) -> CanonInfo,
+    info: &impl Fn(&str) -> Option<CanonInfo>,
     weight: crate::score::DescWeight,
 ) -> Option<NamedHit> {
     let items: Vec<crate::score::Item> = results
@@ -618,9 +674,12 @@ fn pick_from_results(
     // 本轮的规范名/说明文缓存：`info` 可能是非缓存闭包（三端各自注入），
     // 而开启 desc 时同一 id 会先取说明文、再被评分取规范名——不在这里收拢，
     // 一次选优就会对每个候选抓两遍。
-    let memo: std::cell::RefCell<std::collections::HashMap<String, CanonInfo>> =
+    //
+    // 缓存的是 `Option`：取不到（网络/解析失败）也要记住，否则同一个失败 id
+    // 会被反复重试；而「取不到」必须与「取到空串」区分开（后者会污染同名判定）。
+    let memo: std::cell::RefCell<std::collections::HashMap<String, Option<CanonInfo>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
-    let cached = |id: &str| -> CanonInfo {
+    let cached = |id: &str| -> Option<CanonInfo> {
         if let Some(hit) = memo.borrow().get(id) {
             return hit.clone();
         }
@@ -628,11 +687,14 @@ fn pick_from_results(
         memo.borrow_mut().insert(id.to_string(), v.clone());
         v
     };
-    let canonical = |id: &str| cached(id).name;
+    let canonical = |id: &str| cached(id).map(|ci| ci.name);
     let (picked, ambiguous) = if weight.is_on() {
         let descs: Vec<crate::score::DescriptionText> = items
             .iter()
-            .map(|it| crate::score::DescriptionText::new(it.id.clone(), cached(&it.id).description))
+            .map(|it| {
+                let d = cached(&it.id).map(|ci| ci.description).unwrap_or_default();
+                crate::score::DescriptionText::new(it.id.clone(), d)
+            })
             .collect();
         crate::score::score_and_pick_with_desc(
             q,
@@ -650,17 +712,16 @@ fn pick_from_results(
     if ambiguous {
         return None;
     }
-    let cn = cached(&p.id).name;
+    // 规范名取不到时退化为空串，**仅用于这里的名称命中比对**——它不参与评分与
+    // 同名判定，不会造成 `"" == ""` 那类假歧义。
+    let cn = cached(&p.id).map(|ci| ci.name).unwrap_or_default();
     // 名称命中用大小写不敏感的原串包含：`norm` 只留 ASCII，日文会被滤成空串。
-    let name_ok = {
-        let ql = q.trim().to_lowercase();
-        !ql.is_empty() && (p.name.to_lowercase().contains(&ql) || cn.to_lowercase().contains(&ql))
-    };
+    // 判据集中在 `synonyms::name_hit`（三端唯一的「搜出即命中」防线）。
+    let name_ok = crate::synonyms::name_hit(q, &p.name, &cn);
     // 资源名兜底：标题不命中但资源名命中时，`score_and_pick` 已据 resource_names 放行。
-    let resource_ok = resource_names.is_some_and(|rs| {
-        let ql = q.trim().to_lowercase();
-        !ql.is_empty() && rs.iter().any(|r| r.to_lowercase().contains(&ql))
-    });
+    // 不能只按标题判而否掉它，否则兜底白做。
+    let resource_ok =
+        resource_names.is_some_and(|rs| rs.iter().any(|r| crate::synonyms::name_hit(q, r, "")));
     if !name_ok && !resource_ok {
         return None;
     }
@@ -958,16 +1019,18 @@ mod tests {
             si("1111111", "Star Tiara", 0),
             si("2222222", "Star Tiara Gold", 0),
         ];
-        let info = |id: &str| match id {
-            // 规范名不含查询词 → 无规范名命中；说明文命中两个词 → +100。
-            "1111111" => CanonInfo {
-                name: "Other Item".to_string(),
-                description: "star tiara".to_string(),
-            },
-            _ => CanonInfo {
-                name: "Star Tiara Gold".to_string(),
-                description: String::new(),
-            },
+        let info = |id: &str| -> Option<CanonInfo> {
+            Some(match id {
+                // 规范名不含查询词 → 无规范名命中；说明文命中两个词 → +100。
+                "1111111" => CanonInfo {
+                    name: "Other Item".to_string(),
+                    description: "star tiara".to_string(),
+                },
+                _ => CanonInfo {
+                    name: "Star Tiara Gold".to_string(),
+                    description: String::new(),
+                },
+            })
         };
         let q = "star tiara";
 
@@ -994,9 +1057,9 @@ mod tests {
             si("3333333", "StarTiara Deluxe", 0),
         ];
         let calls = Cell::new(0usize);
-        let info = |id: &str| {
+        let info = |id: &str| -> Option<CanonInfo> {
             calls.set(calls.get() + 1);
-            CanonInfo {
+            Some(CanonInfo {
                 name: match id {
                     "1111111" => "StarTiara Base",
                     "2222222" => "StarTiara Variant",
@@ -1004,7 +1067,7 @@ mod tests {
                 }
                 .to_string(),
                 description: "StarTiara 対応".to_string(),
-            }
+            })
         };
         let w = crate::score::DescWeight::new(50, 2).expect("50×2 在上限内");
         let _ = pick_from_results("StarTiara", &results, None, &info, w);
@@ -1023,13 +1086,15 @@ mod tests {
             si("1111111", "Star Tiara", 0),
             si("2222222", "Star Tiara Gold", 0),
         ];
-        let info = |id: &str| CanonInfo {
-            name: match id {
-                "1111111" => "Other Item",
-                _ => "Star Tiara Gold",
-            }
-            .to_string(),
-            description: "star tiara".to_string(),
+        let info = |id: &str| -> Option<CanonInfo> {
+            Some(CanonInfo {
+                name: match id {
+                    "1111111" => "Other Item",
+                    _ => "Star Tiara Gold",
+                }
+                .to_string(),
+                description: "star tiara".to_string(),
+            })
         };
         let q = "star tiara";
         let items: Vec<crate::score::Item> = results
@@ -1040,7 +1105,8 @@ mod tests {
                 price: r.price,
             })
             .collect();
-        let plain = crate::score::score_and_pick(q, &items, false, |id| info(id).name, None);
+        let plain =
+            crate::score::score_and_pick(q, &items, false, |id| info(id).map(|ci| ci.name), None);
         assert!(!plain.1, "本用例的基线不应歧义，否则测试前提不成立");
 
         let got = pick_from_results(q, &results, None, &info, crate::score::DescWeight::OFF);
@@ -1049,5 +1115,30 @@ mod tests {
             plain.0.map(|i| i.id.clone()),
             "关闭时不得改变任何选优结果"
         );
+    }
+
+    /// 跨轮重复必须被去掉：同一个词发两次就是多一次阻塞请求
+    /// （0.5~0.8s 限速额度 + 一次风控配额），且 GUI 候选列表会出现重复行。
+    #[test]
+    fn dedup_drops_cross_round_duplicates() {
+        let seeds = vec!["衣装".to_string()];
+        let round2 = vec!["服".to_string(), "衣装".to_string(), "服".to_string()];
+        let round3 = vec!["服".to_string(), "いしょう".to_string(), "衣装".to_string()];
+        let got = dedup_rounds(&[round2, round3], &seeds);
+        assert_eq!(got, vec!["服", "いしょう"], "应去掉跨轮重复且保序");
+    }
+
+    /// 顺序必须稳定：原候选 → 同义词 → 读音，三轮按参数顺序拼接。
+    #[test]
+    fn dedup_preserves_round_order() {
+        let a = vec!["A".to_string()];
+        let b = vec!["B".to_string()];
+        let c = vec!["C".to_string()];
+        assert_eq!(
+            dedup_rounds(&[a.clone(), b.clone(), c.clone()], &[]),
+            vec!["A", "B", "C"]
+        );
+        // seeds 里的词不得再出现。
+        assert_eq!(dedup_rounds(&[a.clone(), b], &a), vec!["B"]);
     }
 }

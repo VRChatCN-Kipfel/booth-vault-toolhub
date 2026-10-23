@@ -115,7 +115,24 @@ pub fn run(cli: Cli) -> u8 {
         Command::Preview { archive, limit } => cmd_preview(&archive, limit, cli.json),
         Command::CookieCheck { cookie } => cmd_cookie_check(&config, cookie.as_deref(), cli.json),
         Command::Cache { command } => cmd_cache(command, cli.json),
+        Command::Inspect {
+            id,
+            term,
+            excerpt_chars,
+            cookie,
+        } => cmd_inspect(
+            &config,
+            &id,
+            &term,
+            excerpt_chars,
+            cookie.as_deref(),
+            cli.json,
+        ),
         Command::Shell { command } => cmd_shell(command),
+        Command::Watch(a) => {
+            cmd_collections(&config, engine::collections::Kind::Watch, &a, cli.json)
+        }
+        Command::Own(a) => cmd_collections(&config, engine::collections::Kind::Own, &a, cli.json),
         Command::UpdateCheck { proxy } => cmd_update_check(proxy, cli.json),
     }
 }
@@ -123,6 +140,66 @@ pub fn run(cli: Cli) -> u8 {
 /// 解析配置里的下载根目录；未配置时返回 None（调用方用默认值）。
 fn download_root<'a>(config: &'a AppConfig, arg: Option<&'a Path>) -> Option<&'a Path> {
     arg.or_else(|| config.download_root.as_deref().map(Path::new))
+}
+
+/// 商品资料可核验视图。
+///
+/// 存在的理由：`description` 是不可信外部数据，直接交给 agent 等于让它拿一段无从
+/// 核验的文本当依据。本命令把正文与来源指纹、连续原文摘录一起给出，使上层能判断
+/// 「这段资料有没有被改过」「引用的是不是原文里的连续片段」。
+fn cmd_inspect(
+    config: &AppConfig,
+    id: &str,
+    terms: &[String],
+    excerpt_chars: usize,
+    cookie: Option<&str>,
+    json: bool,
+) -> u8 {
+    let cookie = resolve_cookie(cookie, config);
+    let client = make_session(
+        config,
+        engine::config::resolve_cookie(cookie.as_deref(), config).as_deref(),
+    );
+    let item = match engine::fetch::fetch_item(&client, id) {
+        Ok(i) => i,
+        Err(e) => return fail(json, &format!("获取商品 {id} 失败: {e}")),
+    };
+    let out = engine::evidence::inspect_item(&item, terms, excerpt_chars);
+    if json {
+        match serde_json::to_string_pretty(&out) {
+            Ok(s) => println!("{s}"),
+            Err(e) => return fail(true, &format!("序列化失败: {e}")),
+        }
+    } else {
+        println!("[{}] {}", out.id, out.name);
+        println!("  店铺: {}", out.shop);
+        println!(
+            "  分类: {}",
+            if out.category.is_empty() {
+                "-"
+            } else {
+                &out.category
+            }
+        );
+        println!("  价格: {}", out.price_text);
+        if !out.tags.is_empty() {
+            println!("  标签: {}", out.tags.join(", "));
+        }
+        println!("  指纹: {}", out.source_hash);
+        println!(
+            "  摘录{}: {}",
+            if out.excerpt_hit {
+                "（命中检索词）"
+            } else {
+                "（首部，非检索命中）"
+            },
+            out.excerpt.replace('\n', " ")
+        );
+        if out.excerpt_truncated {
+            println!("  （原文更长，已截断到 {excerpt_chars} 字符；完整正文见 --json）");
+        }
+    }
+    0
 }
 
 /// 缓存运维命令：`stats` / `clear`。
@@ -196,6 +273,307 @@ fn cmd_cache(command: crate::CacheCmd, json: bool) -> u8 {
             0
         }
     }
+}
+
+/// 关注/已购清单命令（`watch` 与 `own` 共用实现，仅展示文案不同）。
+///
+/// `check` 会逐项拉详情比对快照：
+///   - 出站计入共享限速（`rate_limit_secs`），与下载链路同一把尺子；
+///   - 单轮受 `limit` 约束（默认 30），避免一次跑几十分钟；
+///   - 只读不写盘，除非确有变动才回写快照（减少无谓 IO 与并发写窗口）。
+fn cmd_collections(
+    config: &AppConfig,
+    kind: engine::collections::Kind,
+    args: &crate::CollectionsArgs,
+    json: bool,
+) -> u8 {
+    use engine::collections::Kind;
+    let Some(path) = engine::collections::lists_path() else {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "command": kind.as_str(), "ok": false,
+                    "error": "无法确定清单路径（用户配置目录不可用）",
+                }))
+                .unwrap()
+            );
+        } else {
+            eprintln!("无法确定清单路径（用户配置目录不可用）");
+        }
+        return 2;
+    };
+    // 清单读取失败必须在**任何网络请求与写盘之前**中止：历史实现把损坏文件
+    // 降级成空清单，随后 add 无条件覆盖，用户列表就此永久丢失。
+    let mut lists = match engine::collections::load(&path) {
+        Ok(l) => l,
+        Err(e) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "command": kind.as_str(), "ok": false, "error": e.to_string(),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                eprintln!("{e}");
+            }
+            return 2;
+        }
+    };
+    let op = args.op.as_str();
+
+    // add / remove 不需要联网，先处理掉。
+    if op == "add" {
+        if args.ids.is_empty() {
+            return fail(json, "add 需要至少一个商品 ID 或链接");
+        }
+        let client = make_session(config, None);
+        // 先解析出合法 ID（无法解析的单独记失败），再交给 engine 的带限速批量接口。
+        let mut failed: Vec<String> = Vec::new();
+        let mut ids: Vec<String> = Vec::new();
+        for raw in &args.ids {
+            match normalize_item_id(raw) {
+                Some(id) => ids.push(id),
+                None => failed.push(format!("{raw}: 无法解析出商品 ID")),
+            }
+        }
+        let rate = config
+            .rate_limit_secs
+            .unwrap_or_else(engine::config::default_rate_limit_secs);
+        // 限速下沉到 engine（三端共享），CLI 不再自建循环 —— 历史缺陷是 add
+        // 这条路径完全没有 sleep，check 有，两者不一致。
+        let (added, fetch_failures) = engine::collections::add_paced(
+            kind,
+            &mut lists,
+            &ids,
+            || engine::download::sleep_rate_limit(rate),
+            |id| engine::fetch::fetch_item(&client, id).map_err(|e| e.to_string()),
+        );
+        failed.extend(fetch_failures);
+        // 写盘失败必须上抛：历史实现返回 ()、错误被吞，add 打印 added、退出 0，
+        // 而磁盘上什么都没有。
+        if let Err(e) = engine::collections::save(&path, &lists) {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "command": kind.as_str(), "op": "add", "ok": false,
+                        "error": format!("清单写入失败: {e}"),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                eprintln!("清单写入失败: {e}");
+            }
+            return 2;
+        }
+        return report(
+            json,
+            kind.as_str(),
+            "add",
+            serde_json::json!({ "added": added, "failed": failed, "count": lists.len(kind) }),
+        );
+    }
+
+    if op == "remove" {
+        if args.ids.is_empty() {
+            return fail(json, "remove 需要至少一个商品 ID 或链接");
+        }
+        let mut removed: Vec<String> = Vec::new();
+        for raw in &args.ids {
+            if let Some(id) = normalize_item_id(raw)
+                && lists.remove(kind, &id)
+            {
+                removed.push(id);
+            }
+        }
+        if let Err(e) = engine::collections::save(&path, &lists) {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "command": kind.as_str(), "op": "remove", "ok": false,
+                        "error": format!("清单写入失败: {e}"),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                eprintln!("清单写入失败: {e}");
+            }
+            return 2;
+        }
+        return report(
+            json,
+            kind.as_str(),
+            "remove",
+            serde_json::json!({ "removed": removed, "count": lists.len(kind) }),
+        );
+    }
+
+    if op == "list" {
+        let entries: Vec<_> = lists
+            .of(kind)
+            .values()
+            .map(|s| {
+                serde_json::json!({
+                    "id": s.id, "name": s.name, "price": s.price,
+                    "is_sold_out": s.is_sold_out, "checked_at": s.checked_at,
+                })
+            })
+            .collect();
+        let summary = serde_json::json!({ "count": entries.len(), "items": entries });
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "command": kind.as_str(), "op": "list", "ok": true, "data": summary,
+                }))
+                .unwrap()
+            );
+        } else if entries.is_empty() {
+            println!("清单为空");
+        } else {
+            for s in lists.of(kind).values() {
+                // 未知（None）不打售罄标，也不臆测成"有货"。
+                let mark = match s.is_sold_out {
+                    Some(true) => " [售罄]",
+                    Some(false) => "",
+                    None => "",
+                };
+                println!("  [{}] {}  ¥{}{mark}", s.id, s.name, s.price);
+            }
+        }
+        return 0;
+    }
+
+    if op == "check" {
+        // 轮换而非字典序截断：历史实现 `keys().take(limit)` 让第 N+1 条永远轮不到，
+        // 且 `limit=0` 取 0 条却退出 0（同仓 download/preview 的 0 都表示不限）。
+        let ids: Vec<String> = engine::collections::pick_batch(&lists, kind, args.limit);
+        if ids.is_empty() {
+            return report(
+                json,
+                kind.as_str(),
+                "check",
+                serde_json::json!({ "checked": 0, "changed": [] }),
+            );
+        }
+        let client = make_session(config, None);
+        let rate = config
+            .rate_limit_secs
+            .unwrap_or_else(engine::config::default_rate_limit_secs);
+        let mut changed: Vec<serde_json::Value> = Vec::new();
+        let mut checked = 0usize;
+        // 是否需要写盘：快照变化或 checked_at 推进，任一发生就要落盘。
+        let mut dirty = false;
+        let mut failures: Vec<String> = Vec::new();
+        for (i, id) in ids.iter().enumerate() {
+            if i > 0 {
+                // 与下载链路同一把限速尺子：BOOTH 风控按请求数计。
+                engine::download::sleep_rate_limit(rate);
+            }
+            let Some(old) = lists.get(kind, id).cloned() else {
+                continue;
+            };
+            match engine::fetch::fetch_item(&client, id) {
+                Ok(item) => {
+                    checked += 1;
+                    let mut fresh = engine::collections::snapshot_from(&item, id);
+                    fresh.added_at = old.added_at;
+                    let changes = engine::collections::diff(&old, &fresh);
+                    if !changes.is_empty() {
+                        changed.push(serde_json::json!({
+                            "id": id,
+                            "name": fresh.name,
+                            "changes": changes.iter().map(|c| c.describe()).collect::<Vec<_>>(),
+                        }));
+                        lists.put(kind, fresh);
+                    }
+                    // **无论有无变动都要推进 `checked_at`**：轮换靠它排序。
+                    // 只推进「有变动」的条目会让其余条目永远停在 0，平局退化成
+                    // id 字典序，第 N+1 条起永远轮不到——正是 pick_batch 要修的 bug。
+                    // 这一写与上面的快照更新是两回事：前者是进度，后者是数据变化。
+                    engine::collections::mark_checked(
+                        &mut lists,
+                        kind,
+                        id,
+                        engine::collections::now_secs(),
+                    );
+                    dirty = true;
+                }
+                Err(e) => failures.push(format!("{id}: {e}")),
+            }
+        }
+        if dirty && let Err(e) = engine::collections::save(&path, &lists) {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "command": kind.as_str(), "op": "check", "ok": false,
+                        "error": format!("清单写入失败: {e}"),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                eprintln!("清单写入失败: {e}");
+            }
+            return 2;
+        }
+        return report(
+            json,
+            kind.as_str(),
+            "check",
+            serde_json::json!({
+                "checked": checked, "changed": changed, "failures": failures,
+            }),
+        );
+    }
+
+    let _ = Kind::Watch;
+    fail(
+        json,
+        &format!("未知操作 {op}（支持 add / remove / list / check）"),
+    )
+}
+
+/// 统一输出与退出码：有失败项返回 1，否则 0。
+fn report(json: bool, command: &str, op: &str, data: serde_json::Value) -> u8 {
+    let has_failure = data
+        .get("failures")
+        .and_then(|v| v.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false)
+        || data
+            .get("failed")
+            .and_then(|v| v.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "command": command, "op": op, "ok": !has_failure, "data": data,
+            }))
+            .unwrap()
+        );
+    } else {
+        println!("{op} 完成: {data}");
+    }
+    if has_failure { 1 } else { 0 }
+}
+
+/// 从裸 ID / 商品链接里取出 7 位商品 ID。
+fn normalize_item_id(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) && s.len() >= 5 {
+        return Some(s.to_string());
+    }
+    // 链接形态：.../items/1234567 或 .../items/1234567?x=y
+    let after = s.split("/items/").nth(1)?;
+    let id: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    (!id.is_empty()).then_some(id)
 }
 
 /// download 命令（下载免费商品）。
@@ -631,6 +1009,7 @@ fn process_search_file(
             &candidates,
             names.as_deref(),
             engine::kana::MAX_VARIANTS,
+            engine::synonyms::MAX_SYNONYMS,
             |id| canonical_info(client, id),
             desc,
         );
@@ -655,14 +1034,21 @@ fn process_search_file(
     Ok(Some(item.id))
 }
 
-/// 规范名解析（score_and_pick 依赖注入）。
-fn canonical_info(client: &reqwest::blocking::Client, id: &str) -> engine::search::CanonInfo {
+/// 规范名与说明文（评分依赖注入）。
+///
+/// 返回 `Option`：**取不到就返回 None，不再 `unwrap_or_default()` 压成空串**。
+/// 压成空串会让「规范名命中 +100」静默失效，并让同名判定退化成 `"" == ""`
+/// ——两个不同商品会被判成同名而报假歧义。
+fn canonical_info(
+    client: &reqwest::blocking::Client,
+    id: &str,
+) -> Option<engine::search::CanonInfo> {
     engine::fetch::fetch_item(client, id)
         .map(|i| engine::search::CanonInfo {
             name: i.name,
             description: i.description,
         })
-        .unwrap_or_default()
+        .ok()
 }
 
 /// audit 命令（全库巡检）。

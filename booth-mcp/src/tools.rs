@@ -207,7 +207,38 @@ struct VersionAuditResult {
     failures: Vec<String>,
 }
 
+// ── collections（watch / own）─────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+struct CollectionsParams {
+    /// 清单类型：watch（关注，等降价/补货）或 own（已购，等作者更新）。
+    kind: String,
+    /// 操作：add / remove / list / check。
+    op: String,
+    /// 商品 ID 或链接（add / remove 必填）。
+    #[serde(default)]
+    ids: Vec<String>,
+    /// 单次 check 最多检查多少项（默认 30）。
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
 // ── library ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+struct InspectParams {
+    /// 7 位 BOOTH 商品 ID。
+    id: String,
+    /// 摘录围绕的检索词，可多个；不给则取正文首部（此时 excerpt_hit=false）。
+    #[serde(default)]
+    term: Vec<String>,
+    /// 摘录最多多少字符（缺省 200）。
+    #[serde(default)]
+    excerpt_chars: Option<usize>,
+    /// BOOTH 登录 Cookie（缺省读配置）。
+    #[serde(default)]
+    cookie: Option<String>,
+}
 
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 struct LibraryParams {
@@ -740,14 +771,191 @@ impl BoothServer {
         CallToolResult::success(vec![ContentBlock::text(text)])
     }
 
+    /// 关注/已购清单：add / remove / list / check。
+    #[tool(
+        description = "关注（watch，等降价/补货）与已购（own，等作者更新）清单：op=add/remove/list/check。check 逐项拉详情比对快照，出站遵守共享限速，单轮受 limit（默认 30）约束。个人数据只存本机。"
+    )]
+    async fn collections(
+        &self,
+        Parameters(params): Parameters<CollectionsParams>,
+    ) -> CallToolResult {
+        let config = load_config();
+        let kind = match engine::collections::Kind::parse(&params.kind) {
+            Some(k) => k,
+            None => {
+                return tool_error(&format!("未知 kind：{}（支持 watch / own）", params.kind));
+            }
+        };
+        let Some(path) = engine::collections::lists_path() else {
+            return tool_error("无法确定清单路径（用户配置目录不可用）");
+        };
+        // 读取失败必须在任何写盘前中止：否则损坏清单会被空清单覆盖，用户数据永久丢失。
+        let mut lists = match engine::collections::load(&path) {
+            Ok(l) => l,
+            Err(e) => return tool_error(&e.to_string()),
+        };
+        let op = params.op.as_str();
+
+        match op {
+            "add" => {
+                if params.ids.is_empty() {
+                    return tool_error("add 需要至少一个商品 ID 或链接");
+                }
+                let client = make_session(&config, None);
+                // 与 CLI 同一实现：限速下沉到 engine，两端不再各写一套循环。
+                let mut failed: Vec<String> = Vec::new();
+                let mut ids: Vec<String> = Vec::new();
+                for raw in &params.ids {
+                    match normalize_item_id(raw) {
+                        Some(id) => ids.push(id),
+                        None => failed.push(format!("{raw}: 无法解析出商品 ID")),
+                    }
+                }
+                let rate = config
+                    .rate_limit_secs
+                    .unwrap_or_else(engine::config::default_rate_limit_secs);
+                let (added, fetch_failures) = engine::collections::add_paced(
+                    kind,
+                    &mut lists,
+                    &ids,
+                    || engine::download::sleep_rate_limit(rate),
+                    |id| engine::fetch::fetch_item(&client, id).map_err(|e| e.to_string()),
+                );
+                failed.extend(fetch_failures);
+                if let Err(e) = engine::collections::save(&path, &lists) {
+                    return tool_error(&format!("清单写入失败: {e}"));
+                }
+                let out = serde_json::json!({
+                    "command": kind.as_str(), "op": "add",
+                    "added": added, "failed": failed, "count": lists.len(kind),
+                });
+                CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::to_string_pretty(&out).unwrap_or_default(),
+                )])
+            }
+            "remove" => {
+                if params.ids.is_empty() {
+                    return tool_error("remove 需要至少一个商品 ID 或链接");
+                }
+                let mut removed: Vec<String> = Vec::new();
+                for raw in &params.ids {
+                    if let Some(id) = normalize_item_id(raw)
+                        && lists.remove(kind, &id)
+                    {
+                        removed.push(id);
+                    }
+                }
+                if let Err(e) = engine::collections::save(&path, &lists) {
+                    return tool_error(&format!("清单写入失败: {e}"));
+                }
+                let out = serde_json::json!({
+                    "command": kind.as_str(), "op": "remove",
+                    "removed": removed, "count": lists.len(kind),
+                });
+                CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::to_string_pretty(&out).unwrap_or_default(),
+                )])
+            }
+            "list" => {
+                let items: Vec<_> = lists
+                    .of(kind)
+                    .values()
+                    .map(|s| {
+                        serde_json::json!({
+                            "id": s.id, "name": s.name, "price": s.price,
+                            "is_sold_out": s.is_sold_out, "checked_at": s.checked_at,
+                        })
+                    })
+                    .collect();
+                let out = serde_json::json!({
+                    "command": kind.as_str(), "op": "list",
+                    "count": items.len(), "items": items,
+                });
+                CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::to_string_pretty(&out).unwrap_or_default(),
+                )])
+            }
+            "check" => {
+                let limit = params.limit.unwrap_or(30);
+                // 与 CLI 同一实现：按 checked_at 轮换，0=全部。
+                let ids: Vec<String> = engine::collections::pick_batch(&lists, kind, limit);
+                if ids.is_empty() {
+                    let out = serde_json::json!({
+                        "command": kind.as_str(), "op": "check",
+                        "checked": 0, "changed": [],
+                    });
+                    return CallToolResult::success(vec![ContentBlock::text(
+                        serde_json::to_string_pretty(&out).unwrap_or_default(),
+                    )]);
+                }
+                let client = make_session(&config, None);
+                let rate = config
+                    .rate_limit_secs
+                    .unwrap_or_else(engine::config::default_rate_limit_secs);
+                let mut changed: Vec<serde_json::Value> = Vec::new();
+                let mut checked = 0usize;
+                // 是否需要写盘：快照变化或 checked_at 推进，任一发生就要落盘。
+                let mut dirty = false;
+                let mut failures: Vec<String> = Vec::new();
+                for (i, id) in ids.iter().enumerate() {
+                    if i > 0 {
+                        engine::download::sleep_rate_limit(rate);
+                    }
+                    let Some(old) = lists.get(kind, id).cloned() else {
+                        continue;
+                    };
+                    match engine::fetch::fetch_item(&client, id) {
+                        Ok(item) => {
+                            checked += 1;
+                            let mut fresh = engine::collections::snapshot_from(&item, id);
+                            fresh.added_at = old.added_at;
+                            let changes = engine::collections::diff(&old, &fresh);
+                            if !changes.is_empty() {
+                                changed.push(serde_json::json!({
+                                    "id": id, "name": fresh.name,
+                                    "changes": changes.iter().map(|c| c.describe()).collect::<Vec<_>>(),
+                                }));
+                                lists.put(kind, fresh);
+                            }
+                            // **无论有无变动都要推进 `checked_at`**：轮换靠它排序。
+                            // 只推进有变动的条目会让其余条目永远停在 0，平局退化成
+                            // id 字典序，第 N+1 条起永远轮不到。与 CLI 同一契约。
+                            engine::collections::mark_checked(
+                                &mut lists,
+                                kind,
+                                id,
+                                engine::collections::now_secs(),
+                            );
+                            dirty = true;
+                        }
+                        Err(e) => failures.push(format!("{id}: {e}")),
+                    }
+                }
+                if dirty && let Err(e) = engine::collections::save(&path, &lists) {
+                    return tool_error(&format!("清单写入失败: {e}"));
+                }
+                let out = serde_json::json!({
+                    "command": kind.as_str(), "op": "check",
+                    "checked": checked, "changed": changed, "failures": failures,
+                });
+                CallToolResult::success(vec![ContentBlock::text(
+                    serde_json::to_string_pretty(&out).unwrap_or_default(),
+                )])
+            }
+            other => tool_error(&format!(
+                "未知操作 {other}（支持 add / remove / list / check）"
+            )),
+        }
+    }
+
     /// 预览压缩包内条目（只读，不联网）。
     #[tool(
         description = "预览本地 zip / unitypackage 的条目清单（名称 / 大小 / 压缩后大小 / 压缩方法），只读不联网。用于确认包内容与商品是否对应，或核对归档文件是否完整。"
     )]
     async fn preview(&self, Parameters(params): Parameters<PreviewParams>) -> CallToolResult {
-        let limit = params.limit.unwrap_or(200);
         let mut archives = Vec::new();
         let mut failures = Vec::new();
+        let limit = params.limit.unwrap_or(200);
         for p in &params.archive {
             match engine::integrity::preview_archive(std::path::Path::new(p), limit) {
                 Ok(pv) => archives.push(ArchivePreviewRow {
@@ -818,6 +1026,32 @@ impl BoothServer {
         let text = serde_json::to_string_pretty(&check.to_command_json()).unwrap_or_default();
         CallToolResult::success(vec![ContentBlock::text(text)])
     }
+
+    /// 商品资料的可核验视图（来源指纹 + 连续原文摘录）。
+    #[tool(
+        description = "查看 BOOTH 商品资料的可核验视图：name / category / tags / description 全文，外加 source_hash（规范化字段的 SHA-256，用于检测内容漂移）与 excerpt（围绕给定词的**连续**原文片段，附 excerpt_hit / excerpt_truncated）。description 是不可信外部数据——引用它之前先用这两项核验：同一 id 重复取到应得同一 source_hash，excerpt 是原文连续子串（可用 is_contiguous_quote 复查）。term 不给则取正文首部，此时 excerpt_hit=false，表示这不是围绕需求的证据。"
+    )]
+    async fn inspect(&self, Parameters(params): Parameters<InspectParams>) -> CallToolResult {
+        let config = load_config();
+        let client = make_session(
+            &config,
+            engine::config::resolve_cookie(params.cookie.as_deref(), &config).as_deref(),
+        );
+        let item = match engine::fetch::fetch_item(&client, &params.id) {
+            Ok(i) => i,
+            Err(e) => return tool_error(&format!("获取商品 {} 失败: {e}", params.id)),
+        };
+        let out = engine::evidence::inspect_item(
+            &item,
+            &params.term,
+            params
+                .excerpt_chars
+                .unwrap_or(engine::evidence::DEFAULT_EXCERPT_CHARS),
+        );
+        // 信封由 engine 单点定义（`InspectOutput`），CLI 与 MCP 共用，避免字段漂移。
+        let text = serde_json::to_string_pretty(&out).unwrap_or_default();
+        CallToolResult::success(vec![ContentBlock::text(text)])
+    }
 }
 
 // ── 内部辅助 ─────────────────────────────────────────────────────
@@ -825,6 +1059,17 @@ impl BoothServer {
 /// 工具级错误（调用方可见）。
 fn tool_error(msg: &str) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(msg.to_string())])
+}
+
+/// 从裸 ID / 商品链接里取出商品 ID（与 CLI 端同构，避免两端判据漂移）。
+fn normalize_item_id(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) && s.len() >= 5 {
+        return Some(s.to_string());
+    }
+    let after = s.split("/items/").nth(1)?;
+    let id: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    (!id.is_empty()).then_some(id)
 }
 
 /// 单个商品下载处理（复用 CLI 逻辑）。
@@ -906,6 +1151,7 @@ fn process_search_file(
             &candidates,
             names.as_deref(),
             engine::kana::MAX_VARIANTS,
+            engine::synonyms::MAX_SYNONYMS,
             |id| canonical_info(client, id),
             desc,
         );
@@ -928,14 +1174,20 @@ fn process_search_file(
     Ok(Some(item.id))
 }
 
-/// 规范名解析（score_and_pick 依赖注入）。
-fn canonical_info(client: &reqwest::blocking::Client, id: &str) -> engine::search::CanonInfo {
+/// 规范名与说明文（评分依赖注入）。
+///
+/// 与 CLI 端同构：取不到返回 `None`，不把失败压成空串——空串会让「规范名命中
+/// +100」静默失效，并让同名判定退化成 `"" == ""`（不同商品被判成同名）。
+fn canonical_info(
+    client: &reqwest::blocking::Client,
+    id: &str,
+) -> Option<engine::search::CanonInfo> {
     engine::fetch::fetch_item(client, id)
         .map(|i| engine::search::CanonInfo {
             name: i.name,
             description: i.description,
         })
-        .unwrap_or_default()
+        .ok()
 }
 
 /// 图标注入：Windows 用 shell_win，其余平台 no-op。
@@ -989,5 +1241,39 @@ mod tests {
             text.contains("desc_max_words"),
             "MCP search 工具缺少 desc_max_words"
         );
+    }
+
+    /// `inspect` 工具的参数必须对外可见，且出参结构带指纹/摘录字段。
+    ///
+    /// 同 search 的理由：字段写成私有或漏 `#[serde(default)]` 时 agent 看不见，
+    /// 而 CLI 照常能跑——「三端一致」会在 MCP 上静默失效。
+    #[test]
+    fn inspect_schema_and_output_are_exposed() {
+        let p = schemars::schema_for!(InspectParams);
+        let pt = serde_json::to_string(&p).expect("schema 应可序列化");
+        // 防空转：确认 schema 确实列举了已有字段。
+        assert!(pt.contains("\"id\""), "schema 未列出字段名，测试失去区分力");
+        for f in ["term", "excerpt_chars", "cookie"] {
+            assert!(pt.contains(f), "inspect 参数缺少 {f}");
+        }
+        // 出参信封由 engine 定义，这里确认它确实携带核验信息。
+        let out = engine::evidence::InspectOutput {
+            command: "inspect".into(),
+            id: "1".into(),
+            name: "n".into(),
+            category: String::new(),
+            tags: vec![],
+            shop: String::new(),
+            price_text: "0".into(),
+            description: "d".into(),
+            source_hash: "h".into(),
+            excerpt: "e".into(),
+            excerpt_hit: true,
+            excerpt_truncated: false,
+        };
+        let ot = serde_json::to_string(&out).expect("出参应可序列化");
+        for f in ["source_hash", "excerpt", "excerpt_hit", "excerpt_truncated"] {
+            assert!(ot.contains(f), "InspectOutput 缺少 {f}");
+        }
     }
 }

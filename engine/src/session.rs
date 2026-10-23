@@ -140,14 +140,33 @@ fn build_client(config: &AppConfig, cookie: Option<&str>, follow: bool, probe: b
     {
         builder = builder.proxy(p);
     }
-    if let Some(c) = cookie.map(str::trim).filter(|s| !s.is_empty()) {
-        let jar = Arc::new(parse_cookie(c));
-        builder = builder.cookie_provider(jar);
-    }
+    // cookie **恒经 jar 挂载**：`parse_cookie` 内部保证至少带上年龄门 cookie。
+    // 不挂 jar 就无法携带 `adult=t`，R-18 详情会拿到年龄确认页；
+    // 而改用显式 `Cookie` 头则会让 reqwest 整段跳过 jar、丢掉用户会话。
+    let jar = Arc::new(parse_cookie(cookie.map(str::trim).unwrap_or("")));
+    builder = builder.cookie_provider(jar);
     builder.build().expect("reqwest client build")
 }
 
+/// 年龄门 cookie：BOOTH 对 R-18 商品会先弹年龄确认页。
+///
+/// 站点用 `adult=t` 表示「已确认成年」。不带它时，R-18 商品页会返回年龄确认页
+/// 而非商品内容，表现为「搜得到但详情抓不到」。
+///
+/// 注意：
+///   - 这**只**解除年龄门，不改变内容筛选——要不要看 R-18 由 `adult=` 查询参数
+///     决定（`include` / `exclude` / `only`），两者是不同层面的开关。
+///   - **必须通过 cookie jar 注入，绝不能用显式 `Cookie` 头**。reqwest 0.13.4
+///     `cookie.rs:242` 是 `if req.headers().get(COOKIE).is_none()`——只要请求上
+///     已有显式 Cookie 头，jar 就**整段跳过**，用户注入的会话 cookie
+///     （`_plaza_session_nktz7u`）会连同 `cf_clearance` 一起丢失，症状是
+///     「Cookie 填了却提示未登录」。这正是本文件历史上踩过的坑（见 PR #56）。
+pub const ADULT_COOKIE: &str = "adult=t";
+
 /// 默认请求头（含 BOOTH 认可的浏览器指纹 UA）。
+///
+/// **不含 Cookie**：cookie 一律经 jar 注入（见 [`parse_cookie`]），
+/// 显式 Cookie 头会让 reqwest 跳过 jar 从而丢掉会话。
 pub fn default_headers() -> reqwest::header::HeaderMap {
     use reqwest::header::{ACCEPT_LANGUAGE, HeaderMap, HeaderValue, USER_AGENT};
     let mut h = HeaderMap::new();
@@ -556,11 +575,24 @@ pub(crate) fn load_cookie_pairs(cookie_arg: &str) -> SanitizedCookie {
 /// 往往是 `_ga` 这类与登录无关的统计 cookie，真正的会话 `_plaza_session_nktz7u`
 /// 会连同 `cf_clearance` 一起被丢掉，症状是「明明填了 Cookie，却提示请到设置页
 /// 填写 Cookie」（见 PR #56）。
+///
+/// **年龄门 cookie 在此补齐**：用户提供的 pairs 里没有 `adult` 时补一条 `adult=t`。
+/// 放这里而不是放请求头，是为了与用户会话**共存**——显式 `Cookie` 头会让 reqwest
+/// 跳过整个 jar（`cookie.rs:242` 的 `is_none()` 判断），会话会连带丢失。
+/// 用户若显式提供了 `adult=f`（不想看 R-18），则以用户值为准，不覆盖。
 fn parse_cookie(cookie_arg: &str) -> Jar {
     let jar = Jar::default();
     let url = "https://booth.pm/".parse().expect("booth.pm url");
-    for (k, v) in load_cookie_pairs(cookie_arg).pairs {
+    let sanitized = load_cookie_pairs(cookie_arg);
+    let has_adult = sanitized
+        .pairs
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("adult"));
+    for (k, v) in sanitized.pairs {
         jar.add_cookie_str(&format!("{k}={v}"), &url);
+    }
+    if !has_adult {
+        jar.add_cookie_str(ADULT_COOKIE, &url);
     }
     jar
 }
@@ -597,6 +629,46 @@ mod tests {
                 .url()
                 .as_str(),
             "https://booth.pm/"
+        );
+    }
+
+    #[test]
+    fn default_headers_carry_no_cookie() {
+        // 默认头绝不能带 Cookie：reqwest 见显式 `Cookie` 头就整段跳过 jar
+        // （`cookie.rs:242` 的 `is_none()`），用户会话会被顶掉。
+        assert!(default_headers().get(reqwest::header::COOKIE).is_none());
+    }
+
+    /// 年龄门 cookie 必须与用户会话**共存**于同一个 Cookie 头里。
+    ///
+    /// 这条是回归测试：历史实现用显式 `Cookie` 头注入 `adult=t`，
+    /// 结果 `_plaza_session_nktz7u` 被整段顶掉，症状是「Cookie 填了却提示未登录」。
+    #[test]
+    fn adult_cookie_coexists_with_session() {
+        let h = sent_header("_plaza_session_nktz7u=SESSIONSECRET; cf_clearance=CF");
+        assert!(h.contains("adult=t"), "必须带年龄门，实际：{h}");
+        assert!(
+            h.contains("_plaza_session_nktz7u=SESSIONSECRET"),
+            "会话 cookie 不得丢失，实际：{h}"
+        );
+        assert!(h.contains("cf_clearance=CF"), "cf_clearance 不得丢失：{h}");
+    }
+
+    /// 无登录 cookie 时也要带年龄门，否则 R-18 详情拿到确认页。
+    #[test]
+    fn adult_cookie_present_without_login() {
+        let h = sent_header("");
+        assert!(h.contains("adult=t"), "匿名也须带年龄门，实际：{h}");
+    }
+
+    /// 用户显式给了 `adult=f`（不想看 R-18）时不得被覆盖。
+    #[test]
+    fn adult_cookie_respects_user_choice() {
+        let h = sent_header("adult=f");
+        assert!(h.contains("adult=f"), "用户选择必须保留，实际：{h}");
+        assert!(
+            !h.contains("adult=t"),
+            "不得用 adult=t 覆盖用户显式设置，实际：{h}"
         );
     }
 
