@@ -406,8 +406,7 @@ where
 /// 评分本身对同一 id 至少调用 2 次（加权分 + 歧义同名比较），而
 /// `score_and_pick_with_desc` 还要再跑一遍完整流程——实测 N 个候选
 /// legacy 6 次、ON 12 次（4N）。缓存把「每个 id 一次」变成硬保证。
-type CanonMemo =
-    std::cell::RefCell<std::collections::HashMap<String, Option<String>>>;
+type CanonMemo = std::cell::RefCell<std::collections::HashMap<String, Option<String>>>;
 
 /// 带外部缓存的评分实现。
 ///
@@ -455,8 +454,8 @@ where
             // 必须与主判据同用 `norm_wide`：混用会让日文标题在主路径命中、
             // 在兜底路径不命中（或反之），同一份数据两种结论。
             // 规范名取不到（None）时只比对标题，不把 None 当成空串。
-            let cn_hit = canonical(&it.id)
-                .is_some_and(|c| !qn.is_empty() && norm_wide(&c).contains(&qn));
+            let cn_hit =
+                canonical(&it.id).is_some_and(|c| !qn.is_empty() && norm_wide(&c).contains(&qn));
             if cn_hit || (!qn.is_empty() && norm_wide(&it.name).contains(&qn)) {
                 return (Some(it), false);
             } // 标题/规范名都不命中 → 资源名二次校验。
@@ -1307,15 +1306,8 @@ mod tests {
     fn empty_items_is_safe_with_desc() {
         let items: [Item; 0] = [];
         let w = DescWeight::new(50, 2).expect("合法权重");
-        let (got, amb) = score_and_pick_with_desc(
-            "x",
-            &items,
-            &[],
-            w,
-            false,
-            |_| Some(String::new()),
-            None,
-        );
+        let (got, amb) =
+            score_and_pick_with_desc("x", &items, &[], w, false, |_| Some(String::new()), None);
         assert!(got.is_none());
         assert!(!amb);
     }

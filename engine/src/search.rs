@@ -536,11 +536,15 @@ pub struct CanonInfo {
 
 /// 按文件名候选解析出「最可能是它」的商品（**三端唯一实现**）。
 ///
-/// 两轮**严格分离**：
-///   1. 第一轮：原候选，按 `sanitize_query` 给出的优先级逐个试；
-///   2. 第二轮：仅当第一轮**全部落空**时，才试 `kana` 读音变体。
+/// 三轮**严格分离**，原候选永远优先：
+///   1. 原候选，按 `sanitize_query` 给出的优先级逐个试；
+///   2. 同义词（中文泛称 → 日文行业词），仅当第一轮全部落空；
+///   3. kana 读音变体（日文汉字 → 假名），仅当前两轮全部落空。
 ///
-/// 历史缺陷：两轮被压成一次 `chain`，于是「变体轮是否运行」取决于第一个候选
+/// 后两轮都用**猜出来的词**，猜错代价是错归档，所以判据与前一轮同样严格：
+/// 名称真的命中且不歧义。
+///
+/// 历史缺陷：轮次曾被压成一次 `chain`，于是「变体轮是否运行」取决于第一个候选
 /// 是否返回了非空结果，而那个判据又与「名称是否真的命中」无关——触发与否
 /// 实际由标题长度决定（`scored[0].0 <= 0` 因次序分恒 >0 而近乎不可达）。
 ///
@@ -553,6 +557,7 @@ pub fn resolve_by_name(
     candidates: &[String],
     resource_names: Option<&[String]>,
     max_variants: usize,
+    max_synonyms: usize,
     info: impl Fn(&str) -> Option<CanonInfo>,
     weight: crate::score::DescWeight,
 ) -> ResolveOutcome {
@@ -568,7 +573,23 @@ pub fn resolve_by_name(
         }
     }
 
-    // 第二轮：kana 读音变体。**只在第一轮全部落空后**进入。
+    // 第二轮：中文泛称 → 日文同义词。
+    if hit.is_none() && max_synonyms > 0 {
+        let mut seen: Vec<String> = candidates.to_vec();
+        for q in crate::synonyms::with_synonyms(candidates.to_vec(), max_synonyms) {
+            if seen.contains(&q) {
+                continue;
+            }
+            seen.push(q.clone());
+            tried.push(q.clone());
+            if let Some(h) = pick_once(client, &q, resource_names, &info, weight) {
+                hit = Some(h);
+                break;
+            }
+        }
+    }
+
+    // 第三轮：kana 读音变体。
     if hit.is_none() && max_variants > 0 {
         let variants = crate::clean::with_kana_variants(candidates.to_vec(), max_variants);
         for q in variants.into_iter().filter(|c| !candidates.contains(c)) {
@@ -660,15 +681,12 @@ fn pick_from_results(
     // 同名判定，不会造成 `"" == ""` 那类假歧义。
     let cn = cached(&p.id).map(|ci| ci.name).unwrap_or_default();
     // 名称命中用大小写不敏感的原串包含：`norm` 只留 ASCII，日文会被滤成空串。
-    let name_ok = {
-        let ql = q.trim().to_lowercase();
-        !ql.is_empty() && (p.name.to_lowercase().contains(&ql) || cn.to_lowercase().contains(&ql))
-    };
+    // 判据集中在 `synonyms::name_hit`（三端唯一的「搜出即命中」防线）。
+    let name_ok = crate::synonyms::name_hit(q, &p.name, &cn);
     // 资源名兜底：标题不命中但资源名命中时，`score_and_pick` 已据 resource_names 放行。
-    let resource_ok = resource_names.is_some_and(|rs| {
-        let ql = q.trim().to_lowercase();
-        !ql.is_empty() && rs.iter().any(|r| r.to_lowercase().contains(&ql))
-    });
+    // 不能只按标题判而否掉它，否则兜底白做。
+    let resource_ok =
+        resource_names.is_some_and(|rs| rs.iter().any(|r| crate::synonyms::name_hit(q, r, "")));
     if !name_ok && !resource_ok {
         return None;
     }
@@ -1052,7 +1070,8 @@ mod tests {
                 price: r.price,
             })
             .collect();
-        let plain = crate::score::score_and_pick(q, &items, false, |id| info(id).map(|ci| ci.name), None);
+        let plain =
+            crate::score::score_and_pick(q, &items, false, |id| info(id).map(|ci| ci.name), None);
         assert!(!plain.1, "本用例的基线不应歧义，否则测试前提不成立");
 
         let got = pick_from_results(q, &results, None, &info, crate::score::DescWeight::OFF);

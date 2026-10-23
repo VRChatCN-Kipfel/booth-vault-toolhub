@@ -906,6 +906,7 @@ fn process_search_file(
             &candidates,
             names.as_deref(),
             engine::kana::MAX_VARIANTS,
+            engine::synonyms::MAX_SYNONYMS,
             |id| canonical_info(client, id),
             desc,
         );

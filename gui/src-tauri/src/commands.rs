@@ -692,12 +692,13 @@ fn pick_search_match(
     let names = engine::unitypackage::names_for_score(path);
 
     // 命中判定与 CLI/MCP **共用 engine 实现**：此处此前只判 `is_some()`、
-    // 无名称命中与歧义校验、无 kana 变体轮，三端行为不一致。
+    // 无名称命中与歧义校验、无同义词轮与 kana 变体轮，三端行为不一致。
     let outcome = engine::search::resolve_by_name(
         client,
         &queries,
         names.as_deref(),
         engine::kana::MAX_VARIANTS,
+        engine::synonyms::MAX_SYNONYMS,
         |id| canonical_info(client, id),
         desc,
     );
