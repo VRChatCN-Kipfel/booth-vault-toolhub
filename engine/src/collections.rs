@@ -48,10 +48,15 @@ pub struct Snapshot {
     pub name: String,
     /// 价格（日元整数；解析失败为 -1）。
     pub price: i64,
-    /// 是否售罄。
-    pub is_sold_out: bool,
-    /// 是否已停止销售。
-    pub is_end_of_sale: bool,
+    /// 是否售罄。`None` = 未知（字段缺失或形态异常）。
+    ///
+    /// **必须与 `ItemJson` 一致地使用 `Option`**：若这里写 `bool`，序列化/反序列化
+    /// 会把「未知」压成 `false`（＝有货），下一次比对就凭空报一次「补货」。
+    #[serde(default)]
+    pub is_sold_out: Option<bool>,
+    /// 是否已停止销售（同上）。
+    #[serde(default)]
+    pub is_end_of_sale: Option<bool>,
     /// 加入清单时的 unix 秒（仅为可追溯，不参与比对）。
     #[serde(default)]
     pub added_at: u64,
@@ -93,8 +98,11 @@ impl Change {
 
 /// 比对新旧快照，返回变动列表（按发生顺序排列，便于展示）。
 ///
-/// 判据刻意分开关切：**价格变动只在实际数字变化时报告**（解析失败记 -1 时不比较，
-/// 否则一次解析失败会被当成降价/涨价，产生假警报）。
+/// 三条「只在两侧都已知时才比较」的判据：
+///   - **价格**：解析失败记 -1，不比较，否则一次坏响应会被当成降价/涨价；
+///   - **售罄状态**：`Option<bool>`，任一侧 `None` 就跳过——历史实现用裸 `bool`，
+///     字段缺失被 serde 填成 `false`（＝有货），于是纯缺失就报「补货」；
+///   - **停售**：同样只在两侧都已知时比较。
 pub fn diff(old: &Snapshot, new: &Snapshot) -> Vec<Change> {
     let mut out = Vec::new();
     if old.price >= 0 && new.price >= 0 && old.price != new.price {
@@ -104,12 +112,14 @@ pub fn diff(old: &Snapshot, new: &Snapshot) -> Vec<Change> {
             out.push(Change::PriceRise(old.price, new.price));
         }
     }
-    if old.is_sold_out && !new.is_sold_out {
-        out.push(Change::BackInStock);
-    } else if !old.is_sold_out && new.is_sold_out {
-        out.push(Change::SoldOut);
+    // 售罄：只在两侧都 Some 时比较。
+    match (old.is_sold_out, new.is_sold_out) {
+        (Some(true), Some(false)) => out.push(Change::BackInStock),
+        (Some(false), Some(true)) => out.push(Change::SoldOut),
+        _ => {}
     }
-    if !old.is_end_of_sale && new.is_end_of_sale {
+    // 停售：只在两侧都 Some 时比较。
+    if let (Some(false), Some(true)) = (old.is_end_of_sale, new.is_end_of_sale) {
         out.push(Change::EndOfSale);
     }
     if old.name != new.name && !new.name.is_empty() {
@@ -359,8 +369,8 @@ mod tests {
             id: id.to_string(),
             name: "n".to_string(),
             price,
-            is_sold_out: sold,
-            is_end_of_sale: false,
+            is_sold_out: Some(sold),
+            is_end_of_sale: Some(false),
             added_at: 1,
             checked_at: 0,
         }
@@ -383,6 +393,71 @@ mod tests {
     fn unknown_price_never_reports_change() {
         assert!(diff(&snap("1", -1, false), &snap("1", 800, false)).is_empty());
         assert!(diff(&snap("1", 800, false), &snap("1", -1, false)).is_empty());
+    }
+
+    // ── 库存字段的 None 语义（评审 P0-3 的回归）────────────────────
+
+    /// 售罄状态**未知**时不得报任何补货/售罄变动。
+    ///
+    /// 历史实现用裸 `bool` + 容器级 `#[serde(default)]`：字段缺失被填成 `false`
+    /// （＝有货），于是「旧值缺失→新值有货」会被判成**补货**——一次字段缺失
+    /// 就触发假提醒。改成 `Option` 后，任一侧 `None` 就跳过比较。
+    #[test]
+    fn unknown_stock_never_reports_change() {
+        let mut a = snap("1", 100, false);
+        let mut b = snap("1", 100, false);
+        a.is_sold_out = None; // 旧值未知
+        b.is_sold_out = Some(false);
+        assert!(diff(&a, &b).is_empty(), "一侧未知时不得报补货");
+
+        let mut c = snap("1", 100, false);
+        let mut d = snap("1", 100, false);
+        c.is_sold_out = Some(false);
+        d.is_sold_out = None; // 新值未知
+        assert!(diff(&c, &d).is_empty(), "一侧未知时不得报售罄");
+
+        let mut e = snap("1", 100, false);
+        let mut f = snap("1", 100, false);
+        e.is_sold_out = None;
+        f.is_sold_out = None;
+        assert!(diff(&e, &f).is_empty(), "两侧都未知时不得报变动");
+
+        // **关键区分点**：None 与 Some(true) 的组合。若实现把 None 当 false，
+        // 这里会误报 SoldOut / BackInStock；而 (None, Some(false)) 那组测不出。
+        let mut g = snap("1", 100, false);
+        let mut h = snap("1", 100, false);
+        g.is_sold_out = None;
+        h.is_sold_out = Some(true);
+        assert!(diff(&g, &h).is_empty(), "未知→售罄不得报变动");
+
+        let mut i = snap("1", 100, false);
+        let mut j = snap("1", 100, false);
+        i.is_sold_out = Some(true);
+        j.is_sold_out = None;
+        assert!(diff(&i, &j).is_empty(), "售罄→未知不得报补货");
+    }
+
+    /// 停售状态未知时不得报「停止销售」。
+    #[test]
+    fn unknown_end_of_sale_never_reports_change() {
+        let mut a = snap("1", 100, false);
+        let mut b = snap("1", 100, false);
+        a.is_end_of_sale = None;
+        b.is_end_of_sale = Some(true);
+        assert!(diff(&a, &b).is_empty(), "旧值未知时不得报停售");
+    }
+
+    /// 两侧都已知时仍要正常检测（不能因改成 Option 而失效）。
+    #[test]
+    fn known_stock_still_detected() {
+        assert_eq!(
+            diff(&snap("1", 0, true), &snap("1", 0, false)),
+            vec![Change::BackInStock]
+        );
+        assert_eq!(
+            diff(&snap("1", 0, false), &snap("1", 0, true)),
+            vec![Change::SoldOut]
+        );
     }
 
     #[test]

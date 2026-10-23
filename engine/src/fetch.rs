@@ -29,9 +29,18 @@ pub struct ItemJson {
     #[serde(rename = "variations")]
     pub variations: Vec<VariationJson>,
     /// 是否售罄（关注清单的补货检测依赖它）。
-    pub is_sold_out: bool,
-    /// 是否已停止销售。
-    pub is_end_of_sale: bool,
+    ///
+    /// **`Option` 而非 `bool`**：容器级 `#[serde(default)]` 会把**缺失**字段填成
+    /// `false`，也就是「有货」——于是一次字段缺失就被当成一次「补货」，触发假提醒。
+    /// 改成 `Option` 后：缺失 → `None`（未知），变动检测只在两侧都 `Some` 时比较。
+    ///
+    /// 同时容忍 `0`/`1`/`null` 等非 bool 形态（见 `de_stock_flag`）：历史上这些会让
+    /// **整个** `ItemJson` 反序列化失败，而它被 organize/search/version-audit 与 GUI 共用。
+    #[serde(default, deserialize_with = "de_stock_flag")]
+    pub is_sold_out: Option<bool>,
+    /// 是否已停止销售（同上）。
+    #[serde(default, deserialize_with = "de_stock_flag")]
+    pub is_end_of_sale: Option<bool>,
     /// 收藏数（热度参考；不参与变动判定，仅作展示依据）。
     pub wish_lists_count: i64,
 }
@@ -44,6 +53,28 @@ pub struct TagJson {
     pub url: String,
 }
 
+/// 库存标志的反序列化：`bool` → `Some`；`0`/`1` → `Some(v != 0)`；
+/// `null` 或缺失 → `None`；其它形态也一律 `None`，**不让整条记录失败**。
+///
+/// 为什么不用 `Option<bool>` 直接反序列化：serde 的默认实现对非 bool 形态会整个
+/// 报错，而 `ItemJson` 是三端共用的结构，一个字段的形态变化不该让整条商品作废。
+///
+/// 实现上先解析成 `serde_json::Value` 再转换，而不是手写 Visitor：
+/// 手写 Visitor 需要在嵌套泛型里重复声明 `'de`，容易踩「can't use generic
+/// parameters from outer item」；用 Value 中转虽然多一次分配，但语义更直白、
+/// 不会因 serde 版本细节而编译失败。本字段每件商品只出现两次，代价可忽略。
+fn de_stock_flag<'de, D>(d: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(match v {
+        serde_json::Value::Bool(b) => Some(b),
+        serde_json::Value::Number(n) => n.as_i64().map(|i| i != 0),
+        // null 与其它形态一律「未知」，不让整条记录失败。
+        _ => None,
+    })
+}
 /// 店铺对象。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -317,6 +348,66 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(item.description, "条款原文");
+    }
+
+    // ── 库存标志的三态反序列化（评审 P0-3 的回归）──────────────────
+
+    /// 字段缺失 → `None`（未知），**不是** `false`（有货）。
+    ///
+    /// 历史实现是裸 `bool` + 容器级 `#[serde(default)]`：缺失被填成 `false`，
+    /// 于是一次字段缺失就被关注清单当成「补货」。
+    #[test]
+    fn stock_fields_missing_is_none() {
+        let item: ItemJson = serde_json::from_value(serde_json::json!({
+            "id": "1", "name": "n"
+        }))
+        .unwrap();
+        assert_eq!(item.is_sold_out, None, "缺失必须是未知，不是 false");
+        assert_eq!(item.is_end_of_sale, None);
+    }
+
+    /// `bool` 正常解析。
+    #[test]
+    fn stock_fields_bool() {
+        let item: ItemJson = serde_json::from_value(serde_json::json!({
+            "id": "1", "name": "n", "is_sold_out": true, "is_end_of_sale": false
+        }))
+        .unwrap();
+        assert_eq!(item.is_sold_out, Some(true));
+        assert_eq!(item.is_end_of_sale, Some(false));
+    }
+
+    /// `0`/`1` 数字形态也要能解析（历史上会让整条记录失败）。
+    #[test]
+    fn stock_fields_accept_zero_one() {
+        let item: ItemJson = serde_json::from_value(serde_json::json!({
+            "id": "1", "name": "n", "is_sold_out": 1, "is_end_of_sale": 0
+        }))
+        .unwrap();
+        assert_eq!(item.is_sold_out, Some(true));
+        assert_eq!(item.is_end_of_sale, Some(false));
+    }
+
+    /// `null` → `None`（未知）。
+    #[test]
+    fn stock_fields_null_is_none() {
+        let item: ItemJson = serde_json::from_value(serde_json::json!({
+            "id": "1", "name": "n", "is_sold_out": null
+        }))
+        .unwrap();
+        assert_eq!(item.is_sold_out, None);
+    }
+
+    /// **关键**：异常形态不得让整条商品反序列化失败——这个结构被三端共用，
+    /// 一个字段的形态变化不该让商品作废。
+    #[test]
+    fn stock_fields_weird_value_does_not_break_item() {
+        let item: ItemJson = serde_json::from_value(serde_json::json!({
+            "id": "1", "name": "商品名", "is_sold_out": "maybe"
+        }))
+        .expect("异常形态不应让整条记录失败");
+        assert_eq!(item.is_sold_out, None, "无法判定时应为未知");
+        assert_eq!(item.name, "商品名", "其它字段必须完好");
     }
 
     #[test]

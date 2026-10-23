@@ -436,7 +436,12 @@ fn cmd_collections(
             println!("清单为空");
         } else {
             for s in lists.of(kind).values() {
-                let mark = if s.is_sold_out { " [售罄]" } else { "" };
+                // 未知（None）不打售罄标，也不臆测成"有货"。
+                let mark = match s.is_sold_out {
+                    Some(true) => " [售罄]",
+                    Some(false) => "",
+                    None => "",
+                };
                 println!("  [{}] {}  ¥{}{mark}", s.id, s.name, s.price);
             }
         }
