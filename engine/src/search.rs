@@ -563,9 +563,13 @@ pub fn resolve_by_name(
 ) -> ResolveOutcome {
     let mut tried: Vec<String> = Vec::new();
     let mut hit: Option<NamedHit> = None;
+    // 已经排进计划的检索词（三轮共用）。跨轮重复会让同一个词发两次阻塞请求，
+    // 白花一次 0.5~0.8s 限速额度；`tried` 还用于 GUI 候选展示，重复项会显示成两条。
+    let mut planned: Vec<String> = Vec::new();
 
     // 第一轮：原候选。
     for q in candidates {
+        planned.push(q.clone());
         tried.push(q.clone());
         if let Some(h) = pick_once(client, q, resource_names, &info, weight) {
             hit = Some(h);
@@ -573,14 +577,18 @@ pub fn resolve_by_name(
         }
     }
 
-    // 第二轮：中文泛称 → 日文同义词。
+    // 第二轮：中文泛称 → 日文同义词。**惰性生成**：第一轮命中就不展开，
+    // 读音轮要调 lindera 词典，白算一遍是实打实的开销。
     if hit.is_none() && max_synonyms > 0 {
-        let mut seen: Vec<String> = candidates.to_vec();
-        for q in crate::synonyms::with_synonyms(candidates.to_vec(), max_synonyms) {
-            if seen.contains(&q) {
-                continue;
-            }
-            seen.push(q.clone());
+        let words = dedup_rounds(
+            &[crate::synonyms::with_synonyms(
+                candidates.to_vec(),
+                max_synonyms,
+            )],
+            &planned,
+        );
+        for q in words {
+            planned.push(q.clone());
             tried.push(q.clone());
             if let Some(h) = pick_once(client, &q, resource_names, &info, weight) {
                 hit = Some(h);
@@ -591,8 +599,15 @@ pub fn resolve_by_name(
 
     // 第三轮：kana 读音变体。
     if hit.is_none() && max_variants > 0 {
-        let variants = crate::clean::with_kana_variants(candidates.to_vec(), max_variants);
-        for q in variants.into_iter().filter(|c| !candidates.contains(c)) {
+        let words = dedup_rounds(
+            &[crate::clean::with_kana_variants(
+                candidates.to_vec(),
+                max_variants,
+            )],
+            &planned,
+        );
+        for q in words {
+            planned.push(q.clone());
             tried.push(q.clone());
             if let Some(h) = pick_once(client, &q, resource_names, &info, weight) {
                 hit = Some(h);
@@ -602,6 +617,26 @@ pub fn resolve_by_name(
     }
 
     ResolveOutcome { hit, tried }
+}
+
+/// 三轮候选去重：按给出的顺序拼接，**跳过任何已在前面出现过的词**。
+///
+/// 抽成纯函数是为了能直接测：去重错会表现为「同一个词发两次阻塞请求」——多花
+/// 一次 0.5~0.8s 限速额度、浪费站点风控配额，且 GUI 候选列表会出现重复项。
+/// 这类退化不会让任何断言失败，只能靠直接断言顺序与唯一性来钉住。
+fn dedup_rounds(rounds: &[Vec<String>], seeds: &[String]) -> Vec<String> {
+    let mut seen: Vec<String> = seeds.to_vec();
+    let mut out: Vec<String> = Vec::new();
+    for round in rounds {
+        for q in round {
+            if seen.iter().any(|s| s == q) {
+                continue;
+            }
+            seen.push(q.clone());
+            out.push(q.clone());
+        }
+    }
+    out
 }
 
 /// 对单个检索词执行「搜索 → 评分 → 名称命中校验」。
@@ -1080,5 +1115,30 @@ mod tests {
             plain.0.map(|i| i.id.clone()),
             "关闭时不得改变任何选优结果"
         );
+    }
+
+    /// 跨轮重复必须被去掉：同一个词发两次就是多一次阻塞请求
+    /// （0.5~0.8s 限速额度 + 一次风控配额），且 GUI 候选列表会出现重复行。
+    #[test]
+    fn dedup_drops_cross_round_duplicates() {
+        let seeds = vec!["衣装".to_string()];
+        let round2 = vec!["服".to_string(), "衣装".to_string(), "服".to_string()];
+        let round3 = vec!["服".to_string(), "いしょう".to_string(), "衣装".to_string()];
+        let got = dedup_rounds(&[round2, round3], &seeds);
+        assert_eq!(got, vec!["服", "いしょう"], "应去掉跨轮重复且保序");
+    }
+
+    /// 顺序必须稳定：原候选 → 同义词 → 读音，三轮按参数顺序拼接。
+    #[test]
+    fn dedup_preserves_round_order() {
+        let a = vec!["A".to_string()];
+        let b = vec!["B".to_string()];
+        let c = vec!["C".to_string()];
+        assert_eq!(
+            dedup_rounds(&[a.clone(), b.clone(), c.clone()], &[]),
+            vec!["A", "B", "C"]
+        );
+        // seeds 里的词不得再出现。
+        assert_eq!(dedup_rounds(&[a.clone(), b], &a), vec!["B"]);
     }
 }
