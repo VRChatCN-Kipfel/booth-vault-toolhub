@@ -297,6 +297,59 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// 批量拉取详情并加入清单，**带限速**。
+///
+/// 为什么下沉到 engine：CLI 与 MCP 各写一份循环时，`add` 这条路径两边都漏了
+/// sleep（`check` 有、`add` 没有），100 个 ID 就是一串无间隔请求，违反 AGENTS
+/// 「0.5~0.8s 三端统一」契约。限速只能有一个实现。
+///
+/// `sleep` 与 `fetch` 都以闭包注入：
+///   - `sleep` 让测试能计数而不真睡（真睡会让单测跑几十秒）；
+///   - `fetch` 让本层不需要知道 `reqwest::Client` 的细节。
+///
+/// 返回 `(已加入的 id, 失败项说明)`。
+pub fn add_paced(
+    kind: Kind,
+    lists: &mut Lists,
+    ids: &[String],
+    sleep: impl Fn(),
+    fetch: impl Fn(&str) -> Result<crate::fetch::ItemJson, String>,
+) -> (Vec<String>, Vec<String>) {
+    let mut added = Vec::new();
+    let mut failed = Vec::new();
+    for (i, id) in ids.iter().enumerate() {
+        // 首个不睡：与下载链路的「无前序请求则无需等待」一致。
+        if i > 0 {
+            sleep();
+        }
+        match fetch(id) {
+            Ok(item) => {
+                lists.put(kind, snapshot_from(&item, id));
+                added.push(id.clone());
+            }
+            Err(e) => failed.push(format!("{id}: {e}")),
+        }
+    }
+    (added, failed)
+}
+
+/// 选取本轮要检查的条目：按 `checked_at` 升序（最久没查的优先），`0` 表示全部。
+///
+/// 历史实现用 `keys().take(limit)`——`BTreeMap` 的字典序，导致第 N+1 条
+/// **永远轮不到**；`limit=0` 取 0 条却报 `checked: 0` 退出 0（同仓 `download`/`preview`
+/// 的 0 都表示「不限」，语义还不一致）。
+pub fn pick_batch(lists: &Lists, kind: Kind, limit: usize) -> Vec<String> {
+    let mut entries: Vec<(&String, &Snapshot)> = lists.of(kind).iter().collect();
+    // 主键 checked_at 升序（从未查过 = 0 排最前），次键 id 保证稳定。
+    entries.sort_by(|a, b| a.1.checked_at.cmp(&b.1.checked_at).then(a.0.cmp(b.0)));
+    let n = if limit == 0 { entries.len() } else { limit };
+    entries
+        .into_iter()
+        .take(n)
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,5 +552,107 @@ mod tests {
         let _ = std::fs::remove_file(&p);
         // 文件不存在是**正常**情况（首次使用），仍然返回空清单。
         assert!(load(&p).expect("缺失文件不得报错").is_empty(Kind::Own));
+    }
+
+    // ── add_paced：限速与失败隔离 ────────────────────────────────
+
+    /// `add` 必须限速：N 个 ID 只应 sleep N-1 次（首个不等）。
+    ///
+    /// 历史缺陷：CLI/MCP 的 `add` 循环里完全没有 sleep，100 个 ID 就是
+    /// 一串无间隔请求——违反 AGENTS「0.5~0.8s 三端统一」契约。
+    #[test]
+    fn add_paces_requests() {
+        use std::cell::Cell;
+        let sleeps = Cell::new(0usize);
+        let fetches = Cell::new(0usize);
+        let mut lists = Lists::default();
+        let ids: Vec<String> = vec!["1".into(), "2".into(), "3".into()];
+        let (added, failed) = add_paced(
+            Kind::Watch,
+            &mut lists,
+            &ids,
+            || sleeps.set(sleeps.get() + 1),
+            |id| {
+                fetches.set(fetches.get() + 1);
+                Ok(crate::fetch::ItemJson {
+                    id: id.to_string(),
+                    name: format!("n{id}"),
+                    ..Default::default()
+                })
+            },
+        );
+        assert_eq!(added.len(), 3);
+        assert!(failed.is_empty());
+        assert_eq!(fetches.get(), 3, "每个 ID 都要 fetch 一次");
+        assert_eq!(sleeps.get(), 2, "3 个 ID 应只 sleep 2 次（首个不等）");
+        assert_eq!(lists.len(Kind::Watch), 3);
+    }
+
+    /// 单个 ID 失败不得中断整批（其余仍加入）。
+    #[test]
+    fn add_isolates_failures() {
+        let mut lists = Lists::default();
+        let ids: Vec<String> = vec!["ok1".into(), "bad".into(), "ok2".into()];
+        let (added, failed) = add_paced(
+            Kind::Own,
+            &mut lists,
+            &ids,
+            || {},
+            |id| {
+                if id == "bad" {
+                    Err("boom".to_string())
+                } else {
+                    Ok(crate::fetch::ItemJson {
+                        id: id.to_string(),
+                        name: id.to_string(),
+                        ..Default::default()
+                    })
+                }
+            },
+        );
+        assert_eq!(added, vec!["ok1".to_string(), "ok2".to_string()]);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(lists.len(Kind::Own), 2);
+    }
+
+    // ── pick_batch：轮换与 0=全部 ────────────────────────────────
+
+    /// 按 `checked_at` 升序轮换：最久没查的优先，且不会永远卡在前 N 条。
+    #[test]
+    fn batch_orders_by_checked_at() {
+        let mut lists = Lists::default();
+        for (id, checked) in [("a", 30u64), ("b", 0), ("c", 20)] {
+            let mut s = snap(id, 100, false);
+            s.checked_at = checked;
+            lists.put(Kind::Watch, s);
+        }
+        // checked_at 升序：b(0) → c(20) → a(30)
+        assert_eq!(
+            pick_batch(&lists, Kind::Watch, 2),
+            vec!["b".to_string(), "c".to_string()]
+        );
+        assert_eq!(
+            pick_batch(&lists, Kind::Watch, 10),
+            vec!["b".to_string(), "c".to_string(), "a".to_string()],
+            "多轮下来全部条目都能轮到（历史实现用字典序，末位永远轮不到）"
+        );
+    }
+
+    /// `limit = 0` 表示**全部**，与同仓 `download`/`preview` 的语义一致。
+    #[test]
+    fn limit_zero_means_all() {
+        let mut lists = Lists::default();
+        for id in ["a", "b", "c", "d"] {
+            lists.put(Kind::Own, snap(id, 1, false));
+        }
+        assert_eq!(pick_batch(&lists, Kind::Own, 0).len(), 4);
+        assert_eq!(pick_batch(&lists, Kind::Own, 2).len(), 2);
+    }
+
+    /// 空清单返回空批次，不得 panic。
+    #[test]
+    fn empty_batch_is_safe() {
+        let lists = Lists::default();
+        assert!(pick_batch(&lists, Kind::Watch, 10).is_empty());
     }
 }

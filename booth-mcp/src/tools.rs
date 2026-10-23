@@ -802,21 +802,26 @@ impl BoothServer {
                     return tool_error("add 需要至少一个商品 ID 或链接");
                 }
                 let client = make_session(&config, None);
-                let mut added: Vec<String> = Vec::new();
+                // 与 CLI 同一实现：限速下沉到 engine，两端不再各写一套循环。
                 let mut failed: Vec<String> = Vec::new();
+                let mut ids: Vec<String> = Vec::new();
                 for raw in &params.ids {
-                    let Some(id) = normalize_item_id(raw) else {
-                        failed.push(format!("{raw}: 无法解析出商品 ID"));
-                        continue;
-                    };
-                    match engine::fetch::fetch_item(&client, &id) {
-                        Ok(item) => {
-                            lists.put(kind, engine::collections::snapshot_from(&item, &id));
-                            added.push(id);
-                        }
-                        Err(e) => failed.push(format!("{id}: {e}")),
+                    match normalize_item_id(raw) {
+                        Some(id) => ids.push(id),
+                        None => failed.push(format!("{raw}: 无法解析出商品 ID")),
                     }
                 }
+                let rate = config
+                    .rate_limit_secs
+                    .unwrap_or_else(engine::config::default_rate_limit_secs);
+                let (added, fetch_failures) = engine::collections::add_paced(
+                    kind,
+                    &mut lists,
+                    &ids,
+                    || engine::download::sleep_rate_limit(rate),
+                    |id| engine::fetch::fetch_item(&client, id).map_err(|e| e.to_string()),
+                );
+                failed.extend(fetch_failures);
                 if let Err(e) = engine::collections::save(&path, &lists) {
                     return tool_error(&format!("清单写入失败: {e}"));
                 }
@@ -872,7 +877,8 @@ impl BoothServer {
             }
             "check" => {
                 let limit = params.limit.unwrap_or(30);
-                let ids: Vec<String> = lists.of(kind).keys().take(limit).cloned().collect();
+                // 与 CLI 同一实现：按 checked_at 轮换，0=全部。
+                let ids: Vec<String> = engine::collections::pick_batch(&lists, kind, limit);
                 if ids.is_empty() {
                     let out = serde_json::json!({
                         "command": kind.as_str(), "op": "check",

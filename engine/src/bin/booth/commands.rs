@@ -330,22 +330,28 @@ fn cmd_collections(
             return fail(json, "add 需要至少一个商品 ID 或链接");
         }
         let client = make_session(config, None);
-        let mut added: Vec<String> = Vec::new();
+        // 先解析出合法 ID（无法解析的单独记失败），再交给 engine 的带限速批量接口。
         let mut failed: Vec<String> = Vec::new();
+        let mut ids: Vec<String> = Vec::new();
         for raw in &args.ids {
-            let Some(id) = normalize_item_id(raw) else {
-                failed.push(format!("{raw}: 无法解析出商品 ID"));
-                continue;
-            };
-            match engine::fetch::fetch_item(&client, &id) {
-                Ok(item) => {
-                    let snap = engine::collections::snapshot_from(&item, &id);
-                    lists.put(kind, snap);
-                    added.push(id);
-                }
-                Err(e) => failed.push(format!("{id}: {e}")),
+            match normalize_item_id(raw) {
+                Some(id) => ids.push(id),
+                None => failed.push(format!("{raw}: 无法解析出商品 ID")),
             }
         }
+        let rate = config
+            .rate_limit_secs
+            .unwrap_or_else(engine::config::default_rate_limit_secs);
+        // 限速下沉到 engine（三端共享），CLI 不再自建循环 —— 历史缺陷是 add
+        // 这条路径完全没有 sleep，check 有，两者不一致。
+        let (added, fetch_failures) = engine::collections::add_paced(
+            kind,
+            &mut lists,
+            &ids,
+            || engine::download::sleep_rate_limit(rate),
+            |id| engine::fetch::fetch_item(&client, id).map_err(|e| e.to_string()),
+        );
+        failed.extend(fetch_failures);
         // 写盘失败必须上抛：历史实现返回 ()、错误被吞，add 打印 added、退出 0，
         // 而磁盘上什么都没有。
         if let Err(e) = engine::collections::save(&path, &lists) {
@@ -438,7 +444,9 @@ fn cmd_collections(
     }
 
     if op == "check" {
-        let ids: Vec<String> = lists.of(kind).keys().take(args.limit).cloned().collect();
+        // 轮换而非字典序截断：历史实现 `keys().take(limit)` 让第 N+1 条永远轮不到，
+        // 且 `limit=0` 取 0 条却退出 0（同仓 download/preview 的 0 都表示不限）。
+        let ids: Vec<String> = engine::collections::pick_batch(&lists, kind, args.limit);
         if ids.is_empty() {
             return report(
                 json,
