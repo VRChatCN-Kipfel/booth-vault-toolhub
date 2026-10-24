@@ -87,6 +87,9 @@ cargo build --release --workspace
 
 ```bash
 booth download <店铺URL|散链> [--cookie ...] [--out DIR]   # 下载免费商品（需 Cookie）
+booth intake   <目录...> [--dry-run] [--on-unknown report|move|skip]
+               [--on-ambiguous ask|skip|force] [--yes] [--out DIR]  # 混乱目录一键入库
+booth mismatch [--base DIR] [--fix] [--id ID]...           # 错位检测；--fix 强制重归档
 booth organize <本地包...> [--id ID] [--out DIR]           # 按 ID 整理归档
 booth search   <本地文件...> [--id ID] [--base-dir DIR]    # 按名搜索整理
 booth audit    [--base DIR] [--dry-run]                    # 图标三件套巡检
@@ -111,7 +114,7 @@ npm run tauri build      # 打包
 ### MCP
 
 ```bash
-booth-mcp                # stdio server，暴露 download/organize/search/audit/version_audit/library
+booth-mcp                # stdio server，暴露 download/organize/search/intake/mismatch/audit/version_audit/library…
 ```
 
 客户端配置示例见 `skills/booth/mcp.example.json`。

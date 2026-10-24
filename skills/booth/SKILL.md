@@ -26,7 +26,7 @@ BOOTH（日本数字创作集市，VRChat 素材主产地）素材的**下载 / 
 | 入口 | 说明 | 适用 |
 |------|------|------|
 | **`booth` CLI** | 编译后的二进制，十四子命令 | 终端/agent 首选 |
-| **booth-mcp** | MCP stdio server，暴露十一工具（无 shell） | opencode / Claude Code 等 MCP 客户端 |
+| **booth-mcp** | MCP stdio server，暴露十三工具（无 shell） | opencode / Claude Code 等 MCP 客户端 |
 | 原 `python scripts/booth.py` | 旧版 Python（仅参考，已废弃） | 不推荐 |
 
 ## 找到 CLI / MCP 二进制（先定位，再调用）
@@ -85,6 +85,9 @@ MCP 客户端若 `booth-mcp` 不在 PATH，配置改填绝对路径（示例见 
 
 ```bash
 booth download <店铺URL|散链> [--cookie ...] [--out DIR]   # 下载免费商品（需 Cookie）
+booth intake   <目录...> [--dry-run] [--on-unknown report|move|skip]
+               [--on-ambiguous ask|skip|force] [--yes] [--out DIR]  # 混乱目录一键入库
+booth mismatch [--base DIR] [--fix] [--id ID]...           # 错位检测；--fix 强制重归档
 booth organize <本地包...> [--id ID] [--out DIR]           # 按 ID 整理归档
 booth search   <本地文件...> [--id ID] [--base-dir DIR]    # 按名搜索整理
 booth audit    [--base DIR] [--dry-run]                    # 图标三件套巡检
@@ -103,9 +106,9 @@ booth update-check [--proxy]                               # 工具自更新检�
 
 ## MCP 接入（可选）
 
-以 stdio server 运行 `booth-mcp`，同十一工具
-（download / organize / search / audit / version_audit / library / preview /
-update_check / cookie_check / collections / inspect），详见下表。
+以 stdio server 运行 `booth-mcp`，同十三工具
+（download / organize / search / intake / mismatch / audit / version_audit / library /
+preview / update_check / cookie_check / collections / inspect），详见下表。
 
 **契约以代码为准**：`search` 的输出信封是 `engine::search::SearchOutput`（10 个字段：
 `command` `mode` `query` `url` `total` `shown` `page` `has_next` `sort_note` `items`），
@@ -181,18 +184,30 @@ CLI 与 MCP 共用同一个结构体，字段不会各自漂移。但两端的�
 ## 子命令路由（决策树）
 
 ```
-用户丢来一个文件 / 链接
+用户丢来一个文件 / 链接 / 目录
+├─ 是一个**目录**或一堆来源混杂的文件（不知道各自该走哪条路）
+│   └─► booth intake                （扫描 → 逐个判定 → 归档 → 汇总无法判定项）
+│       ├─ 先 --dry-run 看判定，确认后再执行
+│       └─ 无 ID 的压缩包要联网猜身份，**必须加 --yes** 才会执行
 ├─ 是 BOOTH 店铺 URL 或商品散链（booth.pm/...）
 │   └─► booth download              （从网上下载免费商品，需 Cookie）
 ├─ 是本地压缩包，文件名含 7 位数字（如 跟随悬浮机-6504842等3个文件.rar）
 │   └─► booth organize              （按 ID 取元数据整理）
 ├─ 是本地压缩包，无 ID，是 BOOTH 商品名（如 SimpleJoinAlert_v100.zip）
 │   └─► booth search                （按名字搜索 + UnityPackage 资源名验真）
-└─ 主上想让整个库图标整齐 / 图标异常
-    └─► booth audit                 （三件套巡检 + 自动修复）
+├─ 主上怀疑库里有商品放错类目
+│   └─► booth mismatch              （联网比对官方分类；--fix 强制重归档并留档旧内容）
+├─ 主上想让整个库图标整齐 / 图标异常
+│   └─► booth audit                 （三件套巡检 + 自动修复）
 └─ 询问工具是否有新版本 / 版本号
     └─► booth update-check [--proxy]（GitHub `releases.atom` 查最新 release，Atom feed 规避 API 限流）
 ```
+
+### intake 与 mismatch 的边界（不得混用）
+
+- `intake` 判**尚未入库**的散落文件（文件域）：带 ID / 无 ID 压缩包 / 已在库 / 旁路文件 / 无法判定。
+- `mismatch` 判**已入库但放错类目**的 ID 目录（目录域）。
+- 两者输入域不重叠，典型用法是串联：先 `booth intake` 把散落的收进库，再 `booth mismatch` 检查历史错位。
 
 ## 关键共享知识
 
@@ -230,6 +245,7 @@ CLI 与 MCP 共用同一个结构体，字段不会各自漂移。但两端的�
 
 ```
 <归档根目录>\            （配置 download_root，非硬编码路径）
+├── _待处理\              intake --on-unknown move 的投放处（根下一层，不嵌套）
 └── 类目中文tag\
     └── ID_标题\
         ├── ID_标题.ext   原文件（下载/移动/复制，保留原文件名含版本号）
