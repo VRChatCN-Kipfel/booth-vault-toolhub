@@ -236,6 +236,52 @@ enum Command {
         #[arg(long)]
         cookie: Option<String>,
     },
+    /// 混乱目录一键入库：扫描 → 逐个判定身份 → 分类归档 → 汇总无法判定项。
+    ///
+    /// 与 `organize` / `search` 的区别：后两者假设「输入已是单个文件、且已知道
+    /// 该走哪条路」；本命令吃一坨来源混杂的目录，替用户完成「逐个判断」这件事。
+    /// 判定阶段不联网，联网只发生在执行阶段；`--dry-run` 只出报告、不改盘、不联网。
+    Intake {
+        /// 待入库的目录或文件（可多个；目录递归展开）。
+        #[arg(required = true)]
+        dirs: Vec<PathBuf>,
+        /// 归档根目录（默认读配置 download_root）。
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// 只出报告，不移动、不归档、不联网。
+        #[arg(long)]
+        dry_run: bool,
+        /// 无法判定项的处置：report（默认，原地不动）| move（移入 <out>/_待处理）| skip。
+        #[arg(long, default_value = "report")]
+        on_unknown: String,
+        /// 检索命中歧义时的处置：ask（默认，不自动归档）| skip | force（显式逃生阀）。
+        #[arg(long, default_value = "ask")]
+        on_ambiguous: String,
+        /// 显式确认：不加时歧义项一律不自动归档，加了也只放行无歧义项。
+        #[arg(long)]
+        yes: bool,
+        /// BOOTH 登录 Cookie（补全商品页其他免费版本）。
+        #[arg(long)]
+        cookie: Option<String>,
+    },
+    /// 错位检测：报告「已入库但分类与官方不符」的商品；`--fix` 强制重归档。
+    ///
+    /// 与 `intake` 严格分工：intake 判「尚未入库」的散落文件（文件域），本命令判
+    /// 「已入库但放错类目」的 ID 目录（目录域）。两者输入域不重叠，可串联使用。
+    Mismatch {
+        /// 库根目录（默认读配置 download_root）。
+        #[arg(long)]
+        base: Option<PathBuf>,
+        /// 强制重归档到官方分类（既有内容就地留档为「旧版本_<时间戳>」）。
+        #[arg(long)]
+        fix: bool,
+        /// 只处理这些 ID（`--fix` 时生效；缺省全量）。
+        #[arg(long)]
+        id: Vec<String>,
+        /// BOOTH 登录 Cookie。
+        #[arg(long)]
+        cookie: Option<String>,
+    },
     /// 关注/已购清单：`watch` 等降价补货，`own` 等作者更新。
     Watch(CollectionsArgs),
     /// 已购素材清单（与 watch 共用存储，语义偏重「作者发布新版本」）。
