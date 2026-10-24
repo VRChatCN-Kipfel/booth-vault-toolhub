@@ -126,6 +126,58 @@ CLI 与 MCP 共用同一个结构体，字段不会各自漂移。但两端的�
 > `https://github.com/VRChatCN-Kipfel/booth-vault-toolhub/blob/master/skills/booth/mcp.example.json?raw=true` ）。
 > 上面内联为最小片段，完整结构以该文件为准。
 
+## 检索参数的反直觉行为（实网对照结论）
+
+以下每条都是 2026-10 实测得出，**与直觉相反**，写在这里避免误用。代码在
+`engine/src/search.rs`，每条都有对应测试守着。
+
+### 1. 查询词必须写在 URL 路径里
+
+```
+✅ https://booth.pm/ja/search/メカ?page=2      ← 真正翻页
+❌ https://booth.pm/ja/items?q=メカ&page=2     ← 302 到 /ja/search/メカ，page 被丢弃
+❌ https://booth.pm/ja/search?q=メカ           ← 直接 404（该端点不接受 q 参数）
+```
+
+`/ja/items?q=` 的后果是**「以为在翻页、其实没翻」**：实测 `page=2/3` 返回的首条
+商品 ID 完全相同（`9024927`），永远停在第一页。改用路径形式后 `page=2` 首条变为
+`5479202`。
+
+### 2. `in_stock=true` 有效，`is_sold_out=false` 无效
+
+实测同一查询的结果总数：
+
+| 参数 | 总数 |
+|---|---|
+| 无参数 | 4058 |
+| `fake_param=zzz`（对照） | 4058 |
+| `is_sold_out=false` | **4058** ← 与假参数完全一致，说明被忽略 |
+| `in_stock=true` | **4038** ← 真实收窄 |
+
+所以「仅在售」只能靠 `in_stock`。代码里 `is_sold_out` 从不出现，且有测试反向断言。
+
+### 3. `popularity` 排序下翻页会静默失效
+
+站点在 `popularity` 下**忽略 `page`**（实测 page=1/2/3 首条 ID 恒为 `2280136`）。
+因此翻页时（`page > 1`）必须切换到 `new` 排序并显式发 `page`，否则永远返回第一页。
+
+本工具的做法：第 1 页保留用户的 `popularity` 意图，第 2 页起自动切 `new`，并通过
+输出里的 `sort_note` **明说切换了**——不静默改行为。
+
+### 4. `liked` 与 `wish_lists` 是两个不同排序，不得归一化
+
+两者结果集不同（顺序与成员都可能不一致）。`liked` 是有效值，**不要**把它
+「统一」成 `wish_lists`，那会改变返回顺序、让同一查询在不同版本给出不同结果。
+
+> 依据：2026-10 实验轮次中实测确认两者结果集不同。具体商品 ID 未固化进仓库，
+> 上面只保留结论；若需复核，用同一查询分别跑 `--sort liked` 与 `--sort wish_lists`
+> 对比 `items[].id` 序列即可。
+
+### 5. 未知 `sort` 值：站点静默回退到 popularity，不报错
+
+传一个不存在的排序名不会 400/404，站点会**当成 popularity 处理**。所以
+「参数传错」在响应里看不出来——排查排序异常时先确认 sort 值拼写。
+
 ## 子命令路由（决策树）
 
 ```
