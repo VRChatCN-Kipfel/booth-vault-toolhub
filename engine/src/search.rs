@@ -422,7 +422,13 @@ pub fn search_with(
     )
     .map_err(|e| format!("search request: {e}"))?;
     if !(200..300).contains(&r.status) {
-        return Err(format!("search status {}", r.status));
+        return Err(crate::http::describe_failure(
+            "search",
+            r.status,
+            &r.final_url,
+            &r.body,
+            &r.diag_headers,
+        ));
     }
     let html = String::from_utf8_lossy(&r.body);
     // 登录页伪装成 200，必须在**解析与入库之前**拦住。
@@ -469,7 +475,13 @@ pub fn search_with_count(
     )
     .map_err(|e| format!("search request: {e}"))?;
     if !(200..300).contains(&r.status) {
-        return Err(format!("search status {}", r.status));
+        return Err(crate::http::describe_failure(
+            "search",
+            r.status,
+            &r.final_url,
+            &r.body,
+            &r.diag_headers,
+        ));
     }
     let html = String::from_utf8_lossy(&r.body);
     if looks_like_login_page(&html) {
@@ -503,7 +515,23 @@ pub fn search_booth(client: &Client, query: &str) -> Result<Vec<SearchItem>, Str
     )
     .map_err(|e| format!("search request: {e}"))?;
     if !r.status().is_success() {
-        return Err(format!("search status {}", r.status()));
+        // 失败分支里读 body 是安全的（这个响应不会再被用于下载），
+        // 而不读就看不到 Cloudflare 挑战页 —— 那正是「只报状态码」的盲区。
+        let status = r.status().as_u16();
+        let url = r.url().to_string();
+        // 诊断头必须在读 body 之前采集（`bytes()` 会消费响应）。
+        let diag = crate::http::collect_diag_headers(&r);
+        let body = match r.bytes() {
+            Ok(b) => b.to_vec(),
+            Err(e) => {
+                return Err(format!(
+                    "search: 状态码 {status}，且读取响应体失败: {e} url={url}"
+                ));
+            }
+        };
+        return Err(crate::http::describe_failure(
+            "search", status, &url, &body, &diag,
+        ));
     }
     let html = r.text().map_err(|e| format!("search body: {e}"))?;
     Ok(parse_search_html(&html))

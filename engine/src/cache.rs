@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256};
 /// `v1` 表与新定义的元组类型不兼容——`put` 会静默失败、`get` 恒为 None，
 /// 表现为「缓存开了但永不命中」。换表名让旧库自然失效（旧表留着不影响正确性），
 /// 不需要写迁移逻辑，也不冒把用户目录里旧文件误删的风险。
-const TABLE: TableDefinition<&str, (u64, u16, &str, &[u8])> = TableDefinition::new("http_v2");
+const TABLE: TableDefinition<&str, (u64, u16, &str, &[u8], &str)> = TableDefinition::new("http_v3");
 
 /// 缓存条目（命中后回放的全部信息）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +39,12 @@ pub struct StoredEntry {
     pub status: u16,
     pub final_url: String,
     pub body: Vec<u8>,
+    /// 诊断用的少量响应头（`key: value\n` 拼接），**只存归因必需的几项**。
+    ///
+    /// 为什么不存全量响应头：缓存是给「重放响应体」用的，绝大多数头（CSP、权限策略、
+    /// `Set-Cookie`）对回放无意义，还会撑大缓存并把 cookie 落到盘上。这里只留
+    /// `Cf-Mitigated` / `Retry-After` 这类**决定下一步动作**的项。
+    pub diag_headers: String,
 }
 
 /// 商品 JSON 的变化很慢，缓存 6 小时。
@@ -158,7 +164,7 @@ impl Cache {
         let table = txn.open_table(TABLE).ok()?;
         // `get` 返回的 AccessGuard 是临时值，必须绑定后再取值，否则 body 的借用悬空。
         let guard = table.get(scope.key(url).as_str()).ok()??;
-        let (stamped, status, final_url, body) = guard.value();
+        let (stamped, status, final_url, body, diag) = guard.value();
         let fresh = now_secs().saturating_sub(stamped) < ttl;
         if !fresh {
             return None;
@@ -167,6 +173,7 @@ impl Cache {
             status,
             final_url: final_url.to_string(),
             body: body.to_vec(),
+            diag_headers: diag.to_string(),
         })
     }
 
@@ -187,6 +194,7 @@ impl Cache {
                     entry.status,
                     entry.final_url.as_str(),
                     entry.body.as_slice(),
+                    entry.diag_headers.as_str(),
                 ),
             );
         }
@@ -264,6 +272,7 @@ mod tests {
                 status: 200,
                 final_url: "https://booth.pm/x".to_string(),
                 body: b"hello".to_vec(),
+                diag_headers: String::new(),
             },
         );
         assert_eq!(
@@ -271,7 +280,8 @@ mod tests {
             Some(StoredEntry {
                 status: 200,
                 final_url: "https://booth.pm/x".to_string(),
-                body: b"hello".to_vec()
+                body: b"hello".to_vec(),
+                diag_headers: String::new(),
             })
         );
         let _ = std::fs::remove_file(&p);
@@ -288,6 +298,7 @@ mod tests {
                 status: 200,
                 final_url: "https://booth.pm/x".to_string(),
                 body: b"hello".to_vec(),
+                diag_headers: String::new(),
             },
         );
         // ttl=0 是「绕过缓存」的表达，必须不命中。
@@ -306,6 +317,7 @@ mod tests {
                 status: 200,
                 final_url: "https://booth.pm/x".to_string(),
                 body: b"hello".to_vec(),
+                diag_headers: String::new(),
             },
         );
         assert_eq!(
@@ -313,7 +325,8 @@ mod tests {
             Some(StoredEntry {
                 status: 200,
                 final_url: "https://booth.pm/x".to_string(),
-                body: b"hello".to_vec()
+                body: b"hello".to_vec(),
+                diag_headers: String::new(),
             })
         );
         // 秒级时间戳：等满 2 秒再断言，跨过整秒边界，避免在 1.0~1.1s 之间的抖动。
@@ -344,6 +357,7 @@ mod tests {
                 status: 200,
                 final_url: "https://booth.pm/x".to_string(),
                 body: b"hello".to_vec(),
+                diag_headers: String::new(),
             },
         );
         c.clear();
@@ -367,6 +381,7 @@ mod tests {
                 status: 200,
                 final_url: "https://booth.pm/x".to_string(),
                 body: b"ok".to_vec(),
+                diag_headers: String::new(),
             },
         );
         assert_eq!(
@@ -374,7 +389,8 @@ mod tests {
             Some(StoredEntry {
                 status: 200,
                 final_url: "https://booth.pm/x".to_string(),
-                body: b"ok".to_vec()
+                body: b"ok".to_vec(),
+                diag_headers: String::new(),
             })
         );
         let _ = std::fs::remove_file(&p);
@@ -398,6 +414,7 @@ mod tests {
                 status: 200,
                 final_url: url.to_string(),
                 body: b"anon".to_vec(),
+                diag_headers: String::new(),
             },
         );
         let auth = scope_of(Some("_plaza_session_nktz7u=SECRET"));
@@ -410,6 +427,7 @@ mod tests {
                 status: 200,
                 final_url: url.to_string(),
                 body: b"auth".to_vec(),
+                diag_headers: String::new(),
             },
         );
         assert_eq!(
@@ -462,6 +480,7 @@ mod tests {
                 status: 200,
                 final_url: "https://booth.pm/x".to_string(),
                 body: b"v".to_vec(),
+                diag_headers: String::new(),
             },
         );
         assert_eq!(c.get(Scope::Anonymous, "https://booth.pm/x", 0), None);
@@ -482,6 +501,7 @@ mod tests {
                 status: 206,
                 final_url: real_final.to_string(),
                 body: b"partial".to_vec(),
+                diag_headers: String::new(),
             },
         );
         let got = c.get(Scope::Anonymous, url, TTL_PAGE).expect("应命中");
