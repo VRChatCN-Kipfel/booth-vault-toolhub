@@ -300,6 +300,53 @@ struct EntryRow {
     method: String,
 }
 
+// ── intake ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+struct IntakeParams {
+    /// 待入库的目录或文件（可多个；目录递归展开）。
+    dirs: Vec<String>,
+    /// 归档根目录（默认读配置 download_root）。
+    #[serde(default)]
+    out: Option<String>,
+    /// 只出报告，不移动、不归档、不联网。
+    #[serde(default)]
+    dry_run: bool,
+    /// 无法判定项的处置：report（默认，原地不动）| move（移入 <out>/_待处理）| skip。
+    #[serde(default)]
+    on_unknown: Option<String>,
+    /// 检索命中歧义时的处置：ask（默认，不自动归档）| skip | force（显式逃生阀）。
+    #[serde(default)]
+    on_ambiguous: Option<String>,
+    /// 显式确认：不加时歧义项一律不自动归档，加了也只放行无歧义项。
+    #[serde(default)]
+    yes: bool,
+    /// BOOTH 登录 Cookie（补全商品页其他免费版本）。
+    #[serde(default)]
+    cookie: Option<String>,
+    /// 下载失败时保留 .part 供取证（默认读配置，缺省关闭；保留件不产生续传能力）。
+    #[serde(default)]
+    keep_failed: Option<bool>,
+}
+
+// ── mismatch ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+struct MismatchParams {
+    /// 库根目录（默认读配置 download_root）。
+    #[serde(default)]
+    base: Option<String>,
+    /// 强制重归档到官方分类（既有内容就地留档为「旧版本_<时间戳>」）。
+    #[serde(default)]
+    fix: bool,
+    /// 只处理这些 ID（fix 时生效；缺省全量）。
+    #[serde(default)]
+    ids: Vec<String>,
+    /// BOOTH 登录 Cookie。
+    #[serde(default)]
+    cookie: Option<String>,
+}
+
 // ── update_check ───────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
@@ -1052,6 +1099,139 @@ impl BoothServer {
         let text = serde_json::to_string_pretty(&out).unwrap_or_default();
         CallToolResult::success(vec![ContentBlock::text(text)])
     }
+
+    /// 混乱目录一键入库。
+    #[tool(
+        description = "混乱目录一键入库：扫描 dirs（目录递归展开）→ 逐个判定身份（文件名含 7 位 ID / 无 ID 压缩包按名检索 / 已在库 / 旁路文件 / 无法判定）→ 分类归档 → 汇总无法判定项。与 organize / search 的区别：后两者假设输入已是单个文件且已知道走哪条路。判定阶段不联网，联网只发生在执行阶段；dry_run=true 只出报告、不改盘、不联网。on_unknown：report（默认，原地不动）/ move（移入 <out>/_待处理）/ skip（跳过动作但报告仍列出）。on_ambiguous：ask（默认，歧义项不自动归档）/ skip / force（显式逃生阀）。yes 只表示已知悉，不放行歧义项。"
+    )]
+    async fn intake(&self, Parameters(params): Parameters<IntakeParams>) -> CallToolResult {
+        let config = load_config();
+        if params.dirs.is_empty() {
+            return tool_error("dirs 不能为空：至少给一个目录或文件");
+        }
+        let out_root = match params.out.or(config.download_root.clone()) {
+            Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
+            _ => return tool_error("未指定归档根目录：用 out 或配置文件 download_root"),
+        };
+        let on_unknown = params.on_unknown.as_deref().unwrap_or("report");
+        let on_ambiguous = params.on_ambiguous.as_deref().unwrap_or("ask");
+        let policy_unknown = match engine::intake::parse_on_unknown(on_unknown, &out_root) {
+            Ok(p) => p,
+            Err(e) => return tool_error(&e),
+        };
+        let policy_ambiguous = match engine::intake::parse_ambiguous(on_ambiguous) {
+            Ok(p) => p,
+            Err(e) => return tool_error(&e),
+        };
+        let desc = match engine::config::desc_weight(None, None, &config) {
+            Ok(w) => w,
+            Err(e) => return tool_error(&e),
+        };
+        let cookie = engine::config::resolve_cookie(params.cookie.as_deref(), &config);
+        let client = make_session(&config, cookie.as_deref());
+        let keep_failed = params
+            .keep_failed
+            .unwrap_or_else(|| engine::config::keep_failed_downloads(&config));
+        let opts = engine::intake::IntakeOptions {
+            out_root: out_root.clone(),
+            on_unknown: policy_unknown,
+            on_ambiguous: policy_ambiguous,
+            dry_run: params.dry_run,
+            confirm: params.yes,
+            cookie,
+            keep_failed_downloads: keep_failed,
+            rate_limit_secs: config
+                .rate_limit_secs
+                .unwrap_or_else(default_rate_limit_secs),
+            desc,
+        };
+        let mut entries: Vec<engine::intake::IntakeEntry> = Vec::new();
+        for dir in &params.dirs {
+            let report = engine::intake::intake_run(&client, std::path::Path::new(dir), &opts);
+            entries.extend(report.entries);
+        }
+        // 信封由 engine 单点定义（`IntakeReport::to_command_json`），CLI 与 MCP 共用。
+        let merged = engine::intake::IntakeReport {
+            root: out_root,
+            dry_run: params.dry_run,
+            entries,
+        };
+        let text = serde_json::to_string_pretty(&merged.to_command_json()).unwrap_or_default();
+        CallToolResult::success(vec![ContentBlock::text(text)])
+    }
+
+    /// 错位检测 / 纠正（#54 P5）。
+    #[tool(
+        description = "错位检测：报告「已入库但所在分类与 BOOTH 官方分类不符」的商品（联网比对官方分类）。与 intake 严格分工：intake 判尚未入库的散落文件（文件域），本工具判已入库但放错类目的 ID 目录（目录域）。fix=true 时强制重归档到官方分类，目标目录既有内容就地留档为「旧版本_<时间戳>」，不清空（不可逆操作一律留档）。ids 为空则全量。"
+    )]
+    async fn mismatch(&self, Parameters(params): Parameters<MismatchParams>) -> CallToolResult {
+        let config = load_config();
+        let base = match params.base.or(config.download_root.clone()) {
+            Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
+            _ => return tool_error("未指定库根目录：用 base 或配置文件 download_root"),
+        };
+        if !base.is_dir() {
+            return tool_error(&format!("FATAL: {} 不存在", base.display()));
+        }
+        let cookie = engine::config::resolve_cookie(params.cookie.as_deref(), &config);
+        let client = make_session(&config, cookie.as_deref());
+        let found =
+            engine::audit::mismatch_audit(&base, |id| engine::fetch::fetch_item(&client, id).ok());
+        let found: Vec<_> = if params.ids.is_empty() {
+            found
+        } else {
+            found
+                .into_iter()
+                .filter(|m| params.ids.iter().any(|id| id == &m.id))
+                .collect()
+        };
+        let mut fixed = 0usize;
+        let mut failures: Vec<String> = Vec::new();
+        if params.fix {
+            let opts = engine::organize::OrganizeOptions {
+                out_root: &base,
+                dry_run: false,
+                cookie: cookie.as_deref(),
+                keep_failed_downloads: engine::config::keep_failed_downloads(&config),
+            };
+            for m in &found {
+                let outcome = engine::organize::reorganize_dir(
+                    &client,
+                    std::path::Path::new(&m.path),
+                    &m.id,
+                    &opts,
+                    icon_fn,
+                );
+                if outcome.ok {
+                    fixed += 1;
+                } else {
+                    failures.push(format!("{}: {}", m.id, outcome.message));
+                }
+            }
+        }
+        let rows: Vec<serde_json::Value> = found
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "id": m.id,
+                    "name": m.name,
+                    "wrong_cat": m.wrong_cat,
+                    "dest_cat": m.dest_cat,
+                    "path": m.path,
+                })
+            })
+            .collect();
+        let out = serde_json::json!({
+            "command": "mismatch",
+            "total": found.len(),
+            "fixed": fixed,
+            "failures": failures,
+            "items": rows,
+        });
+        CallToolResult::success(vec![ContentBlock::text(
+            serde_json::to_string_pretty(&out).unwrap_or_default(),
+        )])
+    }
 }
 
 // ── 内部辅助 ─────────────────────────────────────────────────────
@@ -1274,6 +1454,36 @@ mod tests {
         let ot = serde_json::to_string(&out).expect("出参应可序列化");
         for f in ["source_hash", "excerpt", "excerpt_hit", "excerpt_truncated"] {
             assert!(ot.contains(f), "InspectOutput 缺少 {f}");
+        }
+    }
+
+    /// `intake` 的四个开关必须对外可见：少了 `on_unknown` / `on_ambiguous`，
+    /// agent 就只能拿到默认的「仅报告」，永远够不到 move / force 这两条处置路径。
+    #[test]
+    fn intake_schema_exposes_all_switches() {
+        let p = schemars::schema_for!(IntakeParams);
+        let pt = serde_json::to_string(&p).expect("schema 应可序列化");
+        assert!(pt.contains("dirs"), "schema 未列出 dirs，本测试失去区分力");
+        for f in [
+            "out",
+            "dry_run",
+            "on_unknown",
+            "on_ambiguous",
+            "yes",
+            "cookie",
+        ] {
+            assert!(pt.contains(f), "intake 参数缺少 {f}");
+        }
+    }
+
+    /// `mismatch` 与 CLI 同参：`fix` 不给默认值 / 写成私有字段时 agent 看不见。
+    #[test]
+    fn mismatch_schema_exposes_fix_and_ids() {
+        let p = schemars::schema_for!(MismatchParams);
+        let pt = serde_json::to_string(&p).expect("schema 应可序列化");
+        assert!(pt.contains("base"), "schema 未列出 base，本测试失去区分力");
+        for f in ["fix", "ids", "cookie"] {
+            assert!(pt.contains(f), "mismatch 参数缺少 {f}");
         }
     }
 }
