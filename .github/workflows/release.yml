@@ -45,6 +45,13 @@ jobs:
     if: >-
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
       || github.event_name == 'workflow_dispatch'
+    # 显式声明而非继承顶层 `contents: write`：`Resolve CI run ID` 步骤要查
+    # `/actions/runs`，那需要 **actions: read**——继承 top-level 时它是 none，
+    # 请求会 403，又被 `2>/dev/null || true` 吞掉，表现为「未找到 CI 运行」。
+    # 只列真正需要的项（显式声明后未列项一律为 none）。
+    permissions:
+      contents: write
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -96,6 +103,11 @@ jobs:
       - name: Resolve CI run ID
         id: ci-run
         shell: bash
+        # 显式给 token：本步骤用 `gh api` 查 /actions/runs。gh 在 Actions 里虽会自动
+        # 注入 GITHUB_TOKEN，但那是实现细节；显式声明后，「查不到」才是真的查不到，
+        # 不会与「无凭证 403 被 2>/dev/null 吞掉」混为一谈。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_run" ]; then
             echo "ci_run_id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
@@ -276,6 +288,15 @@ jobs:
       - name: Download WebView2 fixed runtime (latest)
         if: matrix.platform == 'windows'
         shell: pwsh
+        # 必须显式给 GH_TOKEN：`gh release download --repo <第三方>` 在本仓库没有
+        # 凭证时会退化成**未认证**请求，配额只有 60 次/小时/IP，而 Actions runner 是
+        # 共享出口 IP，实测直接撞 0/60 回 "HTTP 403: API rate limit exceeded"。
+        #
+        # 实测（2026-10）：同一 API 端点，匿名 `X-RateLimit-Limit: 60`（Remaining: 0），
+        # 带仓库作用域 token `5000`（Remaining: 4993）。仓库作用域 token 读**第三方
+        # 公开仓库**是被认证的——不是 403，也不与匿名配额共享。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/wv2" -Force | Out-Null
           gh release download --repo westinyang/WebView2RuntimeArchive `
