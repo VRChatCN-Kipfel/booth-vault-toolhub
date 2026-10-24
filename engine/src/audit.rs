@@ -325,6 +325,22 @@ const ID_DIR_RE: &str = r"^(\d{7})[\s_\-－　ー]+(.+)$";
 /// ID_DIR_RE 编译缓存。
 static ID_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 
+/// 按目录名解析商品目录，返回 `(7 位 ID, 分隔符之后的名称)`。
+///
+/// 公开是为了让 intake 的 `AlreadyArchived` 判定与本模块共用**同一份**正则：
+/// 各自抄一份字面量，会在「全角空格 / 日文长音 / 可重复分隔符」这些边角上分叉，
+/// 症状是同一目录被 intake 当成散落文件、被 scan_library 当成已入库。
+pub fn id_dir_of(name: &str) -> Option<(String, String)> {
+    let caps = ID_RE
+        .get_or_init(|| Regex::new(ID_DIR_RE).expect("valid regex"))
+        .captures(name)
+        .ok()
+        .flatten()?;
+    let id = caps.get(1)?.as_str().to_string();
+    let nm = caps.get(2)?.as_str().to_string();
+    Some((id, nm))
+}
+
 /// 递归扫描结果：单个商品目录（ID 目录名）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScannedDir {
