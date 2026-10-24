@@ -510,6 +510,7 @@ pub fn search_booth(client: &Client, query: &str) -> Result<Vec<SearchItem>, Str
 }
 
 /// 一次按名解析的结果。
+#[derive(Debug, Clone)]
 pub struct NamedHit {
     pub item: crate::score::Item,
     /// 命中所用的检索词（供展示与排查）。
@@ -519,6 +520,12 @@ pub struct NamedHit {
 /// 按名解析的整体结果。
 pub struct ResolveOutcome {
     pub hit: Option<NamedHit>,
+    /// 名称命中但**被判歧义**的最佳候选（仅在 `hit` 为 `None` 时有值）。
+    ///
+    /// 历史实现把歧义候选直接丢弃，于是「歧义」与「根本没搜到」在调用方眼里
+    /// 无法区分，只能一律当失败。intake 需要这个区分来做 `--force-ambiguous`
+    /// 逃生阀与「歧义项不自动归档」的报告分流，故在此回传。
+    pub ambiguous_hit: Option<NamedHit>,
     /// 实际尝试过的检索词，按尝试顺序。
     pub tried: Vec<String>,
 }
@@ -563,6 +570,7 @@ pub fn resolve_by_name(
 ) -> ResolveOutcome {
     let mut tried: Vec<String> = Vec::new();
     let mut hit: Option<NamedHit> = None;
+    let mut ambiguous_hit: Option<NamedHit> = None;
     // 已经排进计划的检索词（三轮共用）。跨轮重复会让同一个词发两次阻塞请求，
     // 白花一次 0.5~0.8s 限速额度；`tried` 还用于 GUI 候选展示，重复项会显示成两条。
     let mut planned: Vec<String> = Vec::new();
@@ -571,9 +579,13 @@ pub fn resolve_by_name(
     for q in candidates {
         planned.push(q.clone());
         tried.push(q.clone());
-        if let Some(h) = pick_once(client, q, resource_names, &info, weight) {
-            hit = Some(h);
+        let picked = pick_once(client, q, resource_names, &info, weight);
+        if picked.hit.is_some() {
+            hit = picked.hit;
             break;
+        }
+        if ambiguous_hit.is_none() {
+            ambiguous_hit = picked.ambiguous;
         }
     }
 
@@ -590,9 +602,13 @@ pub fn resolve_by_name(
         for q in words {
             planned.push(q.clone());
             tried.push(q.clone());
-            if let Some(h) = pick_once(client, &q, resource_names, &info, weight) {
-                hit = Some(h);
+            let picked = pick_once(client, &q, resource_names, &info, weight);
+            if picked.hit.is_some() {
+                hit = picked.hit;
                 break;
+            }
+            if ambiguous_hit.is_none() {
+                ambiguous_hit = picked.ambiguous;
             }
         }
     }
@@ -609,14 +625,25 @@ pub fn resolve_by_name(
         for q in words {
             planned.push(q.clone());
             tried.push(q.clone());
-            if let Some(h) = pick_once(client, &q, resource_names, &info, weight) {
-                hit = Some(h);
+            let picked = pick_once(client, &q, resource_names, &info, weight);
+            if picked.hit.is_some() {
+                hit = picked.hit;
                 break;
+            }
+            if ambiguous_hit.is_none() {
+                ambiguous_hit = picked.ambiguous;
             }
         }
     }
 
-    ResolveOutcome { hit, tried }
+    // 只有确实没命中时才回传歧义候选：两者同时有值会让调用方无法判断
+    // 该归档还是该报告。
+    let ambiguous_hit = if hit.is_some() { None } else { ambiguous_hit };
+    ResolveOutcome {
+        hit,
+        ambiguous_hit,
+        tried,
+    }
 }
 
 /// 三轮候选去重：按给出的顺序拼接，**跳过任何已在前面出现过的词**。
@@ -639,6 +666,13 @@ fn dedup_rounds(rounds: &[Vec<String>], seeds: &[String]) -> Vec<String> {
     out
 }
 
+/// 单个检索词的解析结果：命中、歧义候选，或两者皆无。
+#[derive(Debug, Default)]
+struct PickOutcome {
+    hit: Option<NamedHit>,
+    ambiguous: Option<NamedHit>,
+}
+
 /// 对单个检索词执行「搜索 → 评分 → 名称命中校验」。
 fn pick_once(
     client: &Client,
@@ -646,23 +680,28 @@ fn pick_once(
     resource_names: Option<&[String]>,
     info: &impl Fn(&str) -> Option<CanonInfo>,
     weight: crate::score::DescWeight,
-) -> Option<NamedHit> {
-    let results = search_booth(client, q).ok()?;
+) -> PickOutcome {
+    let Some(results) = search_booth(client, q).ok() else {
+        return PickOutcome::default();
+    };
     if results.is_empty() {
-        return None;
+        return PickOutcome::default();
     }
     pick_from_results(q, &results, resource_names, info, weight)
 }
 
 /// 评分决策本身——与取数（`search_booth` / `fetch_item`）分开，好让这层能用假数据
 /// 直接测：否则「开关开了但说明文没接进去」这种失效只能靠真实网络才能暴露。
+///
+/// 歧义候选**不再丢弃**而是放进 `ambiguous`：调用方据此区分「歧义」与「没搜到」，
+/// 前者可用 `--force-ambiguous` 放行，后者只能按无法判定处理。
 fn pick_from_results(
     q: &str,
     results: &[SearchItem],
     resource_names: Option<&[String]>,
     info: &impl Fn(&str) -> Option<CanonInfo>,
     weight: crate::score::DescWeight,
-) -> Option<NamedHit> {
+) -> PickOutcome {
     let items: Vec<crate::score::Item> = results
         .iter()
         .map(|r| crate::score::Item {
@@ -708,10 +747,9 @@ fn pick_from_results(
     } else {
         crate::score::score_and_pick(q, &items, false, canonical, resource_names)
     };
-    let p = picked?;
-    if ambiguous {
-        return None;
-    }
+    let Some(p) = picked else {
+        return PickOutcome::default();
+    };
     // 规范名取不到时退化为空串，**仅用于这里的名称命中比对**——它不参与评分与
     // 同名判定，不会造成 `"" == ""` 那类假歧义。
     let cn = cached(&p.id).map(|ci| ci.name).unwrap_or_default();
@@ -723,12 +761,24 @@ fn pick_from_results(
     let resource_ok =
         resource_names.is_some_and(|rs| rs.iter().any(|r| crate::synonyms::name_hit(q, r, "")));
     if !name_ok && !resource_ok {
-        return None;
+        return PickOutcome::default();
     }
-    Some(NamedHit {
+    let named = NamedHit {
         item: p.clone(),
         query: q.to_string(),
-    })
+    };
+    // 歧义判定放在名称命中校验**之后**：名称都没命中的候选，报歧义没有意义
+    // （调用方拿到它也确认不了任何东西）。
+    if ambiguous {
+        return PickOutcome {
+            hit: None,
+            ambiguous: Some(named),
+        };
+    }
+    PickOutcome {
+        hit: Some(named),
+        ambiguous: None,
+    }
 }
 
 /// 店铺 `/items?page=N` 翻页收集商品 ID（店铺根有 Cloudflare 护盾，必须走 /items）。
@@ -1035,11 +1085,14 @@ mod tests {
         let q = "star tiara";
 
         let off = pick_from_results(q, &results, None, &info, crate::score::DescWeight::OFF)
+            .hit
             .expect("关闭时基线赢家应命中");
         assert_eq!(off.item.id, "2222222", "关闭时说明文不得参与");
 
         let on_weight = crate::score::DescWeight::new(50, 2).expect("50×2 在上限内");
-        let on = pick_from_results(q, &results, None, &info, on_weight).expect("开启时也应命中");
+        let on = pick_from_results(q, &results, None, &info, on_weight)
+            .hit
+            .expect("开启时也应命中");
         assert_eq!(
             on.item.id, "1111111",
             "说明文已接进评分时首位应反超；仍是 2222222 说明开关没接线"
@@ -1111,7 +1164,7 @@ mod tests {
 
         let got = pick_from_results(q, &results, None, &info, crate::score::DescWeight::OFF);
         assert_eq!(
-            got.map(|h| h.item.id),
+            got.hit.map(|h| h.item.id),
             plain.0.map(|i| i.id.clone()),
             "关闭时不得改变任何选优结果"
         );

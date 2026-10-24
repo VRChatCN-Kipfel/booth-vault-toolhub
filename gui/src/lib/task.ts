@@ -25,6 +25,7 @@ const KIND_LABEL: Partial<Record<TaskKind, string>> = {
   backfill_free: '补免费文件',
   mismatch_audit: '错位检测',
   fix_mismatch: '错位纠正',
+  intake: '一键入库',
 };
 
 export async function runTask(

@@ -129,6 +129,40 @@ pub fn run(cli: Cli) -> u8 {
             cli.json,
         ),
         Command::Shell { command } => cmd_shell(command),
+        Command::Intake {
+            dirs,
+            out,
+            dry_run,
+            on_unknown,
+            on_ambiguous,
+            yes,
+            cookie,
+        } => cmd_intake(
+            &config,
+            &dirs,
+            out.as_deref(),
+            dry_run,
+            &on_unknown,
+            &on_ambiguous,
+            yes,
+            cookie.as_deref(),
+            keep_failed,
+            cli.json,
+        ),
+        Command::Mismatch {
+            base,
+            fix,
+            id,
+            cookie,
+        } => cmd_mismatch(
+            &config,
+            base.as_deref(),
+            fix,
+            &id,
+            cookie.as_deref(),
+            keep_failed,
+            cli.json,
+        ),
         Command::Watch(a) => {
             cmd_collections(&config, engine::collections::Kind::Watch, &a, cli.json)
         }
@@ -1203,6 +1237,249 @@ fn cmd_shell(cmd: ShellCmd) -> u8 {
             }
         }
     }
+}
+
+/// intake：混乱目录一键入库。
+///
+/// 判定与执行全部下沉到 `engine::intake`（三端唯一实现）。本函数只做参数解析与
+/// 渲染：`--yes` 在此不改变歧义策略——按 Q1 裁定，它只表示「已确认可以自动
+/// 执行」，歧义项一律不自动归档，放行歧义必须显式 `--on-ambiguous force`。
+#[allow(clippy::too_many_arguments)]
+fn cmd_intake(
+    config: &AppConfig,
+    dirs: &[std::path::PathBuf],
+    out: Option<&Path>,
+    dry_run: bool,
+    on_unknown: &str,
+    on_ambiguous: &str,
+    yes: bool,
+    cookie: Option<&str>,
+    keep_failed: bool,
+    json: bool,
+) -> u8 {
+    let out_root = match download_root(config, out) {
+        Some(p) => p.to_path_buf(),
+        None => return fail(json, "未指定归档根目录：用 --out 或配置文件 download_root"),
+    };
+    let policy_unknown = match engine::intake::parse_on_unknown(on_unknown, &out_root) {
+        Ok(p) => p,
+        Err(e) => return fail(json, &e),
+    };
+    let policy_ambiguous = match engine::intake::parse_ambiguous(on_ambiguous) {
+        Ok(p) => p,
+        Err(e) => return fail(json, &e),
+    };
+    let desc = match engine::config::desc_weight(None, None, config) {
+        Ok(w) => w,
+        Err(e) => return fail(json, &e),
+    };
+    let cookie = resolve_cookie(cookie, config);
+    let client = make_session(config, cookie.as_deref());
+    let rate_limit = config
+        .rate_limit_secs
+        .unwrap_or_else(default_rate_limit_secs);
+    let opts = engine::intake::IntakeOptions {
+        out_root: out_root.clone(),
+        on_unknown: policy_unknown,
+        on_ambiguous: policy_ambiguous,
+        dry_run,
+        confirm: yes,
+        cookie,
+        keep_failed_downloads: keep_failed,
+        rate_limit_secs: rate_limit,
+        desc,
+    };
+
+    let mut entries: Vec<engine::intake::IntakeEntry> = Vec::new();
+    for dir in dirs {
+        let report = engine::intake::intake_run(&client, dir, &opts);
+        entries.extend(report.entries);
+    }
+    let merged = engine::intake::IntakeReport {
+        root: out_root,
+        dry_run,
+        entries,
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&merged.to_command_json()).unwrap()
+        );
+    } else {
+        print_intake_human(&merged, yes);
+    }
+    if merged.has_failures() { 1 } else { 0 }
+}
+
+/// 人类可读输出：按状态分组，无法判定项必列。
+fn print_intake_human(report: &engine::intake::IntakeReport, yes: bool) {
+    use engine::intake::{IntakeKind, IntakeStatus};
+    let status = |s: IntakeStatus| -> Vec<&engine::intake::IntakeEntry> {
+        report.entries.iter().filter(|e| e.status == s).collect()
+    };
+    let archived = status(IntakeStatus::Archived);
+    let moved = status(IntakeStatus::Moved);
+    let ambiguous = status(IntakeStatus::Ambiguous);
+    let failed = status(IntakeStatus::Failed);
+    let reported = status(IntakeStatus::Reported);
+    let skipped = status(IntakeStatus::Skipped);
+
+    println!(
+        "扫描 {} 项（{}）",
+        report.entries.len(),
+        if report.dry_run { "dry-run" } else { "执行" }
+    );
+    for e in &archived {
+        println!("  ✓ 归档 {}", e.target_dir.display());
+    }
+    for e in &moved {
+        println!("  → 移入 {}", e.target_dir.display());
+    }
+    for e in &ambiguous {
+        println!("  ? 歧义 {}：{}", e.item.path.display(), e.message);
+    }
+    for e in &failed {
+        println!("  ! 失败 {}：{}", e.item.path.display(), e.message);
+    }
+    for e in &skipped {
+        println!("  · 跳过 {}：{}", e.item.path.display(), e.item.reason);
+    }
+    // 无法判定项无论哪种 on_unknown 策略都必须列出（不静默跳过）。
+    let unknowns: Vec<_> = reported
+        .iter()
+        .filter(|e| e.item.kind == IntakeKind::Unknown)
+        .collect();
+    if !unknowns.is_empty() {
+        println!("无法判定 {} 项（原地未动）：", unknowns.len());
+        for e in unknowns {
+            println!("  ? {}：{}", e.item.path.display(), e.item.reason);
+        }
+    }
+    let others: Vec<_> = reported
+        .iter()
+        .filter(|e| e.item.kind != IntakeKind::Unknown)
+        .collect();
+    if !others.is_empty() {
+        println!("待执行 {} 项（dry-run 只报告）：", others.len());
+        for e in others {
+            println!("  · {}：{}", e.item.path.display(), e.message);
+        }
+    }
+    println!(
+        "汇总: 归档 {} / 移入 {} / 歧义 {} / 失败 {} / 跳过 {} / 报告 {}",
+        archived.len(),
+        moved.len(),
+        ambiguous.len(),
+        failed.len(),
+        skipped.len(),
+        reported.len()
+    );
+    if !ambiguous.is_empty() && !yes {
+        println!(
+            "提示：歧义项未自动归档；确认后可加 --yes 表示已知悉，或用 --on-ambiguous force 强制。"
+        );
+    }
+}
+
+/// mismatch：错位检测 / 纠正（#54 P5，补 CLI 入口）。
+///
+/// 与 intake 严格分工：本命令只处理**已入库**的 ID 目录（目录域）。判据全部来自
+/// `engine::audit::mismatch_audit`，`--fix` 走 `engine::organize::reorganize_dir`（既有留档语义）。
+fn cmd_mismatch(
+    config: &AppConfig,
+    base: Option<&Path>,
+    fix: bool,
+    ids: &[String],
+    cookie: Option<&str>,
+    keep_failed: bool,
+    json: bool,
+) -> u8 {
+    let base = match download_root(config, base) {
+        Some(p) => p.to_path_buf(),
+        None => return fail(json, "未指定库根目录：用 --base 或配置文件 download_root"),
+    };
+    if !base.is_dir() {
+        return fail(json, &format!("FATAL: {} 不存在", base.display()));
+    }
+    let cookie = resolve_cookie(cookie, config);
+    let client = make_session(config, cookie.as_deref());
+    let found =
+        engine::audit::mismatch_audit(&base, |id| engine::fetch::fetch_item(&client, id).ok());
+    let found: Vec<_> = if ids.is_empty() {
+        found
+    } else {
+        found
+            .into_iter()
+            .filter(|m| ids.iter().any(|id| id == &m.id))
+            .collect()
+    };
+
+    let mut fixed = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    if fix {
+        let opts = engine::organize::OrganizeOptions {
+            out_root: &base,
+            dry_run: false,
+            cookie: cookie.as_deref(),
+            keep_failed_downloads: keep_failed,
+        };
+        for m in &found {
+            let outcome = engine::organize::reorganize_dir(
+                &client,
+                std::path::Path::new(&m.path),
+                &m.id,
+                &opts,
+                icon_fn,
+            );
+            if outcome.ok {
+                fixed += 1;
+                if !json {
+                    println!("  ✓ {} → {}", m.id, outcome.target_dir.display());
+                }
+            } else {
+                failures.push(format!("{}: {}", m.id, outcome.message));
+            }
+        }
+    }
+
+    let rows: Vec<serde_json::Value> = found
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "name": m.name,
+                "wrong_cat": m.wrong_cat,
+                "dest_cat": m.dest_cat,
+                "path": m.path,
+            })
+        })
+        .collect();
+    let summary = serde_json::json!({
+        "command": "mismatch",
+        "total": found.len(),
+        "fixed": fixed,
+        "failures": failures,
+        "items": rows,
+    });
+    if json {
+        println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+    } else {
+        println!("错位 {} 项", found.len());
+        for m in &found {
+            println!(
+                "  {} {} [{} → 期望 {}]",
+                m.id, m.name, m.wrong_cat, m.dest_cat
+            );
+        }
+        if fix {
+            println!("已纠正 {fixed} 项");
+        }
+        for f in &failures {
+            println!("  ! {f}");
+        }
+    }
+    if failures.is_empty() { 0 } else { 1 }
 }
 
 /// version-audit：文件名版本巡检，可选补免费文件。
