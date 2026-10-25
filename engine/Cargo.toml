@@ -15,10 +15,10 @@ path = "src/bin/booth.rs"
 
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
-dirs = "6"
+dirs = "7"
 encoding_rs = "0.8"
-fancy-regex = "0.16"
-feed-rs = "2.4"
+fancy-regex = "0.19"
+feed-rs = "3.0"
 flate2 = "1"
 # 日文读音变体（engine/src/kana.rs）。embed-ipadic 在构建期下载 ipadic 并把词典
 # 编进二进制，实测 +45.56MB。**没有 feature 开关**：保留开关就必须让 lite 单独
@@ -26,15 +26,15 @@ flate2 = "1"
 # 「换小体积发行版」的承诺在生产上从未成立，故直接删掉开关，只有一种发行版。
 lindera = { version = "6.2", features = ["embed-ipadic"] }
 tar = "0.4"
-phf = { version = "0.13", features = ["macros"] }
+phf = { version = "0.14", features = ["macros"] }
 reqwest = { version = "0.13", features = ["blocking", "json", "cookies", "http2", "system-proxy", "gzip", "brotli", "deflate"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.9"
+toml = "1.1"
 unicode-general-category = "1.1"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 redb = "4.4"
-sha2 = "0.10"
+sha2 = "0.11"
 
 [target.'cfg(windows)'.dependencies]
 shell-win = { path = "../shell/win" }
