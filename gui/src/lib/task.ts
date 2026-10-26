@@ -93,6 +93,10 @@ export async function retryFailed(taskId: string): Promise<string | null> {
     args.files = ids;
     args.dryRun = false;
     args.forceIds = ids.map((file) => forceIdForRetry(file, task));
+  } else if (task.kind === 'intake' || task.cmd === 'intake') {
+    const dirs = asStringList(task.args.dirs);
+    if (dirs.length === 0) return null;
+    args.dirs = dirs;
   } else {
     return null;
   }

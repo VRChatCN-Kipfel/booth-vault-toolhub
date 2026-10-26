@@ -855,12 +855,20 @@ pub struct MismatchInfo {
 /// 错位检测：经 `fetch` 注入联网比对官方分类。
 ///
 /// 目标分类与当前父目录名不一致、且目标分类非「未分类」时记录错位。
+/// `rate_limit` 按配置在每件 `fetch` 之间 sleep（首件不睡），与
+/// `version_audit_with_progress` 同口径；大库背靠背请求会触发 BOOTH 风控。
 pub fn mismatch_audit(
     root: &Path,
+    rate_limit: f64,
     fetch: impl Fn(&str) -> Option<crate::fetch::ItemJson>,
 ) -> Vec<MismatchInfo> {
     let mut out = Vec::new();
+    let mut first = true;
     for d in scan_library(root) {
+        if !first {
+            crate::download::sleep_rate_limit(rate_limit);
+        }
+        first = false;
         let Some(item) = fetch(&d.id) else {
             continue;
         };
@@ -2035,7 +2043,7 @@ mod tests {
         let cat = base.join("3D模型");
         std::fs::create_dir_all(&cat).unwrap();
         make_id_dir(&cat, "1111111_错位");
-        let out = mismatch_audit(&base, |id| match id {
+        let out = mismatch_audit(&base, 0.0, |id| match id {
             "1111111" => Some(json_item_cat("髪")),
             _ => None,
         });
@@ -2053,7 +2061,7 @@ mod tests {
         let cat = base.join("3D发型");
         std::fs::create_dir_all(&cat).unwrap();
         make_id_dir(&cat, "2222222_正确");
-        let out = mismatch_audit(&base, |id| match id {
+        let out = mismatch_audit(&base, 0.0, |id| match id {
             "2222222" => Some(json_item_cat("髪")),
             _ => None,
         });
@@ -2067,7 +2075,7 @@ mod tests {
         let cat = base.join("3D模型");
         std::fs::create_dir_all(&cat).unwrap();
         make_id_dir(&cat, "3333333_未分类");
-        let out = mismatch_audit(&base, |id| match id {
+        let out = mismatch_audit(&base, 0.0, |id| match id {
             "3333333" => Some(json_item_cat("")),
             _ => None,
         });
@@ -2091,7 +2099,7 @@ mod tests {
             },
             ..crate::fetch::ItemJson::default()
         };
-        let out = mismatch_audit(&base, |id| {
+        let out = mismatch_audit(&base, 0.0, |id| {
             if id == "4444444" {
                 Some(item.clone())
             } else {
@@ -2107,7 +2115,7 @@ mod tests {
     #[test]
     fn mismatch_audit_empty_library() {
         let base = tmpdir("ma_empty");
-        let out = mismatch_audit(&base, |_| Some(json_item_cat("髪")));
+        let out = mismatch_audit(&base, 0.0, |_| Some(json_item_cat("髪")));
         assert!(out.is_empty());
         let _ = std::fs::remove_dir_all(&base);
     }

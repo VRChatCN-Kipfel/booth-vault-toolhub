@@ -1175,8 +1175,12 @@ impl BoothServer {
         }
         let cookie = engine::config::resolve_cookie(params.cookie.as_deref(), &config);
         let client = make_session(&config, cookie.as_deref());
-        let found =
-            engine::audit::mismatch_audit(&base, |id| engine::fetch::fetch_item(&client, id).ok());
+        let rate_limit = config
+            .rate_limit_secs
+            .unwrap_or_else(default_rate_limit_secs);
+        let found = engine::audit::mismatch_audit(&base, rate_limit, |id| {
+            engine::fetch::fetch_item(&client, id).ok()
+        });
         let found: Vec<_> = if params.ids.is_empty() {
             found
         } else {

@@ -1075,7 +1075,10 @@ pub fn mismatch_audit(
     Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let total = engine::audit::scan_library(&base_path).len();
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
-        let found = engine::audit::mismatch_audit(&base_path, |id| {
+        let rate = config
+            .rate_limit_secs
+            .unwrap_or_else(engine::config::default_rate_limit_secs);
+        let found = engine::audit::mismatch_audit(&base_path, rate, |id| {
             if cancelled(&flag) {
                 return None;
             }
@@ -1124,7 +1127,10 @@ pub fn fix_mismatch(
     let client = make_session(&config, cookie.as_deref());
 
     Ok(spawn_job(&registry, on_event.clone(), move |flag| {
-        let found = engine::audit::mismatch_audit(&base_path, |id| {
+        let rate = config
+            .rate_limit_secs
+            .unwrap_or_else(engine::config::default_rate_limit_secs);
+        let found = engine::audit::mismatch_audit(&base_path, rate, |id| {
             if cancelled(&flag) {
                 return None;
             }

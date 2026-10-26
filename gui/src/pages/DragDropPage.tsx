@@ -134,7 +134,7 @@ export function DragDropPage() {
   const { theme, mode, systemTheme } = useThemeStore();
   const resolved = resolveMode(mode, systemTheme);
   const pal = THEMES[theme][resolved];
-  const latest = useLatestTask('organize');
+  const latest = useLatestTask('intake');
   const task = latest?.task;
   const [dragging, setDragging] = useState(false);
   const [rows, setRows] = useState<ScanRow[]>([]);

@@ -126,7 +126,7 @@ pub enum AmbiguousPolicy {
     Ask,
     /// 静默跳过（报告里仍列）。
     Skip,
-    /// 显式逃生阀：强制按最高分归档（`--force-ambiguous`）。
+    /// 显式逃生阀：强制按最高分归档（`--on-ambiguous force`）。
     Force,
 }
 
@@ -508,7 +508,7 @@ fn run_by_name(client: &Client, mut item: IntakeItem, opts: &IntakeOptions) -> I
             item,
             &h.item.id,
             opts,
-            "按名检索命中歧义，已按 --force-ambiguous 归档",
+            "按名检索命中歧义，已按 --on-ambiguous force 归档",
         );
     }
     if let Some(h) = outcome.hit {
@@ -524,7 +524,7 @@ fn run_by_name(client: &Client, mut item: IntakeItem, opts: &IntakeOptions) -> I
         };
         return IntakeEntry {
             message: format!(
-                "检索命中歧义（候选 {} 与次优分差 <30），未自动归档；确认后可用 --id 指定",
+                "检索命中歧义（候选 {} 与次优分差 <30），未自动归档；确认后可用 --on-ambiguous force，或改用 booth organize <文件> --id 指定",
                 h.item.id
             ),
             item,
@@ -575,7 +575,7 @@ fn archive_by_id(
 ///
 /// 不复用 `score_and_pick` 自己拼一轮，是因为 `resolve_by_name` 额外守着
 /// 「名称真的命中」与「不歧义」两条判据（#71 的教训：只判 `is_some()` 会把无关
-/// 商品当命中并错归档）。歧义候选由它单独回传，供 `--force-ambiguous` 逃生阀使用。
+/// 商品当命中并错归档）。歧义候选由它单独回传，供 `--on-ambiguous force` 逃生阀使用。
 fn pick_by_name(
     client: &Client,
     path: &Path,
