@@ -25,7 +25,7 @@ BOOTH（日本数字创作集市，VRChat 素材主产地）素材的**下载 / 
 
 | 入口 | 说明 | 适用 |
 |------|------|------|
-| **`booth` CLI** | 编译后的二进制，十四子命令 | 终端/agent 首选 |
+| **`booth` CLI** | 编译后的二进制，十七子命令 | 终端/agent 首选 |
 | **booth-mcp** | MCP stdio server，暴露十三工具（无 shell） | opencode / Claude Code 等 MCP 客户端 |
 | 原 `python scripts/booth.py` | 旧版 Python（仅参考，已废弃） | 不推荐 |
 

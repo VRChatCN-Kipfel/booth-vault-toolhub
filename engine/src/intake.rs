@@ -634,8 +634,16 @@ fn handle_unknown(item: IntakeItem, opts: &IntakeOptions) -> IntakeEntry {
                 };
             }
             match move_to(&item.path, dir) {
-                Ok(dest) => IntakeEntry {
-                    message: format!("已移入 {}", dest.display()),
+                Ok((dest, origin_kept)) => IntakeEntry {
+                    message: if origin_kept {
+                        format!(
+                            "已移入 {}（跨盘删除原件失败，原件仍保留于 {}，请手工清理）",
+                            dest.display(),
+                            item.path.display()
+                        )
+                    } else {
+                        format!("已移入 {}", dest.display())
+                    },
                     item,
                     status: IntakeStatus::Moved,
                     target_dir: dest,
@@ -652,7 +660,7 @@ fn handle_unknown(item: IntakeItem, opts: &IntakeOptions) -> IntakeEntry {
 }
 
 /// 移入目标目录（根下一层，摊平，不保留源目录层级）。
-fn move_to(path: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
+fn move_to(path: &Path, dest_dir: &Path) -> Result<(PathBuf, bool), String> {
     std::fs::create_dir_all(dest_dir)
         .map_err(|e| format!("创建 {} 失败: {e}", dest_dir.display()))?;
     let name = path
@@ -662,15 +670,15 @@ fn move_to(path: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
         .unwrap_or_else(|| "unnamed".to_string());
     let dest = unique_dest(dest_dir, &name);
     if std::fs::rename(path, &dest).is_ok() {
-        return Ok(dest);
+        return Ok((dest, false));
     }
     std::fs::copy(path, &dest).map_err(|e| format!("移动/复制失败 {}: {e}", dest.display()))?;
-    // 跨盘回退：复制成功后删原件才是「移动」语义；删除失败仍算移动成功，
-    // 但原件还在，报告里的目标路径就是唯一线索，故照常返回。
+    // 跨盘回退：复制成功后删原件才是「移动」语义。删失败仍算移动成功，但原件还在：
+    // 不报告这一点，用户会以为它已被移走，而下一轮 intake 会把同一件再收一遍。
     if std::fs::remove_file(path).is_err() {
-        return Ok(dest);
+        return Ok((dest, true));
     }
-    Ok(dest)
+    Ok((dest, false))
 }
 
 /// 目标名冲突时追加 `_1`、`_2`…，绝不覆盖既有文件（覆盖不可逆）。
@@ -861,6 +869,21 @@ mod tests {
         assert!(root.join(UNKNOWN_DIR).join("a.txt").is_file());
         assert!(!root.join("sub").join("a.txt").exists());
         assert_eq!(report.moved_paths().len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn move_to_reports_origin_kept_flag() {
+        // 同盘 rename 成功 ⇒ 原件已消失，origin_kept 必须为 false；
+        // 这条守住「跨盘删除失败要提示原件残留」的判据接口不被改回单一返回值。
+        let root = tmpdir("move-flag");
+        let src = root.join("a.txt");
+        touch(&src);
+        let dest_dir = root.join(UNKNOWN_DIR);
+        let (dest, origin_kept) = move_to(&src, &dest_dir).expect("move should succeed");
+        assert!(dest.is_file());
+        assert!(!origin_kept, "同盘 rename 后原件应已不在，不得报残留");
+        assert!(!src.exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 
