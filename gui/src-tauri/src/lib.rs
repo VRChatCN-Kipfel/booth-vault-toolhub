@@ -4,9 +4,9 @@ mod commands;
 pub mod portable;
 
 use commands::{
-    TaskRegistry, audit, backfill_free, cancel_task, check_cookie, download, fix_mismatch,
-    list_library, load_app_config, mismatch_audit, organize, preview_archives, preview_dir,
-    save_app_config, search, set_app_icon, update_check, version_audit,
+    TaskRegistry, audit, backfill_free, cancel_task, check_cookie, download, fix_mismatch, intake,
+    intake_scan, list_library, load_app_config, mismatch_audit, organize, preview_archives,
+    preview_dir, save_app_config, search, set_app_icon, update_check, version_audit,
 };
 use tauri::Manager;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
@@ -44,6 +44,8 @@ pub fn run() {
             preview_dir,
             mismatch_audit,
             fix_mismatch,
+            intake_scan,
+            intake,
             update_check,
             check_cookie,
             cancel_task,

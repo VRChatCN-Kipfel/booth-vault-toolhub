@@ -325,6 +325,22 @@ const ID_DIR_RE: &str = r"^(\d{7})[\s_\-－　ー]+(.+)$";
 /// ID_DIR_RE 编译缓存。
 static ID_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 
+/// 按目录名解析商品目录，返回 `(7 位 ID, 分隔符之后的名称)`。
+///
+/// 公开是为了让 intake 的 `AlreadyArchived` 判定与本模块共用**同一份**正则：
+/// 各自抄一份字面量，会在「全角空格 / 日文长音 / 可重复分隔符」这些边角上分叉，
+/// 症状是同一目录被 intake 当成散落文件、被 scan_library 当成已入库。
+pub fn id_dir_of(name: &str) -> Option<(String, String)> {
+    let caps = ID_RE
+        .get_or_init(|| Regex::new(ID_DIR_RE).expect("valid regex"))
+        .captures(name)
+        .ok()
+        .flatten()?;
+    let id = caps.get(1)?.as_str().to_string();
+    let nm = caps.get(2)?.as_str().to_string();
+    Some((id, nm))
+}
+
 /// 递归扫描结果：单个商品目录（ID 目录名）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScannedDir {
@@ -839,12 +855,20 @@ pub struct MismatchInfo {
 /// 错位检测：经 `fetch` 注入联网比对官方分类。
 ///
 /// 目标分类与当前父目录名不一致、且目标分类非「未分类」时记录错位。
+/// `rate_limit` 按配置在每件 `fetch` 之间 sleep（首件不睡），与
+/// `version_audit_with_progress` 同口径；大库背靠背请求会触发 BOOTH 风控。
 pub fn mismatch_audit(
     root: &Path,
+    rate_limit: f64,
     fetch: impl Fn(&str) -> Option<crate::fetch::ItemJson>,
 ) -> Vec<MismatchInfo> {
     let mut out = Vec::new();
+    let mut first = true;
     for d in scan_library(root) {
+        if !first {
+            crate::download::sleep_rate_limit(rate_limit);
+        }
+        first = false;
         let Some(item) = fetch(&d.id) else {
             continue;
         };
@@ -2019,7 +2043,7 @@ mod tests {
         let cat = base.join("3D模型");
         std::fs::create_dir_all(&cat).unwrap();
         make_id_dir(&cat, "1111111_错位");
-        let out = mismatch_audit(&base, |id| match id {
+        let out = mismatch_audit(&base, 0.0, |id| match id {
             "1111111" => Some(json_item_cat("髪")),
             _ => None,
         });
@@ -2037,7 +2061,7 @@ mod tests {
         let cat = base.join("3D发型");
         std::fs::create_dir_all(&cat).unwrap();
         make_id_dir(&cat, "2222222_正确");
-        let out = mismatch_audit(&base, |id| match id {
+        let out = mismatch_audit(&base, 0.0, |id| match id {
             "2222222" => Some(json_item_cat("髪")),
             _ => None,
         });
@@ -2051,7 +2075,7 @@ mod tests {
         let cat = base.join("3D模型");
         std::fs::create_dir_all(&cat).unwrap();
         make_id_dir(&cat, "3333333_未分类");
-        let out = mismatch_audit(&base, |id| match id {
+        let out = mismatch_audit(&base, 0.0, |id| match id {
             "3333333" => Some(json_item_cat("")),
             _ => None,
         });
@@ -2075,7 +2099,7 @@ mod tests {
             },
             ..crate::fetch::ItemJson::default()
         };
-        let out = mismatch_audit(&base, |id| {
+        let out = mismatch_audit(&base, 0.0, |id| {
             if id == "4444444" {
                 Some(item.clone())
             } else {
@@ -2091,7 +2115,7 @@ mod tests {
     #[test]
     fn mismatch_audit_empty_library() {
         let base = tmpdir("ma_empty");
-        let out = mismatch_audit(&base, |_| Some(json_item_cat("髪")));
+        let out = mismatch_audit(&base, 0.0, |_| Some(json_item_cat("髪")));
         assert!(out.is_empty());
         let _ = std::fs::remove_dir_all(&base);
     }

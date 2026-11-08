@@ -206,7 +206,9 @@ pub fn local_file_versions(dest_dir: &Path) -> Vec<String> {
     LocalScan::scan(dest_dir).versions()
 }
 
-fn is_sidecar_name(name: &str) -> bool {
+/// 旁路文件名判定（封面/图标/ini/系统文件）。intake 的 Sidecar 判定复用它，
+/// 否则「哪些文件不算资源」会有两份判据。
+pub fn is_sidecar_name(name: &str) -> bool {
     name.eq_ignore_ascii_case("cover.jpg")
         || name.eq_ignore_ascii_case("desktop.ini")
         || name.eq_ignore_ascii_case("booth.txt")
@@ -678,7 +680,11 @@ pub fn is_locally_valid(p: &Path) -> bool {
 }
 
 /// 强制重归档时既有内容的留档目录名前缀。
-const LEGACY_PREFIX: &str = "旧版本_";
+///
+/// 公开是因为 intake 的 `UNKNOWN_DIR` 必须证明自己没撞上这个前缀
+/// （见 `intake::tests::unknown_dir_avoids_category_and_legacy_prefix`）；
+/// 私有化会让那条断言退化成在测试里再抄一份字面量。
+pub const LEGACY_PREFIX: &str = "旧版本_";
 
 /// 留档结果：留档目录与其中各项的搬迁方式。
 #[derive(Debug, Clone, PartialEq, Eq)]

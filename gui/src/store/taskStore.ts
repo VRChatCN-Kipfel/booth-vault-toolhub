@@ -12,7 +12,8 @@ export type TaskKind =
   | 'version_audit'
   | 'backfill_free'
   | 'mismatch_audit'
-  | 'fix_mismatch';
+  | 'fix_mismatch'
+  | 'intake';
 
 export type TaskStatus = 'running' | 'done' | 'cancelled' | 'error';
 

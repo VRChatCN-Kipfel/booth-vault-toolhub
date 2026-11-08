@@ -10,6 +10,7 @@ pub mod evidence;
 pub mod fetch;
 pub mod http;
 pub mod id;
+pub mod intake;
 pub mod integrity;
 pub mod kana;
 pub mod norm;

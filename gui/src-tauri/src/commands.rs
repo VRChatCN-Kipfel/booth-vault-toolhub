@@ -930,6 +930,133 @@ pub fn version_audit(
     }))
 }
 
+/// intake_scan：只做身份判定，不联网、不改盘（#54 P4）。
+///
+/// 拖拽页此前用前端正则 `hasFileProductId` 冒充判定：路径里带 7 位数字就当
+/// 一个条目投递、目录名无 ID 就整包归入「缺少 ID」，里面有什么文件完全没看。
+/// 现在判定统一走 engine，前端只负责分组渲染。
+#[tauri::command]
+pub fn intake_scan(dirs: Vec<String>, out: Option<String>) -> Result<serde_json::Value, String> {
+    let config = load_config();
+    let out_root = resolve_root(&config, out.as_deref()).unwrap_or_default();
+    let desc = engine::config::desc_weight(None, None, &config)?;
+    let opts = engine::intake::IntakeOptions {
+        out_root,
+        on_unknown: engine::intake::OnUnknown::Report,
+        on_ambiguous: engine::intake::AmbiguousPolicy::Ask,
+        dry_run: true,
+        confirm: false,
+        cookie: None,
+        keep_failed_downloads: false,
+        rate_limit_secs: 0.0,
+        desc,
+    };
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for dir in &dirs {
+        for item in engine::intake::intake_scan(std::path::Path::new(dir), &opts) {
+            rows.push(serde_json::json!({
+                "path": item.path.display().to_string(),
+                "kind": item.kind.as_str(),
+                "id": item.id.unwrap_or_default(),
+                "reason": item.reason,
+            }));
+        }
+    }
+    Ok(serde_json::json!({ "command": "intake_scan", "total": rows.len(), "items": rows }))
+}
+
+/// intake：执行入库（扫描 → 判定 → 归档），进度经 Channel 流式推送。
+///
+/// `confirm` 对应 `--yes`：未确认时只有带 ID 的项会执行，按名检索项只报告
+/// 不联网（engine 内实现，三端同一份判据）。
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub fn intake(
+    registry: State<'_, TaskRegistry>,
+    dirs: Vec<String>,
+    out: Option<String>,
+    dry_run: bool,
+    on_unknown: Option<String>,
+    on_ambiguous: Option<String>,
+    confirm: bool,
+    cookie: Option<String>,
+    on_event: Channel<ProgressEvent>,
+) -> Result<String, String> {
+    let config = load_config();
+    let out_root = resolve_root(&config, out.as_deref())?;
+    let cookie = resolve_cookie(cookie.as_deref(), &config);
+    let client = make_session(&config, cookie.as_deref());
+    let desc = engine::config::desc_weight(None, None, &config)?;
+    let policy_unknown =
+        engine::intake::parse_on_unknown(on_unknown.as_deref().unwrap_or("report"), &out_root)?;
+    let policy_ambiguous =
+        engine::intake::parse_ambiguous(on_ambiguous.as_deref().unwrap_or("ask"))?;
+    let opts = engine::intake::IntakeOptions {
+        out_root,
+        on_unknown: policy_unknown,
+        on_ambiguous: policy_ambiguous,
+        dry_run,
+        confirm,
+        cookie,
+        keep_failed_downloads: engine::config::keep_failed_downloads(&config),
+        rate_limit_secs: config
+            .rate_limit_secs
+            .unwrap_or_else(default_rate_limit_secs),
+        desc,
+    };
+    let total = dirs.len();
+
+    Ok(spawn_job(&registry, on_event.clone(), move |flag| {
+        let _ = on_event.send(ProgressEvent::TaskStarted { total });
+        let mut done = 0usize;
+        let mut failed = 0usize;
+        for dir in &dirs {
+            if cancelled(&flag) {
+                let _ = on_event.send(ProgressEvent::Cancelled);
+                return;
+            }
+            let report = engine::intake::intake_run(&client, std::path::Path::new(dir), &opts);
+            for e in &report.entries {
+                let status = match e.status {
+                    engine::intake::IntakeStatus::Failed => "err",
+                    engine::intake::IntakeStatus::Ambiguous => "ambiguous",
+                    engine::intake::IntakeStatus::Skipped => "exists",
+                    engine::intake::IntakeStatus::Moved => "ok",
+                    engine::intake::IntakeStatus::Archived => "ok",
+                    engine::intake::IntakeStatus::Reported => "warn",
+                };
+                if e.status == engine::intake::IntakeStatus::Failed {
+                    failed += 1;
+                    let _ = on_event.send(ProgressEvent::ItemError {
+                        id: e.item.path.display().to_string(),
+                        message: e.message.clone(),
+                    });
+                } else {
+                    done += 1;
+                    let _ = on_event.send(ProgressEvent::ItemDone {
+                        id: e.item.id.clone().unwrap_or_else(|| {
+                            e.item
+                                .path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default()
+                        }),
+                        message: e.message.clone(),
+                        status: status.to_string(),
+                        path: Some(e.item.path.display().to_string()),
+                        price: None,
+                    });
+                }
+            }
+        }
+        let _ = on_event.send(ProgressEvent::Finished {
+            done,
+            failed,
+            updateable: 0,
+        });
+    }))
+}
+
 /// mismatch_audit：联网比对官方分类，报告目录所在分类与官方分类不一致的商品。
 #[tauri::command]
 pub fn mismatch_audit(
@@ -948,7 +1075,10 @@ pub fn mismatch_audit(
     Ok(spawn_job(&registry, on_event.clone(), move |flag| {
         let total = engine::audit::scan_library(&base_path).len();
         let _ = on_event.send(ProgressEvent::TaskStarted { total });
-        let found = engine::audit::mismatch_audit(&base_path, |id| {
+        let rate = config
+            .rate_limit_secs
+            .unwrap_or_else(engine::config::default_rate_limit_secs);
+        let found = engine::audit::mismatch_audit(&base_path, rate, |id| {
             if cancelled(&flag) {
                 return None;
             }
@@ -997,7 +1127,10 @@ pub fn fix_mismatch(
     let client = make_session(&config, cookie.as_deref());
 
     Ok(spawn_job(&registry, on_event.clone(), move |flag| {
-        let found = engine::audit::mismatch_audit(&base_path, |id| {
+        let rate = config
+            .rate_limit_secs
+            .unwrap_or_else(engine::config::default_rate_limit_secs);
+        let found = engine::audit::mismatch_audit(&base_path, rate, |id| {
             if cancelled(&flag) {
                 return None;
             }
