@@ -72,7 +72,15 @@ pub fn download(
         match get(client, url, headers) {
             Ok(mut r) => {
                 if !r.status().is_success() {
-                    last_err = Some(format!("status {}", r.status()));
+                    // 失败分支读 body 安全（响应不再用于下载）；只报状态码时
+                    // 用户无从判断是源站拒绝、Cloudflare 挑战还是凭证失效。
+                    let status = r.status().as_u16();
+                    let u = r.url().to_string();
+                    let diag = crate::http::collect_diag_headers(&r);
+                    let body = r.bytes().map(|b| b.to_vec()).unwrap_or_default();
+                    last_err = Some(crate::http::describe_failure(
+                        "download", status, &u, &body, &diag,
+                    ));
                     break;
                 }
                 if let Err(e) = write_streamed(&mut r, &tmp) {
@@ -171,7 +179,17 @@ fn ranged_download(client: &Client, url: &str, tmp: &Path) -> Result<(), String>
     headers.insert(RANGE, "bytes=0-0".parse().unwrap());
     let r = get(client, url, headers).map_err(|e| format!("range probe: {e}"))?;
     if !r.status().is_success() {
-        return Err(format!("range probe status {}", r.status()));
+        let status = r.status().as_u16();
+        let u = r.url().to_string();
+        let diag = crate::http::collect_diag_headers(&r);
+        let body = r.bytes().map(|b| b.to_vec()).unwrap_or_default();
+        return Err(crate::http::describe_failure(
+            "range probe",
+            status,
+            &u,
+            &body,
+            &diag,
+        ));
     }
     let cr = r
         .headers()
@@ -204,7 +222,17 @@ fn ranged_download(client: &Client, url: &str, tmp: &Path) -> Result<(), String>
             match get(client, url, h) {
                 Ok(mut r) => {
                     if !r.status().is_success() {
-                        return Err(format!("chunk {done}-{end} status {}", r.status()));
+                        let status = r.status().as_u16();
+                        let u = r.url().to_string();
+                        let diag = crate::http::collect_diag_headers(&r);
+                        let body = r.bytes().map(|b| b.to_vec()).unwrap_or_default();
+                        return Err(crate::http::describe_failure(
+                            &format!("chunk {done}-{end}"),
+                            status,
+                            &u,
+                            &body,
+                            &diag,
+                        ));
                     }
                     loop {
                         let n = r.read(&mut buf).map_err(|e| format!("chunk read: {e}"))?;
