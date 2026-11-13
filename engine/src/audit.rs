@@ -30,16 +30,13 @@ pub const COVER_FILENAME: &str = "cover.jpg";
 
 /// 是否已有文件夹图标：Windows 看 `.folder_icon.ico`；macOS 还认 Finder `Icon\r` / `.folder_icon.png`。
 fn folder_icon_present(dir: &Path) -> bool {
-    if dir.join(FOLDER_ICO).is_file() {
-        return true;
-    }
     #[cfg(target_os = "macos")]
     {
-        shell_mac::folder_icon::has_folder_icon(dir)
+        dir.join(FOLDER_ICO).is_file() || shell_mac::folder_icon::has_folder_icon(dir)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        false
+        dir.join(FOLDER_ICO).is_file()
     }
 }
 
