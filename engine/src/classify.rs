@@ -7,7 +7,7 @@
 
 use phf::phf_map;
 
-/// BOOTH 类目 → 中文（合并去重固化，53 键）。任何修改必须同步 GUI/CLI/MCP 三端。
+/// BOOTH 类目 → 中文（合并去重固化，56 键）。任何修改必须同步 GUI/CLI/MCP 三端。
 pub static CATEGORY_MAP: phf::Map<&'static str, &'static str> = phf_map! {
     "3Dアバター" => "3D头像",
     "3D衣装・アクセサリー" => "3D服饰",
@@ -17,6 +17,9 @@ pub static CATEGORY_MAP: phf::Map<&'static str, &'static str> = phf_map! {
     "3D環境・ワールド" => "3D环境",
     "3Dキャラクター" => "3D角色",
     "3D小道具" => "3D道具",
+    "3D髪型" => "3D发型",
+    "3D靴" => "3D鞋",
+    "3DCG・3DCG集" => "3DCG",
     "アバター" => "头像",
     "アバターアイテム" => "头像物品",
     "アバターギミック" => "头像机关",
@@ -144,5 +147,24 @@ mod tests {
         assert_eq!(classify("髪", "3Dモデル"), "3D发型");
         // 映射值非 3D 开头 + 父类在 3D 白名单 → 自动补前缀
         assert_eq!(classify("3Dシェーダー・マテリアル", "3Dモデル"), "3D着色器");
+    }
+
+    #[test]
+    fn classify_3d_official_subcategories() {
+        assert_eq!(classify("3D髪型", "3Dモデル"), "3D发型");
+        assert_eq!(classify("3D靴", "3Dモデル"), "3D鞋");
+        assert_eq!(classify("3DCG・3DCG集", "3Dモデル"), "3DCG");
+        // 线上真实父类是 イラスト（映射为「插画」），精确命中仍须优先于该父类
+        assert_eq!(classify("3DCG・3DCG集", "イラスト"), "3DCG");
+    }
+
+    #[test]
+    fn classify_child_wins_over_parent() {
+        // 反向断言：子类精确命中后不得再回落父类 3D模型
+        for cat in ["3D髪型", "3D靴", "3DCG・3DCG集"] {
+            assert_ne!(classify(cat, "3Dモデル"), "3D模型");
+        }
+        assert_eq!(classify("3D髪型", ""), "3D发型");
+        assert_eq!(classify("3D髪型", "3D衣装・アクセサリー"), "3D发型");
     }
 }

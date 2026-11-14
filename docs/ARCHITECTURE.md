@@ -70,7 +70,7 @@ booth-vault-toolhub/
 | `search` | 按名搜索 BOOTH + 店铺翻页抓取 ID | `search_booth` / `crawl_item_ids` |
 | `clean` | 文件名清洗（查询候选策略） | `sanitize_query` |
 | `norm` | 名称归一化（macOS NFD 兼容） | — |
-| `classify` | 商品分类（`CATEGORY_MAP`，53 键固化） | — |
+| `classify` | 商品分类（`CATEGORY_MAP`，56 键固化） | — |
 | `score` | 搜索结果评分与歧义判定 | — |
 | `cover` | 封面文件识别（HTML 伪装判定） | `looks_html` |
 | `audit` | 完整性巡检：三件套缺失检测与修复建议、版本巡检（联网比对官方版本）、macOS Finder 图标检查 | `audit_tree_with_fix` / `scan_library` / `version_audit_with_progress` |
