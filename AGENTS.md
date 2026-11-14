@@ -89,7 +89,7 @@ cd gui && npm run tauri dev # GUI 开发
 - 3 处环视正则（ID 边界×2、驼峰拆词）用 `fancy-regex`，不得改用标准 `regex` 改变行为。
 - `sanitize_query` 7 层候选策略（下划线→空格/去括号/驼峰拆词/纯日文主体/去版本号/去尾部中文/最长 ASCII 段/去 VRChat 停用词），逐条实现不得"优化"。
 - 评分不偏置免费（免费偏置会把付费商品错配到同名免费兄弟）——除非明确要求 prefer_free。
-- `CATEGORY_MAP` 已去重固化（53 键），任何修改必须同步 GUI/CLI/MCP 三端。
+- `CATEGORY_MAP` 已去重固化（56 键），任何修改必须同步 GUI/CLI/MCP 三端。
 
 ### 限速与输出
 
