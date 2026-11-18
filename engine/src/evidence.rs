@@ -70,7 +70,20 @@ fn json_str(s: &str) -> String {
 pub fn source_hash(f: &SourceFields<'_>) -> String {
     let mut hasher = Sha256::new();
     hasher.update(canonical_json(f).as_bytes());
-    format!("{:x}", hasher.finalize())
+    hex_lower(&hasher.finalize())
+}
+
+/// 摘要转小写十六进制。
+///
+/// sha2 0.11 起 `finalize()` 返回 `hybrid_array::Array`，不再实现 `LowerHex`
+/// （0.10 用的 `GenericArray` 实现了，故 `format!("{:x}", …)` 原先可用）。
+fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 /// 抽取围绕关键词的**连续**原文片段（最多 `max_chars` 字符）。
