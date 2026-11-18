@@ -2,6 +2,16 @@ Unicode true
 ManifestDPIAware true
 ; WARNING: this file is vendored from tauri-bundler v2.11.5 nsis/installer.nsi.
 ; When upgrading Tauri major versions, merge changes from the official installer.nsi.
+; 2026-11-18 (tauri 2.11.5 -> 2.12.6): upstream's utils.nsh rewrote CheckIfAppIsRunning to use
+; Restart Manager, and its macro body now calls `!insertmacro RestartManager_StartSession` at
+; macro line 11. Those macros live in NSIS's own `Win\RestartManager.nsh` (present since at least
+; NSIS 3.11 -- verified, so the 3.11 -> 3.13 bump bundled with tauri 2.12 is NOT the cause).
+; What changed is that upstream installer.nsi now *includes* it. This file is a 2.11.5 vendored
+; copy, so it never pulled that include in, and makensis aborts with
+; "Error in macro CheckIfAppIsRunning on macroline 11" -- which is how the Windows bundle broke.
+; Only this compatibility fix is merged here; the remaining upstream 2.12 template changes
+; (PageReinstall/FindWixInstall split, EarlyChecks moved into .onInit, in-place uninstaller cleanup,
+; file-association quoting) are deferred to a follow-up so this hotfix stays reviewable.
 ; Keep the whole file ASCII (Tauri renders without BOM; makensis reads as ANSI).
 ; Customizations:
 ;   (1) MUI_PAGE_COMPONENTS + 4 optional sections (CLI/MCP/Shell/PATH), default on;
@@ -35,6 +45,7 @@ ManifestDPIAwareness PerMonitorV2
 !include "FileAssociation.nsh"
 !include "Win\COM.nsh"
 !include "Win\Propkey.nsh"
+!include "Win\RestartManager.nsh"
 !include "StrFunc.nsh"
 ${StrCase}
 ${StrLoc}
@@ -659,7 +670,7 @@ Section "-Install"
     !insertmacro NSIS_HOOK_PREINSTALL
   !endif
 
-  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
@@ -830,7 +841,7 @@ Section Uninstall
     !insertmacro NSIS_HOOK_PREUNINSTALL
   !endif
 
-  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
   ; Delete the app directory and its content from disk
   ; Copy main executable
