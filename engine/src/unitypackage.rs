@@ -70,7 +70,10 @@ fn from_zip(bytes: &[u8]) -> Vec<String> {
         if !f.is_file() {
             continue;
         }
-        let name = f.name().to_string();
+        // zip 9 起 `name()` 返回 `Result`，且非法 UTF-8 会退回 **CP437**——那会改变
+        // 条目名的字节语义。本函数只判断后缀（`pathname` / `.unitypackage`），
+        // 用 `name_raw()` + lossy 即可，不受 zip 内部编码策略影响。
+        let name = String::from_utf8_lossy(f.name_raw()).to_string();
         let is_pathname = name
             .rsplit('/')
             .next()

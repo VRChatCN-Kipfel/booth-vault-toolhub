@@ -22,6 +22,12 @@ use tar::Archive;
 /// 可解析的扩展名。取小写且不含点：`Path::extension()` 返回的是 `zip` 而非 `.zip`。
 const CHECKABLE_EXTS: [&str; 2] = ["zip", "unitypackage"];
 
+/// zip 通用标志位 bit 11 = LanguageEncoding（EFS）：置位即条目名按 UTF-8 编码。
+///
+/// zip 9 移除了 `ZipFileData.is_utf8` 字段，且 `ZipFlags` 未公开导出
+/// （`format` 是私有模块），只能按 APPNOTE 4.4.4 直接读位。
+const FLAG_LANGUAGE_ENCODING: u16 = 0x0800;
+
 /// 预览默认条目上限：GUI 只需看清单，数千条目全量回传无意义。
 pub const PREVIEW_LIMIT: usize = 500;
 
@@ -271,7 +277,10 @@ pub fn zip_entries(path: &Path) -> Option<Vec<EntryInfo>> {
         let f = zip.by_index_raw(i).ok()?;
         raws.push((
             f.name_raw().to_vec(),
-            f.get_metadata().is_utf8,
+            // zip 9 起 `is_utf8: bool` 被移除，`ZipFlags` 也未公开导出
+            // （`format` 是私有模块），只能直接读通用标志位的 bit 11
+            // = LanguageEncoding（EFS，见 APPNOTE 4.4.4）。
+            f.get_metadata().flags.as_u16() & FLAG_LANGUAGE_ENCODING != 0,
             f.size(),
             f.compressed_size(),
             format!("{:?}", f.compression()).to_ascii_lowercase(),
@@ -445,7 +454,8 @@ mod tests {
             let mut w = zip::ZipWriter::new(&mut buf);
             let o = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
-            w.set_comment(comment);
+            // zip 9 起返回 Result；夹具依赖的是尾注存在与否，写失败也不必中断。
+            let _ = w.set_comment(comment);
             w.start_file("a.txt", o).unwrap();
             w.write_all(b"hello").unwrap();
             w.finish().unwrap();
