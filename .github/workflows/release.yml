@@ -40,10 +40,21 @@ env:
 
 jobs:
   package:
-    # 仅当触发源 CI 成功时才运行（workflow_run 判断上游结论；手动触发直接跑）。
-    # 防止 CI 失败或进行中时误触发发布流。
+    # 仅当上游 CI 成功、且**上游是被 push 触发**时才运行（workflow_run 判断上游结论；
+    # 手动触发直接跑）。防止 CI 失败或进行中时误触发发布流。
+    #
+    # 为什么要判 workflow_run.event：本文件挂在 CI 的 completed 上，而 CI 同时跑在
+    # pull_request 与 push 上。原先只判 conclusion，导致**任何 PR 分支的 CI 成功都会
+    # 拉起整套 5 平台打包**（约 50 机器分钟），并且持续产出 "release failed" 通知，
+    # 把真正发生在 master / tag 上的发布故障淹没掉。2026-11-19 实测：当天唯一的 CI
+    # 来自 PR 分支 chore/tauri-version-gate，23 分钟后整套打包照跑。
+    #
+    # 不用 `on.workflow_run.branches: [master]`：分支过滤对 tag 推送不生效，
+    # 那样会把 tag 发布（唯一真正创建 Release 的路径）一起掐掉。
     if: >-
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      (github.event_name == 'workflow_run'
+        && github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'push')
       || github.event_name == 'workflow_dispatch'
     # 显式声明而非继承顶层 `contents: write`：`Resolve CI run ID` 步骤要查
     # `/actions/runs`，那需要 **actions: read**——继承 top-level 时它是 none，
