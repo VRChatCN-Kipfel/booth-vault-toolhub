@@ -71,6 +71,12 @@ jobs:
   # 判据与 tauri 自身一致，故本步通过 == 打包不会再卡在这里。
   tauri-version:
     runs-on: ubuntu-slim
+    # 只读就够了：本 job 只 checkout 后读两个 lock 文件。
+    # 必须显式声明：CodeQL 的 actions/missing-workflow-permissions 会对"没有 permissions 的 job"
+    # 开 medium 告警，而 master 规则集的 code_scanning 门槛是 medium_or_higher ——
+    # 新引入的告警会直接让 PR 变成 BLOCKED（检查全绿也一样）。
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
       - name: Assert @tauri-apps/* and Cargo.lock tauri crates share major.minor
