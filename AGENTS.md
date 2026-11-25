@@ -115,6 +115,13 @@ cd gui && npm run tauri dev # GUI 开发
 - 版本号必须合法 semver（Cargo/Tauri 强校验，实测拒绝中文、`/`、反斜杠）；非 ASCII 分支名只保留 ASCII 清洗后片段。
 - `tauri.conf.json` 不设 `version` 字段（fallback 到 Cargo.toml，一处注入全链生效）。
 - **禁止**硬编码 `v0.1.0` 兜底 tag；无 tag 时不创建 Release。
+- **Tauri 版本一致性门控**（`ci.yml` 的 `tauri-version` job，脚本 `.github/scripts/check-tauri-versions.sh`）：
+  `gui/package-lock.json` 里 `@tauri-apps/{api,plugin-*}` 的解析版本，必须与 `Cargo.lock` 中
+  `tauri` / `tauri-plugin-*` 的 crate **同 major.minor**——这正是 `tauri build` 自身的判据。
+  本 CI 从不执行 `tauri build`（只跑 fmt/clippy/test/前端构建），所以漂移在 PR 阶段不可见，
+  只能靠这道门控提前拦。`gui/package.json` 里这些包一律用 `~X.Y` 而非 `^`，避免 dependabot
+  升了 npm 侧却没升 crate 侧（2026-11-18 即因此让 master 的 release 连续失败 4 次，5 对同时不符）。
+  升 Tauri 全家桶时 **`Cargo.toml` 与 `package.json` 必须同一次改动**。
 
 ## 警告事项（血泪坑，防回归）
 
