@@ -294,6 +294,47 @@ mod tests {
         assert_eq!(a.len(), 64, "SHA-256 十六进制应为 64 字符");
     }
 
+    /// 固定输入 → 固定哈希（golden vector）。
+    ///
+    /// 为什么必须单独有它：本模块其余哈希测试只验证「长度 / 确定性 / 内容敏感性」，
+    /// **没有一个固定期望值**。sha2 0.10 → 0.11 换掉了 `GenericArray`，原先的
+    /// `format!("{:x}", …)` 改成手写 `hex_lower()`；若大小写、字节序或补零写错，
+    /// 上面那些测试仍会全绿，而用户库里已经存下的 `source_hash` 会与重算值全部对不上
+    /// —— 证据链静默失效，没有任何报错。
+    ///
+    /// 期望值来自**独立实现**（Node 的 crypto 对同一段规范 JSON 求 SHA-256），
+    /// 而不是由被测实现自己生成，否则测试只能证明「代码没变」，证明不了「输出正确」。
+    #[test]
+    fn source_hash_matches_golden_vector() {
+        // 基础路径
+        let tags: Vec<String> = vec!["VRChat".to_string()];
+        let simple = fields("n", &tags, "d");
+        assert_eq!(
+            canonical_json(&simple),
+            r#"{"category":"3D衣装","description":"d","name":"n","tags":["VRChat"]}"#,
+            "规范 JSON 形状变了，已有指纹的语义会跟着变"
+        );
+        assert_eq!(
+            source_hash(&simple),
+            "7d3f29434b25748078dbadd15db87e117a126ea530fa94a605cab63ed7c38bd3",
+            "sha2 0.11 迁移后必须与旧实现逐字节一致（逐字节两位小写十六进制）"
+        );
+
+        // 转义路径：引号、反斜杠、换行、制表符，且标签需要排序（"VRChat" < "衣装"）
+        let tags2: Vec<String> = vec!["衣装".to_string(), "VRChat".to_string()];
+        let escaped = fields("a\"b\\c", &tags2, "line1\nline2\ttab");
+        assert_eq!(
+            canonical_json(&escaped),
+            r#"{"category":"3D衣装","description":"line1\nline2\ttab","name":"a\"b\\c","tags":["VRChat","衣装"]}"#,
+            "转义规则变了，指纹会漂移"
+        );
+        assert_eq!(
+            source_hash(&escaped),
+            "04b4f642970400bbed321c2aa7fa576a93a5d08091fb808a9912bf1b5358447a",
+            "转义路径的指纹同样必须稳定"
+        );
+    }
+
     #[test]
     fn source_hash_is_deterministic() {
         let tags = vec!["VRChat".to_string()];
